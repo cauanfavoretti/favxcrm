@@ -1639,7 +1639,14 @@ app.put('/api/profile', auth, async (req, res) => {
 // HEALTH
 // ============================================================
 
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/health', async (_req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok', db: 'connected' });
+  } catch (err) {
+    res.json({ status: 'error', db: err.message });
+  }
+});
 
 // ============================================================
 // SUBACCOUNT SETTINGS
@@ -2005,10 +2012,7 @@ app.delete('/api/integrations/whatsapp/disconnect', auth, requireAdmin, async (r
 });
 
 // ============================================================
-// HEALTH
 // ============================================================
-
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 (async function runMigrations() {
   try {
