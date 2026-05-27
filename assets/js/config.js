@@ -3,4 +3,4 @@
 // ======================================
 
 // URL da API Express (backend)
-window.API_URL = 'http://localhost:3001';
+window.API_URL = '';
