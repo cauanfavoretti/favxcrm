@@ -1640,11 +1640,13 @@ app.put('/api/profile', auth, async (req, res) => {
 // ============================================================
 
 app.get('/health', async (_req, res) => {
+  let host = 'DATABASE_URL not set';
+  try { host = new URL(process.env.DATABASE_URL || '').hostname; } catch {}
   try {
     await pool.query('SELECT 1');
-    res.json({ status: 'ok', db: 'connected' });
+    res.json({ status: 'ok', db: 'connected', host });
   } catch (err) {
-    res.json({ status: 'error', db: err.message });
+    res.json({ status: 'error', db: err.message, host });
   }
 });
 
