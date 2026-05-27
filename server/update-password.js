@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const pool   = require('./db');
 
 const EMAIL    = 'admin@favx.com.br';
