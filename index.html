@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FAVX CRM</title>
+  <link rel="stylesheet" href="assets/css/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="assets/js/config.js"></script>
+  <script src="assets/js/api.js"></script>
+</head>
+<body>
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon">
+        <img src="assets/img/favx-logo.png" alt="FAVX Logo" style="height:160px;width:auto;object-fit:contain;filter:invert(1);mix-blend-mode:screen;" />
+      </div>
+      <button class="sidebar-toggle" id="sidebarToggle">
+        <i data-lucide="chevrons-left"></i>
+      </button>
+    </div>
+
+    <div style="padding:0 12px 12px">
+      <a href="#" class="nav-item nav-admin-only" data-page="subaccounts"
+        style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);border-radius:10px;padding:10px 12px;font-weight:700;font-size:13px;letter-spacing:.01em">
+        <i data-lucide="building-2" style="width:16px;height:16px"></i>
+        <span>Subcontas</span>
+      </a>
+    </div>
+
+    <div class="sidebar-section-label">Principal</div>
+    <nav class="sidebar-nav">
+      <a href="#" class="nav-item active" data-page="dashboard">
+        <i data-lucide="layout-dashboard"></i>
+        <span>Dashboard</span>
+      </a>
+      <a href="#" class="nav-item" data-page="contacts">
+        <i data-lucide="users"></i>
+        <span>Contatos</span>
+      </a>
+      <a href="#" class="nav-item" data-page="conversations">
+        <i data-lucide="message-circle"></i>
+        <span>Conversas</span>
+        <span class="nav-badge">12</span>
+      </a>
+      <a href="#" class="nav-item" data-page="funnels">
+        <i data-lucide="filter"></i>
+        <span>Funis</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-section-label">Inteligência Artificial</div>
+    <nav class="sidebar-nav">
+      <a href="#" class="nav-item" data-page="agents">
+        <i data-lucide="cpu"></i>
+        <span>Agentes de IA</span>
+        <span class="nav-badge-green">3 ativos</span>
+      </a>
+      <a href="#" class="nav-item" data-page="ai-dashboard">
+        <i data-lucide="activity"></i>
+        <span>Painel da IA</span>
+      </a>
+      <a href="#" class="nav-item" data-page="automations">
+        <i data-lucide="zap"></i>
+        <span>Automações</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-section-label">Configurações</div>
+    <nav class="sidebar-nav">
+      <a href="#" class="nav-item" data-page="settings">
+        <i data-lucide="settings"></i>
+        <span>Configurações</span>
+      </a>
+      <a href="#" class="nav-item" data-page="integrations">
+        <i data-lucide="plug"></i>
+        <span>Integrações</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="user-card">
+        <div class="user-avatar">A</div>
+        <div class="user-info">
+          <span class="user-name">Admin FAVX</span>
+          <span class="user-role">Super Admin</span>
+        </div>
+        <i data-lucide="chevron-up"></i>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN WRAPPER -->
+  <div class="main-wrapper" id="mainWrapper">
+
+    <!-- TOPBAR -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn">
+          <i data-lucide="menu"></i>
+        </button>
+        <div class="breadcrumb" id="breadcrumb">
+          <span>Dashboard</span>
+        </div>
+        <div style="position:relative;margin-left:8px" id="subaccountSwitcherWrap">
+          <button id="subaccountSwitcherBtn" style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:5px 10px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-surface);cursor:pointer;color:var(--color-text-2)">
+            <i data-lucide="building-2" style="width:13px;height:13px"></i>
+            <span id="subaccountSwitcherName">—</span>
+            <i data-lucide="chevron-down" style="width:13px;height:13px"></i>
+          </button>
+          <div id="subaccountSwitcherMenu" hidden style="position:absolute;top:calc(100% + 6px);left:0;min-width:200px;background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-md);box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:999;padding:6px 0">
+            <!-- populado via JS -->
+          </div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="search-wrapper">
+          <i data-lucide="search"></i>
+          <input type="text" placeholder="Buscar contatos, conversas..." />
+        </div>
+        <button class="theme-toggle-btn" id="themeToggleBtn" title="Alternar tema">
+          <i data-lucide="sun" id="themeIcon" style="width:18px;height:18px"></i>
+        </button>
+        <button class="topbar-btn">
+          <i data-lucide="bell"></i>
+          <span class="notif-dot"></span>
+        </button>
+        <button class="topbar-btn">
+          <i data-lucide="help-circle"></i>
+        </button>
+        <div class="topbar-avatar">A</div>
+      </div>
+    </header>
+
+    <!-- PAGE CONTENT -->
+    <main class="page-content" id="pageContent">
+      <!-- Injected via JS -->
+    </main>
+
+  </div>
+
+  <script src="assets/js/pages/dashboard.js"></script>
+  <script src="assets/js/pages/contacts.js"></script>
+  <script src="assets/js/pages/conversations.js"></script>
+  <script src="assets/js/pages/funnels.js"></script>
+  <script src="assets/js/pages/agents.js"></script>
+  <script src="assets/js/pages/ai-dashboard.js"></script>
+  <script src="assets/js/pages/automations.js"></script>
+  <script src="assets/js/pages/settings.js"></script>
+  <script src="assets/js/pages/integrations.js"></script>
+  <script src="assets/js/pages/subaccounts.js"></script>
+  <script src="assets/js/app.js"></script>
+
+</body>
+</html>
