@@ -14,9 +14,9 @@ const isSSL = process.env.DATABASE_URL?.includes('sslmode=require') ||
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: isSSL ? { rejectUnauthorized: false } : false,
-  max: 2,
-  idleTimeoutMillis: 10000,
-  connectionTimeoutMillis: 5000,
+  max: 1,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 20000,
 });
 
 pool.on('error', (err) => {
