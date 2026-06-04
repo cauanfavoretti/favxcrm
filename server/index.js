@@ -1777,11 +1777,18 @@ app.post('/api/webhook/evolution', async (req, res) => {
   const externalId = key.id || null;
 
   try {
-    // Find subaccount by instance name
-    const { rows: cfgRows } = await pool.query(
-      `SELECT subaccount_id FROM subaccount_settings WHERE evolution_instance_name = $1`,
+    // Find subaccount by instance name (multi-instance table first, fallback to settings)
+    let cfgRows;
+    ({ rows: cfgRows } = await pool.query(
+      `SELECT subaccount_id FROM whatsapp_instances WHERE instance_name = $1 LIMIT 1`,
       [instance]
-    );
+    ));
+    if (!cfgRows.length) {
+      ({ rows: cfgRows } = await pool.query(
+        `SELECT subaccount_id FROM subaccount_settings WHERE evolution_instance_name = $1 LIMIT 1`,
+        [instance]
+      ));
+    }
     if (!cfgRows.length) return;
     const subaccount_id = cfgRows[0].subaccount_id;
 
@@ -1875,75 +1882,61 @@ async function evoRequest(method, baseUrl, apiKey, path, body) {
   return data;
 }
 
-app.get('/api/integrations/whatsapp', auth, async (req, res) => {
+// ── Multi-instance WhatsApp ───────────────────────────────────
+
+app.get('/api/whatsapp-instances', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   try {
     const { rows } = await pool.query(
-      `SELECT evolution_api_url, evolution_api_key, evolution_instance_name FROM subaccount_settings WHERE subaccount_id = $1`,
+      `SELECT id, instance_name, phone_number, api_url, status, connected_at, created_at
+       FROM whatsapp_instances WHERE subaccount_id = $1 ORDER BY created_at ASC`,
       [subaccount_id]
     );
-    const cfg = rows[0] || {};
-    const configured = !!(cfg.evolution_api_url && cfg.evolution_api_key);
-    let state = null;
-    if (configured && cfg.evolution_instance_name) {
-      try {
-        const st = await evoRequest('GET', cfg.evolution_api_url, cfg.evolution_api_key,
-          `/instance/connectionState/${cfg.evolution_instance_name}`);
-        state = st?.instance?.state || st?.state || null;
-      } catch {}
-    }
-    res.json({ configured, instance_name: cfg.evolution_instance_name || null, api_url: cfg.evolution_api_url || null, state });
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-app.post('/api/integrations/whatsapp/connect', auth, requireAdmin, async (req, res) => {
+app.post('/api/whatsapp-instances', auth, requireAdmin, async (req, res) => {
   const { subaccount_id } = req.user;
   const { api_url, api_key } = req.body;
+  if (!api_url?.trim() || !api_key?.trim())
+    return res.status(400).json({ message: 'URL e chave da API são obrigatórias.' });
+
+  const { rows: cnt } = await pool.query(
+    'SELECT COUNT(*) FROM whatsapp_instances WHERE subaccount_id = $1', [subaccount_id]
+  );
+  const n = parseInt(cnt[0].count) + 1;
+  const instanceName = `favx-${subaccount_id.slice(0, 8)}-${n}`;
+
   try {
-    if (api_url && api_key) {
-      await pool.query(`
-        INSERT INTO subaccount_settings (subaccount_id, evolution_api_url, evolution_api_key, updated_at)
-        VALUES ($1, $2, $3, NOW())
-        ON CONFLICT (subaccount_id) DO UPDATE SET
-          evolution_api_url = EXCLUDED.evolution_api_url,
-          evolution_api_key = EXCLUDED.evolution_api_key,
-          updated_at = NOW()`,
-        [subaccount_id, api_url.trim(), api_key.trim()]
-      );
-    }
-    const { rows } = await pool.query(
-      `SELECT evolution_api_url, evolution_api_key, evolution_instance_name FROM subaccount_settings WHERE subaccount_id = $1`,
-      [subaccount_id]
-    );
-    const cfg = rows[0];
-    if (!cfg?.evolution_api_url || !cfg?.evolution_api_key) {
-      return res.status(400).json({ message: 'Configure a URL e a chave da API primeiro.' });
-    }
-    const instanceName = cfg.evolution_instance_name || `favx-${subaccount_id.slice(0, 8)}`;
     let qrData;
     try {
-      qrData = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
+      qrData = await evoRequest('POST', api_url.trim(), api_key.trim(),
         '/instance/create', { instanceName, qrcode: true, integration: 'WHATSAPP-BAILEYS' });
     } catch {
-      qrData = await evoRequest('GET', cfg.evolution_api_url, cfg.evolution_api_key,
+      qrData = await evoRequest('GET', api_url.trim(), api_key.trim(),
         `/instance/connect/${instanceName}`);
     }
-    await pool.query(
-      `UPDATE subaccount_settings SET evolution_instance_name = $1, updated_at = NOW() WHERE subaccount_id = $2`,
-      [instanceName, subaccount_id]
+
+    const { rows } = await pool.query(
+      `INSERT INTO whatsapp_instances (subaccount_id, instance_name, api_url, api_key, api_provider, status)
+       VALUES ($1, $2, $3, $4, 'evolution', 'connecting') RETURNING id, instance_name, status`,
+      [subaccount_id, instanceName, api_url.trim(), api_key.trim()]
     );
 
-    // Auto-configure webhook so Evolution API delivers messages to this CRM
     const webhookBase = (process.env.WEBHOOK_BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
     try {
-      await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
+      await evoRequest('POST', api_url.trim(), api_key.trim(),
         `/webhook/set/${instanceName}`, {
-          url: `${webhookBase}/api/webhook/evolution`,
-          webhook_by_events: true,
-          webhook_base64: false,
-          events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
+          webhook: {
+            enabled: true,
+            url: `${webhookBase}/api/webhook/evolution`,
+            webhookByEvents: false,
+            webhookBase64: false,
+            events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
+          }
         });
     } catch (whErr) {
       console.warn('[evo webhook setup]', whErr.message);
@@ -1951,63 +1944,87 @@ app.post('/api/integrations/whatsapp/connect', auth, requireAdmin, async (req, r
 
     const base64 = qrData?.qrcode?.base64 || qrData?.base64 || null;
     const state  = qrData?.instance?.state || null;
-    res.json({ instance_name: instanceName, base64, state });
+    res.status(201).json({ ...rows[0], base64, state });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-app.get('/api/integrations/whatsapp/qr', auth, async (req, res) => {
+app.get('/api/whatsapp-instances/:id/qr', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   try {
     const { rows } = await pool.query(
-      `SELECT evolution_api_url, evolution_api_key, evolution_instance_name FROM subaccount_settings WHERE subaccount_id = $1`,
-      [subaccount_id]
+      'SELECT * FROM whatsapp_instances WHERE id = $1 AND subaccount_id = $2',
+      [req.params.id, subaccount_id]
     );
-    const cfg = rows[0];
-    if (!cfg?.evolution_api_url || !cfg?.evolution_instance_name) {
-      return res.status(400).json({ message: 'Integração não configurada.' });
-    }
-    const data = await evoRequest('GET', cfg.evolution_api_url, cfg.evolution_api_key,
-      `/instance/connect/${cfg.evolution_instance_name}`);
+    if (!rows.length) return res.status(404).json({ message: 'Instância não encontrada.' });
+    const inst = rows[0];
+    const data = await evoRequest('GET', inst.api_url, inst.api_key,
+      `/instance/connect/${inst.instance_name}`);
     res.json(data);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-app.get('/api/integrations/whatsapp/status', auth, async (req, res) => {
+app.get('/api/whatsapp-instances/:id/status', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   try {
     const { rows } = await pool.query(
-      `SELECT evolution_api_url, evolution_api_key, evolution_instance_name FROM subaccount_settings WHERE subaccount_id = $1`,
-      [subaccount_id]
+      'SELECT * FROM whatsapp_instances WHERE id = $1 AND subaccount_id = $2',
+      [req.params.id, subaccount_id]
     );
-    const cfg = rows[0];
-    if (!cfg?.evolution_api_url || !cfg?.evolution_instance_name) return res.json({ state: null });
-    const data = await evoRequest('GET', cfg.evolution_api_url, cfg.evolution_api_key,
-      `/instance/connectionState/${cfg.evolution_instance_name}`);
-    res.json({ state: data?.instance?.state || data?.state || null });
-  } catch {
-    res.json({ state: 'close' });
+    if (!rows.length) return res.status(404).json({ message: 'Instância não encontrada.' });
+    const inst = rows[0];
+    try {
+      const data = await evoRequest('GET', inst.api_url, inst.api_key,
+        `/instance/connectionState/${inst.instance_name}`);
+      const state = data?.instance?.state || data?.state || null;
+      if (state === 'open') {
+        await pool.query(
+          `UPDATE whatsapp_instances SET status = 'connected', connected_at = NOW() WHERE id = $1`,
+          [inst.id]
+        );
+      }
+      res.json({ state, id: inst.id });
+    } catch {
+      res.json({ state: 'close', id: inst.id });
+    }
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
-app.delete('/api/integrations/whatsapp/disconnect', auth, requireAdmin, async (req, res) => {
+app.delete('/api/whatsapp-instances/:id', auth, requireAdmin, async (req, res) => {
   const { subaccount_id } = req.user;
   try {
     const { rows } = await pool.query(
-      `SELECT evolution_api_url, evolution_api_key, evolution_instance_name FROM subaccount_settings WHERE subaccount_id = $1`,
+      'SELECT * FROM whatsapp_instances WHERE id = $1 AND subaccount_id = $2',
+      [req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Instância não encontrada.' });
+    const inst = rows[0];
+    try {
+      await evoRequest('DELETE', inst.api_url, inst.api_key,
+        `/instance/delete/${inst.instance_name}`);
+    } catch {}
+    await pool.query('DELETE FROM whatsapp_instances WHERE id = $1', [inst.id]);
+    res.status(204).send();
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Legacy single-instance endpoints (backwards compat)
+app.get('/api/integrations/whatsapp', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, instance_name, status FROM whatsapp_instances WHERE subaccount_id = $1 LIMIT 1`,
       [subaccount_id]
     );
-    const cfg = rows[0];
-    if (cfg?.evolution_api_url && cfg?.evolution_instance_name) {
-      try {
-        await evoRequest('DELETE', cfg.evolution_api_url, cfg.evolution_api_key,
-          `/instance/logout/${cfg.evolution_instance_name}`);
-      } catch {}
-    }
-    res.json({ ok: true });
+    const inst = rows[0];
+    res.json({ configured: !!inst, instance_name: inst?.instance_name || null, state: inst?.status === 'connected' ? 'open' : null });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
