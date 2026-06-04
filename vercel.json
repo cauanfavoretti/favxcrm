@@ -11,5 +11,10 @@
     { "src": "/health",    "dest": "/server/index.js" },
     { "src": "/",          "dest": "/index.html" },
     { "src": "/(.*)",      "dest": "/$1" }
-  ]
+  ],
+  "functions": {
+    "server/index.js": {
+      "maxDuration": 30
+    }
+  }
 }
