@@ -207,14 +207,31 @@ async function loadAndRenderChat(convId, conv) {
     const content = chatInput.value.trim();
     if (!content) return;
     chatInput.value = '';
+
+    const container = document.getElementById('chatMessages');
+    const tempId = `temp-${Date.now()}`;
+    if (container) {
+      const row = document.createElement('div');
+      row.className = 'msg-row outgoing';
+      row.id = tempId;
+      row.innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">
+          <div class="msg-bubble">${content}</div>
+          <div class="msg-time">${new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
+        </div>`;
+      container.appendChild(row);
+      container.scrollTop = container.scrollHeight;
+    }
+
     try {
-      await apiFetch(`/api/conversations/${convId}/messages`, {
+      const saved = await apiFetch(`/api/conversations/${convId}/messages`, {
         method: 'POST',
         body: JSON.stringify({ content }),
       });
-      await loadAndRenderChat(convId, conv);
+      if (saved?.sent_at) _lastMsgSentAt = saved.sent_at;
     } catch (err) {
       console.error('[send message]', err.message);
+      document.getElementById(tempId)?.remove();
     }
   }
 
