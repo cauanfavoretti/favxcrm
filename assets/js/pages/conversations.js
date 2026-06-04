@@ -116,7 +116,7 @@ async function loadAndRenderChat(convId, conv) {
       ${msgs.length === 0 ? `
         <div style="text-align:center;color:var(--color-text-3);font-size:13px;padding:24px">Nenhuma mensagem ainda.</div>
       ` : msgs.map(m => `
-      <div class="msg-row ${m.direction === 'inbound' ? 'incoming' : 'outgoing'}">
+      <div class="msg-row ${m.direction === 'inbound' ? 'incoming' : 'outgoing'}" data-msg-id="${m.id}">
         ${m.direction === 'inbound' ? `<div class="conv-avatar" style="width:28px;height:28px;font-size:11px">${(conv?.contact_name||'?')[0].toUpperCase()}</div>` : ''}
         <div style="display:flex;flex-direction:column;gap:3px;align-items:${m.direction==='outbound'?'flex-end':'flex-start'}">
           <div class="msg-bubble">${m.content || ''}</div>
@@ -152,8 +152,11 @@ async function loadAndRenderChat(convId, conv) {
 
       const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
       newMsgs.forEach(m => {
+        // Dedup: ignora mensagens já presentes no DOM (inclui as que enviei)
+        if (container.querySelector(`[data-msg-id="${m.id}"]`)) return;
         const row = document.createElement('div');
         row.className = `msg-row ${m.direction === 'inbound' ? 'incoming' : 'outgoing'}`;
+        row.dataset.msgId = m.id;
         const avatar = m.direction === 'inbound'
           ? `<div class="conv-avatar" style="width:28px;height:28px;font-size:11px">${(conv?.contact_name||'?')[0].toUpperCase()}</div>`
           : '';
@@ -214,16 +217,17 @@ async function loadAndRenderChat(convId, conv) {
 
     const container = document.getElementById('chatMessages');
     const tempId = `temp-${Date.now()}`;
+    let tempRow = null;
     if (container) {
-      const row = document.createElement('div');
-      row.className = 'msg-row outgoing';
-      row.id = tempId;
-      row.innerHTML = `
+      tempRow = document.createElement('div');
+      tempRow.className = 'msg-row outgoing';
+      tempRow.id = tempId;
+      tempRow.innerHTML = `
         <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">
           <div class="msg-bubble">${content}</div>
           <div class="msg-time">${new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
         </div>`;
-      container.appendChild(row);
+      container.appendChild(tempRow);
       container.scrollTop = container.scrollHeight;
     }
 
@@ -232,6 +236,13 @@ async function loadAndRenderChat(convId, conv) {
         method: 'POST',
         body: JSON.stringify({ content }),
       });
+      // Reconciliação: se o polling já inseriu esta mensagem, remove a linha
+      // otimista; senão, marca-a com o ID real para o polling não duplicar.
+      if (tempRow && saved?.id) {
+        const existing = container?.querySelector(`[data-msg-id="${saved.id}"]`);
+        if (existing && existing !== tempRow) tempRow.remove();
+        else tempRow.dataset.msgId = saved.id;
+      }
       if (saved?.sent_at) _lastMsgSentAt = saved.sent_at;
     } catch (err) {
       console.error('[send message]', err.message);
