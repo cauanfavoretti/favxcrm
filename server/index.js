@@ -1752,32 +1752,29 @@ function waExtractContent(data) {
 }
 
 app.post('/api/webhook/evolution', async (req, res) => {
-  res.sendStatus(200); // Always respond fast
-
   const body = req.body || {};
   const eventRaw = (body.event || body.type || '').toLowerCase().replace(/[-_]/g, '.');
-  if (!eventRaw.includes('messages.upsert') && !eventRaw.includes('messages.upsert')) return;
+  if (!eventRaw.includes('messages.upsert') && !eventRaw.includes('message.upsert')) {
+    return res.sendStatus(200);
+  }
 
   const instance = body.instance;
   const data     = body.data || body.messages?.[0];
-  if (!data) return;
+  if (!data) return res.sendStatus(200);
 
   const key = data.key || {};
-  // Skip group messages, status broadcasts, and echoes (fromMe in most cases)
   const jid = key.remoteJid || '';
-  if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') return;
-  // Skip own outbound echoes — they're already saved when we call POST /messages
-  if (key.fromMe) return;
+  if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') return res.sendStatus(200);
+  if (key.fromMe) return res.sendStatus(200);
 
-  const phone   = waCleanPhone(jid);
-  if (!phone) return;
+  const phone = waCleanPhone(jid);
+  if (!phone) return res.sendStatus(200);
 
-  const content = waExtractContent(data);
-  const pushName = data.pushName || null;
+  const content    = waExtractContent(data);
+  const pushName   = data.pushName || null;
   const externalId = key.id || null;
 
   try {
-    // Find subaccount by instance name (multi-instance table first, fallback to settings)
     let cfgRows;
     ({ rows: cfgRows } = await pool.query(
       `SELECT subaccount_id FROM whatsapp_instances WHERE instance_name = $1 LIMIT 1`,
@@ -1789,10 +1786,9 @@ app.post('/api/webhook/evolution', async (req, res) => {
         [instance]
       ));
     }
-    if (!cfgRows.length) return;
+    if (!cfgRows.length) return res.sendStatus(200);
     const subaccount_id = cfgRows[0].subaccount_id;
 
-    // Find or create contact by phone variants
     const variants = waPhoneVariants(phone);
     const placeholders = variants.map((_, i) => `$${i + 2}`).join(',');
     const { rows: contacts } = await pool.query(
@@ -1814,7 +1810,6 @@ app.post('/api/webhook/evolution', async (req, res) => {
       contact_id = newContact[0].id;
     }
 
-    // Update contact name if we have a push name and contact has no name
     if (pushName) {
       await pool.query(
         `UPDATE contacts SET name = $1 WHERE id = $2 AND (name IS NULL OR name = phone OR name = $3)`,
@@ -1822,7 +1817,6 @@ app.post('/api/webhook/evolution', async (req, res) => {
       );
     }
 
-    // Find or create open conversation for this contact (whatsapp channel)
     const { rows: convs } = await pool.query(
       `SELECT id FROM conversations WHERE subaccount_id = $1 AND contact_id = $2 AND channel = 'whatsapp' AND status = 'open' LIMIT 1`,
       [subaccount_id, contact_id]
@@ -1838,23 +1832,20 @@ app.post('/api/webhook/evolution', async (req, res) => {
       conv_id = newConv[0].id;
     }
 
-    // Dedup: skip if this external_id already saved
     if (externalId) {
       const { rows: dup } = await pool.query(
         `SELECT id FROM messages WHERE conversation_id = $1 AND external_id = $2 LIMIT 1`,
         [conv_id, externalId]
       );
-      if (dup.length) return;
+      if (dup.length) return res.sendStatus(200);
     }
 
-    // Save message
     await pool.query(
       `INSERT INTO messages (conversation_id, direction, sender_type, content, external_id)
        VALUES ($1, 'inbound', 'contact', $2, $3)`,
       [conv_id, content, externalId]
     );
 
-    // Update conversation
     await pool.query(
       `UPDATE conversations SET last_message_at = NOW(), unread_count = unread_count + 1 WHERE id = $1`,
       [conv_id]
@@ -1862,6 +1853,8 @@ app.post('/api/webhook/evolution', async (req, res) => {
   } catch (err) {
     console.error('[webhook evolution]', err.message);
   }
+
+  res.sendStatus(200);
 });
 
 // ============================================================
