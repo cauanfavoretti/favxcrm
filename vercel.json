@@ -1,5 +1,6 @@
 {
   "version": 2,
+  "regions": ["gru1"],
   "builds": [
     { "src": "server/index.js", "use": "@vercel/node" },
     { "src": "*.html",          "use": "@vercel/static" },
