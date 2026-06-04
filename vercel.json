@@ -2,7 +2,7 @@
   "version": 2,
   "regions": ["gru1"],
   "builds": [
-    { "src": "server/index.js", "use": "@vercel/node" },
+    { "src": "server/index.js", "use": "@vercel/node", "config": { "maxDuration": 30 } },
     { "src": "*.html",          "use": "@vercel/static" },
     { "src": "assets/**",       "use": "@vercel/static" }
   ],
@@ -11,10 +11,5 @@
     { "src": "/health",    "dest": "/server/index.js" },
     { "src": "/",          "dest": "/index.html" },
     { "src": "/(.*)",      "dest": "/$1" }
-  ],
-  "functions": {
-    "server/index.js": {
-      "maxDuration": 30
-    }
-  }
+  ]
 }
