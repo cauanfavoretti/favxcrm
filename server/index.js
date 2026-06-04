@@ -1774,6 +1774,8 @@ app.post('/api/webhook/evolution', async (req, res) => {
   const pushName   = data.pushName || null;
   const externalId = key.id || null;
 
+  console.log(`[webhook] event="${eventRaw}" instance="${instance}" phone="${phone}" externalId="${externalId}"`);
+
   try {
     let cfgRows;
     ({ rows: cfgRows } = await pool.query(
@@ -1786,8 +1788,12 @@ app.post('/api/webhook/evolution', async (req, res) => {
         [instance]
       ));
     }
-    if (!cfgRows.length) return res.sendStatus(200);
+    if (!cfgRows.length) {
+      console.warn(`[webhook] instância não encontrada: "${instance}"`);
+      return res.sendStatus(200);
+    }
     const subaccount_id = cfgRows[0].subaccount_id;
+    console.log(`[webhook] subaccount_id="${subaccount_id}"`);
 
     const variants = waPhoneVariants(phone);
     const placeholders = variants.map((_, i) => `$${i + 2}`).join(',');
@@ -1851,7 +1857,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
       [conv_id]
     );
   } catch (err) {
-    console.error('[webhook evolution]', err.message);
+    console.error('[webhook evolution] ERRO:', err.message, err.stack);
   }
 
   res.sendStatus(200);
