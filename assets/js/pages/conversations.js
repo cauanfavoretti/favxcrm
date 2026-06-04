@@ -208,6 +208,10 @@ async function loadAndRenderChat(convId, conv) {
     if (!content) return;
     chatInput.value = '';
 
+    // Atualiza o timestamp antes da chamada para o poll não buscar esta mensagem
+    const optimisticTime = new Date().toISOString();
+    _lastMsgSentAt = optimisticTime;
+
     const container = document.getElementById('chatMessages');
     const tempId = `temp-${Date.now()}`;
     if (container) {
@@ -231,6 +235,7 @@ async function loadAndRenderChat(convId, conv) {
       if (saved?.sent_at) _lastMsgSentAt = saved.sent_at;
     } catch (err) {
       console.error('[send message]', err.message);
+      _lastMsgSentAt = optimisticTime;
       document.getElementById(tempId)?.remove();
     }
   }
