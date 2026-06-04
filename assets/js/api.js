@@ -7,7 +7,7 @@ function getToken() {
 }
 
 async function apiFetch(endpoint, options = {}) {
-  const base  = window.location.hostname === 'localhost' ? 'http://localhost:3001' : '';
+  const base  = window.API_URL;
   const token = getToken();
 
   const res = await fetch(`${base}${endpoint}`, {
