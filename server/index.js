@@ -1891,6 +1891,27 @@ app.post('/api/webhook/evolution', async (req, res) => {
       `UPDATE conversations SET last_message_at = NOW(), unread_count = unread_count + ${fromMe ? 0 : 1} WHERE id = $1`,
       [conv_id]
     );
+
+    // Dispara webhooks de agentes com evento message_activity
+    const msgTypeMap = {
+      conversation: 'texto', extendedTextMessage: 'texto',
+      imageMessage: 'imagem', videoMessage: 'video',
+      audioMessage: 'audio', pttMessage: 'audio',
+      documentMessage: 'documento', stickerMessage: 'figurinha',
+    };
+    const rawMsg = data.message || {};
+    const msgType = Object.keys(msgTypeMap).find(k => rawMsg[k]) || 'texto';
+
+    fireAgentWebhooks(subaccount_id, 'message_activity', {
+      contact_name:     pushName || phone,
+      phone_number:     '+' + phone,
+      instance:         instance,
+      message:          content,
+      from_me:          fromMe,
+      message_type:     msgTypeMap[msgType] || 'texto',
+      context:          null,
+      assigned_contact: null,
+    });
   } catch (err) {
     console.error('[webhook evolution] ERRO:', err.message, err.stack);
   }
@@ -2049,6 +2070,101 @@ app.delete('/api/whatsapp-instances/:id', auth, requireAdmin, async (req, res) =
   }
 });
 
+// ============================================================
+// AGENT WEBHOOKS
+// ============================================================
+
+app.get('/api/agent-webhooks', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM agent_webhooks WHERE subaccount_id = $1 ORDER BY created_at DESC`,
+      [subaccount_id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[agent-webhooks GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.post('/api/agent-webhooks', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { name, url, events } = req.body;
+  if (!name?.trim()) return res.status(400).json({ message: 'Nome é obrigatório.' });
+  if (!url?.trim())  return res.status(400).json({ message: 'URL é obrigatória.' });
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO agent_webhooks (subaccount_id, name, url, events)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [subaccount_id, name.trim(), url.trim(), JSON.stringify(events || [])]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error('[agent-webhooks POST]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.put('/api/agent-webhooks/:id', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { name, url, events, is_active } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE agent_webhooks SET
+         name      = COALESCE($1, name),
+         url       = COALESCE($2, url),
+         events    = COALESCE($3, events),
+         is_active = COALESCE($4, is_active),
+         updated_at = NOW()
+       WHERE id = $5 AND subaccount_id = $6 RETURNING *`,
+      [name?.trim()||null, url?.trim()||null,
+       events ? JSON.stringify(events) : null,
+       is_active ?? null,
+       req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Webhook não encontrado.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[agent-webhooks PUT]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.delete('/api/agent-webhooks/:id', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rowCount } = await pool.query(
+      `DELETE FROM agent_webhooks WHERE id = $1 AND subaccount_id = $2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!rowCount) return res.status(404).json({ message: 'Webhook não encontrado.' });
+    res.status(204).send();
+  } catch (err) {
+    console.error('[agent-webhooks DELETE]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+async function fireAgentWebhooks(subaccount_id, event, payload) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT url FROM agent_webhooks
+       WHERE subaccount_id = $1 AND is_active = TRUE AND events @> $2::jsonb`,
+      [subaccount_id, JSON.stringify([event])]
+    );
+    for (const wh of rows) {
+      fetch(wh.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event, timestamp: new Date().toISOString(), ...payload }),
+      }).catch(e => console.warn(`[agent-webhook fire] ${wh.url}:`, e.message));
+    }
+  } catch (err) {
+    console.error('[agent-webhook fire]', err.message);
+  }
+}
+
 // Legacy single-instance endpoints (backwards compat)
 app.get('/api/integrations/whatsapp', auth, async (req, res) => {
   const { subaccount_id } = req.user;
@@ -2076,6 +2192,18 @@ app.get('/api/integrations/whatsapp', auth, async (req, res) => {
     await pool.query(`ALTER TABLE subaccount_settings ADD COLUMN IF NOT EXISTS evolution_instance_name VARCHAR(200)`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS external_id VARCHAR(200)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_external_id ON messages(conversation_id, external_id) WHERE external_id IS NOT NULL`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS agent_webhooks (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        subaccount_id UUID NOT NULL,
+        name          VARCHAR(150) NOT NULL,
+        url           TEXT NOT NULL,
+        events        JSONB NOT NULL DEFAULT '[]',
+        is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS subaccount_settings (
         subaccount_id        UUID PRIMARY KEY REFERENCES subaccounts(id) ON DELETE CASCADE,
