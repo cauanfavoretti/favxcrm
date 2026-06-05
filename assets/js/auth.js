@@ -54,6 +54,15 @@ async function handleLogin(e) {
 
   setLoading('btnLogin', true);
 
+  // Unlock autoplay for the origin while still inside the click gesture.
+  // After navigation to index.html (same origin), audio.play() will be allowed.
+  try {
+    const _ua = new Audio('/assets/audio/riser-1.mp3');
+    _ua.volume = 0;
+    const _up = _ua.play();
+    if (_up && _up.then) _up.then(() => { _ua.pause(); _ua.src = ''; }).catch(() => {});
+  } catch (_) {}
+
   try {
     const apiUrl = window.API_URL || 'http://localhost:3001';
 

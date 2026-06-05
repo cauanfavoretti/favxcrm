@@ -261,6 +261,11 @@
     let fallbackStart = 0, audioOK = false, finished = false;
     const FALLBACK_DUR = 9;
 
+    // Pre-load the chosen track immediately so it's ready when start() runs
+    const _preTrack = pickTrack();
+    audio.src = _preTrack;
+    audio.load();
+
     function reset(){
       lightEl.style.setProperty('--li', 0);
       lightEl.style.setProperty('--ls', 0.35);
@@ -316,7 +321,7 @@
       if (running) return;
       running = true; finished = false;
       reset();
-      audio.src = pickTrack();
+      // src already preloaded; reset position
       audio.currentTime = 0;
       useTime = true; fallbackStart = performance.now();
       const pp = audio.play();
@@ -329,7 +334,15 @@
     start();
 
     function onGesture(){
-      if (!audioOK && !finished){ running=false; start(); }
+      if (!audioOK && !finished){
+        // Sync audio to current animation progress instead of restarting
+        const elapsed = clamp((performance.now() - fallbackStart) / 1000, 0, FALLBACK_DUR);
+        if (isFinite(audio.duration) && audio.duration > 0) {
+          audio.currentTime = clamp(elapsed, 0, audio.duration);
+        }
+        const pp = audio.play();
+        if (pp && pp.then) pp.then(() => { audioOK = true; useTime = true; }).catch(() => {});
+      }
       window.removeEventListener('pointerdown', onGesture);
       window.removeEventListener('keydown',     onGesture);
       window.removeEventListener('touchstart',  onGesture);
