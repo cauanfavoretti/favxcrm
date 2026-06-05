@@ -70,16 +70,24 @@ function _introRender(p) {
   const whiteEl = document.getElementById('i-whiteout');
   if (!lightEl) return;
 
+  // Background light
   const li = smooth(clamp(p*1.05, 0, 1));
   lightEl.style.setProperty('--li', (0.15 + li*0.95).toFixed(3));
   lightEl.style.setProperty('--ls', (0.35 + smooth(p)*0.95).toFixed(3));
 
+  // Logo — driven directly to avoid CSS custom property issues
   if (logoEl) {
     let g = smooth(band(p, 0.12, 0.82));
     if (p > 0.80) g = Math.max(g, 0.7 + smooth(band(p, 0.80, 0.95))*0.3);
-    logoEl.style.setProperty('--g', g.toFixed(3));
+    logoEl.style.opacity   = (0.04 + g*0.96).toFixed(3);
+    logoEl.style.filter    = `brightness(${(0.12+g*0.88).toFixed(3)}) `
+      + `drop-shadow(0 0 ${(g*26).toFixed(1)}px rgba(95,140,255,${(g*0.85).toFixed(3)})) `
+      + `drop-shadow(0 0 ${(g*64).toFixed(1)}px rgba(39,71,214,${(g*0.6).toFixed(3)})) `
+      + `drop-shadow(0 0 ${(g*120).toFixed(1)}px rgba(20,40,140,${(g*0.4).toFixed(3)}))`;
+    logoEl.style.transform = `translate(-50%,-50%) translateY(${((1-g)*14).toFixed(2)}px) scale(${(0.965+g*0.035).toFixed(4)})`;
   }
 
+  // Bloom + whiteout
   const b    = band(p, 0.80, 0.96);
   const fade = band(p, 0.90, 1.0);
   if (bloomEl) {
@@ -121,7 +129,11 @@ function _startIntro(onDone) {
   const bloomEl = document.getElementById('i-bloom');
   const whiteEl = document.getElementById('i-whiteout');
   if (lightEl) { lightEl.style.setProperty('--li', 0); lightEl.style.setProperty('--ls', 0.35); }
-  if (logoEl)  logoEl.style.setProperty('--g', 0);
+  if (logoEl)  {
+    logoEl.style.opacity   = '0.04';
+    logoEl.style.filter    = 'brightness(0.12)';
+    logoEl.style.transform = 'translate(-50%,-50%) translateY(14px) scale(0.965)';
+  }
   if (bloomEl) { bloomEl.style.opacity = 0; bloomEl.style.transform = 'translate(-50%,-50%) scale(0.6)'; }
   if (whiteEl) whiteEl.style.opacity = 0;
 

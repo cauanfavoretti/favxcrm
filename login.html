@@ -20,12 +20,10 @@
       animation:i-drift 14s ease-in-out infinite alternate}
     @keyframes i-drift{from{transform:translate(-52%,-50%) scale(1)}to{transform:translate(-48%,-52%) scale(1.08)}}
     .i-logo{position:absolute;left:50%;top:50%;width:clamp(180px,28vw,440px);height:auto;
-      transform:translate(-50%,-50%) translateY(calc((1 - var(--g,0))*14px)) scale(calc(.965+var(--g,0)*.035));
-      opacity:calc(.04+var(--g,0)*.96);user-select:none;pointer-events:none;z-index:3;
-      filter:brightness(calc(.12+var(--g,0)*.88))
-        drop-shadow(0 0 calc(var(--g,0)*26px) rgba(95,140,255,calc(var(--g,0)*.85)))
-        drop-shadow(0 0 calc(var(--g,0)*64px) rgba(39,71,214,calc(var(--g,0)*.6)))
-        drop-shadow(0 0 calc(var(--g,0)*120px) rgba(20,40,140,calc(var(--g,0)*.4)))}
+      transform:translate(-50%,-50%) translateY(14px) scale(.965);
+      opacity:.04;filter:brightness(.12);
+      user-select:none;pointer-events:none;z-index:3;
+      will-change:opacity,filter,transform}
     .i-bloom{position:absolute;left:50%;top:52%;width:60vmax;height:60vmax;border-radius:50%;
       transform:translate(-50%,-50%) scale(.6);opacity:0;z-index:4;pointer-events:none;mix-blend-mode:screen;
       background:radial-gradient(circle at 50% 50%,rgba(232,240,255,.95) 0%,rgba(150,180,255,.6) 22%,rgba(60,100,240,.25) 42%,rgba(20,40,140,0) 62%)}
