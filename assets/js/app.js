@@ -438,8 +438,25 @@ function initSidebarUser() {
 // ---- Notificações ----
 let _notifCache = [];
 let _notifInitialized = false;
-const _notifAudio = new Audio('assets/audio/notification.mp3');
+let _audioUnlocked = false;
+
+const _notifAudio = new Audio('/assets/audio/notification.mp3');
+_notifAudio.preload = 'auto';
 _notifAudio.volume = 0.6;
+
+// Browsers bloqueiam autoplay até o primeiro clique do usuário.
+// No primeiro clique de qualquer lugar, tocamos e pausamos instantaneamente
+// para "desbloquear" o contexto de áudio para chamadas futuras.
+function _unlockAudio() {
+  if (_audioUnlocked) return;
+  _notifAudio.play().then(() => {
+    _notifAudio.pause();
+    _notifAudio.currentTime = 0;
+    _audioUnlocked = true;
+  }).catch(() => {});
+  document.removeEventListener('click', _unlockAudio, true);
+}
+document.addEventListener('click', _unlockAudio, true);
 
 function _timeAgo(dateStr) {
   const s = Math.floor((Date.now() - new Date(dateStr)) / 1000);
