@@ -1169,11 +1169,20 @@ tbody tr:hover { background: var(--color-surface-2); }
   display: flex;
   align-items: flex-end;
   gap: 8px;
+  width: 100%;
 }
 .msg-row.outgoing { flex-direction: row-reverse; }
 
-.msg-bubble {
+.msg-content {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   max-width: 68%;
+}
+.msg-row.incoming .msg-content { align-items: flex-start; }
+.msg-row.outgoing .msg-content { align-items: flex-end; }
+
+.msg-bubble {
   padding: 12px 18px;
   border-radius: 18px;
   font-size: 13.5px;

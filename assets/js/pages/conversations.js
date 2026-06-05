@@ -142,7 +142,7 @@ async function loadAndRenderChat(convId, conv) {
       ` : msgs.map(m => `
       <div class="msg-row ${m.direction === 'inbound' ? 'incoming' : 'outgoing'}" data-msg-id="${m.id}">
         ${m.direction === 'inbound' ? `<div class="conv-avatar" style="width:28px;height:28px;font-size:11px">${(conv?.contact_name||'?')[0].toUpperCase()}</div>` : ''}
-        <div style="display:flex;flex-direction:column;gap:3px;align-items:${m.direction==='outbound'?'flex-end':'flex-start'}">
+        <div class="msg-content">
           <div class="msg-bubble">${m.content || ''}</div>
           <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
         </div>
@@ -203,7 +203,7 @@ async function loadAndRenderChat(convId, conv) {
           ? `<div class="conv-avatar" style="width:28px;height:28px;font-size:11px">${(conv?.contact_name||'?')[0].toUpperCase()}</div>`
           : '';
         row.innerHTML = `${avatar}
-          <div style="display:flex;flex-direction:column;gap:3px;align-items:${m.direction==='outbound'?'flex-end':'flex-start'}">
+          <div class="msg-content">
             <div class="msg-bubble">${m.content || ''}</div>
             <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
           </div>`;
@@ -287,7 +287,7 @@ async function loadAndRenderChat(convId, conv) {
       tempRow.className = 'msg-row outgoing';
       tempRow.id = tempId;
       tempRow.innerHTML = `
-        <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">
+        <div class="msg-content">
           <div class="msg-bubble">${content}</div>
           <div class="msg-time">${new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
         </div>`;
