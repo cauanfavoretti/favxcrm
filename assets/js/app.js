@@ -406,7 +406,7 @@ initSidebarUser();
 initSubaccountSwitcher();
 initNotifications();
 
-checkSubaccountOrNavigate();
+(window.__favxIntroPromise || Promise.resolve()).then(() => checkSubaccountOrNavigate());
 
 // ============================================================
 // SUBACCOUNT PICKER

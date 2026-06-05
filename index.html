@@ -235,6 +235,9 @@
   </div>
 
   <script>
+  // Resolved when the intro overlay is removed; app.js waits on this before showing pickers.
+  window.__favxIntroPromise = new Promise(resolve => { window.__favxIntroResolve = resolve; });
+
   (function(){
     const TRACKS = ['/assets/audio/riser-1.mp3', '/assets/audio/riser-2.mp3'];
 
@@ -295,10 +298,13 @@
       if (finished) return;
       finished = true;
       const wrap = document.getElementById('intro-wrap');
-      if (!wrap) return;
+      if (!wrap) { window.__favxIntroResolve?.(); return; }
       wrap.style.transition = 'opacity 0.65s ease';
       wrap.style.opacity = '0';
-      setTimeout(() => { if (wrap.parentNode) wrap.parentNode.removeChild(wrap); }, 700);
+      setTimeout(() => {
+        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        window.__favxIntroResolve?.();
+      }, 700);
     }
 
     function finish(){
