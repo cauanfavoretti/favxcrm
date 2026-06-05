@@ -75,7 +75,6 @@ async function handleLogin(e) {
     storage.setItem('favx_refresh_token', data.refreshToken);
     storage.setItem('favx_user', JSON.stringify(data.user));
 
-    sessionStorage.setItem('favx_show_welcome', '1');
     window.location.href = 'index.html';
 
   } catch (err) {
