@@ -912,7 +912,11 @@ app.get('/api/conversations/:id/messages', auth, async (req, res) => {
     if (since) { params.push(since); sinceClause = ` AND sent_at > $${params.length}`; }
 
     const { rows } = await pool.query(
-      `SELECT * FROM messages WHERE conversation_id = $1${sinceClause} ORDER BY sent_at ASC LIMIT 200`,
+      `SELECT m.*, u.name AS sender_name
+       FROM messages m
+       LEFT JOIN users u ON u.id = m.sender_id AND m.sender_type = 'user'
+       WHERE m.conversation_id = $1${sinceClause}
+       ORDER BY m.sent_at ASC LIMIT 200`,
       params
     );
     res.json(rows);
@@ -924,7 +928,7 @@ app.get('/api/conversations/:id/messages', auth, async (req, res) => {
 
 app.post('/api/conversations/:id/messages', auth, async (req, res) => {
   const { subaccount_id, sub: user_id } = req.user;
-  const { content, instance_id } = req.body;
+  const { content, instance_id, is_internal } = req.body;
   if (!content) return res.status(400).json({ message: 'Conteúdo é obrigatório.' });
 
   try {
@@ -940,11 +944,23 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
     if (!conv.length) return res.status(404).json({ message: 'Conversa não encontrada.' });
 
     const { rows } = await pool.query(
-      `INSERT INTO messages (conversation_id, direction, sender_type, sender_id, content)
-       VALUES ($1, 'outbound', 'user', $2, $3) RETURNING *`,
-      [req.params.id, user_id, content]
+      `INSERT INTO messages (conversation_id, direction, sender_type, sender_id, content, is_internal)
+       VALUES ($1, 'outbound', 'user', $2, $3, $4) RETURNING *`,
+      [req.params.id, user_id, content, !!is_internal]
     );
+
+    // Busca sender_name para retornar ao cliente (necessário para renderização imediata)
+    const { rows: senderRows } = await pool.query(
+      `SELECT name AS sender_name FROM users WHERE id = $1`, [user_id]
+    );
+    const savedMsg = { ...rows[0], sender_name: senderRows[0]?.sender_name || null };
+
     await pool.query('UPDATE conversations SET last_message_at = NOW() WHERE id = $1', [req.params.id]);
+
+    // Mensagens internas não são enviadas ao contato
+    if (is_internal) {
+      return res.status(201).json(savedMsg);
+    }
 
     // Send via Evolution API if WhatsApp conversation
     if (conv[0].channel === 'whatsapp' && conv[0].contact_phone) {
@@ -1005,7 +1021,7 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
       }
     }
 
-    res.status(201).json(rows[0]);
+    res.status(201).json(savedMsg);
   } catch (err) {
     console.error('[messages POST]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
@@ -2336,6 +2352,7 @@ app.get('/api/integrations/whatsapp', auth, async (req, res) => {
     await pool.query(`ALTER TABLE subaccount_settings ADD COLUMN IF NOT EXISTS evolution_api_key TEXT`);
     await pool.query(`ALTER TABLE subaccount_settings ADD COLUMN IF NOT EXISTS evolution_instance_name VARCHAR(200)`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS external_id VARCHAR(200)`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_internal BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_external_id ON messages(conversation_id, external_id) WHERE external_id IS NOT NULL`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS conversation_followers (

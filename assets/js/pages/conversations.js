@@ -3,6 +3,7 @@ let _pollMsgInterval = null;
 let _pollListInterval = null;
 let _lastMsgSentAt   = null;
 let _convUsers       = [];
+let _isInternalMode  = false;
 
 function _convStopPolling() {
   clearInterval(_pollMsgInterval);
@@ -225,9 +226,26 @@ async function renderInfoPanel(convId) {
   });
 }
 
+const _shieldSvg = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;
+
+function renderMessageHtml(m, contactName) {
+  const isInternal = !!m.is_internal;
+  const isInbound  = m.direction === 'inbound';
+  return `
+    <div class="msg-row ${isInbound ? 'incoming' : 'outgoing'}" data-msg-id="${m.id}">
+      ${isInbound ? `<div class="conv-avatar" style="width:28px;height:28px;font-size:11px">${(contactName||'?')[0].toUpperCase()}</div>` : ''}
+      <div class="msg-content">
+        ${isInternal ? `<div class="internal-note-label">${_shieldSvg} Nota interna${m.sender_name ? ` · ${m.sender_name}` : ''}</div>` : ''}
+        <div class="msg-bubble${isInternal ? ' internal' : ''}">${m.content || ''}</div>
+        <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
+      </div>
+    </div>`;
+}
+
 async function loadAndRenderChat(convId, conv) {
   _convStopPolling();
-  _lastMsgSentAt = null;
+  _lastMsgSentAt  = null;
+  _isInternalMode = false;
 
   const chatArea = document.getElementById('chatArea');
   if (!chatArea) return;
@@ -281,19 +299,16 @@ async function loadAndRenderChat(convId, conv) {
     <div class="chat-messages" id="chatMessages">
       ${msgs.length === 0 ? `
         <div style="text-align:center;color:var(--color-text-3);font-size:13px;padding:24px">Nenhuma mensagem ainda.</div>
-      ` : msgs.map(m => `
-      <div class="msg-row ${m.direction === 'inbound' ? 'incoming' : 'outgoing'}" data-msg-id="${m.id}">
-        ${m.direction === 'inbound' ? `<div class="conv-avatar" style="width:28px;height:28px;font-size:11px">${(conv?.contact_name||'?')[0].toUpperCase()}</div>` : ''}
-        <div class="msg-content">
-          <div class="msg-bubble">${m.content || ''}</div>
-          <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
-        </div>
-      </div>
-      `).join('')}
+      ` : msgs.map(m => renderMessageHtml(m, conv?.contact_name)).join('')}
     </div>
-    <div class="chat-input-area">
-      <div style="display:flex;gap:6px">
-        <button class="btn btn-ghost btn-sm" style="padding:6px"><i data-lucide="paperclip" style="width:16px;height:16px"></i></button>
+    <div class="chat-input-area" id="chatInputArea">
+      <div id="mentionDropdown" class="mention-dropdown" style="display:none"></div>
+      <div style="display:flex;gap:4px;align-items:center">
+        <button class="btn btn-ghost btn-sm" style="padding:6px" title="Anexar"><i data-lucide="paperclip" style="width:16px;height:16px"></i></button>
+        <button id="internalToggle" class="internal-toggle-btn" title="Mensagem interna — não enviada ao contato">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Interno
+        </button>
       </div>
       <textarea class="chat-input" id="chatInput" rows="1" placeholder="Digite uma mensagem..."></textarea>
       <button class="chat-send-btn" id="chatSendBtn"><i data-lucide="send" style="width:16px;height:16px"></i></button>
@@ -306,6 +321,58 @@ async function loadAndRenderChat(convId, conv) {
 
   // Carrega o painel de proprietário/seguidores
   renderInfoPanel(convId);
+
+  // Botão de mensagem interna
+  const internalToggle  = document.getElementById('internalToggle');
+  const chatInputArea   = document.getElementById('chatInputArea');
+  const mentionDropdown = document.getElementById('mentionDropdown');
+
+  internalToggle?.addEventListener('click', () => {
+    _isInternalMode = !_isInternalMode;
+    internalToggle.classList.toggle('active', _isInternalMode);
+    chatInputArea.classList.toggle('internal-mode', _isInternalMode);
+    const chatInput = document.getElementById('chatInput');
+    if (chatInput) chatInput.placeholder = _isInternalMode
+      ? 'Nota interna — visível apenas no CRM. Use @ para mencionar usuários...'
+      : 'Digite uma mensagem...';
+    chatInput?.focus();
+  });
+
+  // @menção
+  function closeMentionDropdown() {
+    if (mentionDropdown) mentionDropdown.style.display = 'none';
+  }
+
+  function handleMentionInput(textarea) {
+    const text   = textarea.value;
+    const cursor = textarea.selectionStart;
+    const before = text.slice(0, cursor);
+    const atIdx  = before.lastIndexOf('@');
+    if (atIdx === -1 || before.slice(atIdx).includes(' ')) { closeMentionDropdown(); return; }
+    const query = before.slice(atIdx + 1).toLowerCase();
+    const users = (_convUsers || []).filter(u => u.name.toLowerCase().includes(query));
+    if (!users.length) { closeMentionDropdown(); return; }
+
+    mentionDropdown.innerHTML = users.map(u => `
+      <button class="mention-opt" data-name="${u.name}">
+        <div class="assign-mini-avatar">${u.name[0].toUpperCase()}</div>
+        ${u.name}
+      </button>`).join('');
+    mentionDropdown.style.display = 'block';
+
+    mentionDropdown.querySelectorAll('.mention-opt').forEach(btn => {
+      btn.addEventListener('mousedown', e => {
+        e.preventDefault();
+        const name  = btn.dataset.name;
+        const after = text.slice(cursor);
+        textarea.value = before.slice(0, atIdx) + '@' + name + ' ' + after;
+        textarea.dispatchEvent(new Event('input'));
+        textarea.focus();
+        textarea.setSelectionRange(atIdx + name.length + 2, atIdx + name.length + 2);
+        closeMentionDropdown();
+      });
+    });
+  }
 
   // Instance switcher logic
   const instBtn = document.getElementById('instSwitchBtn');
@@ -339,19 +406,10 @@ async function loadAndRenderChat(convId, conv) {
 
       const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
       newMsgs.forEach(m => {
-        // Dedup: ignora mensagens já presentes no DOM (inclui as que enviei)
         if (container.querySelector(`[data-msg-id="${m.id}"]`)) return;
-        const row = document.createElement('div');
-        row.className = `msg-row ${m.direction === 'inbound' ? 'incoming' : 'outgoing'}`;
-        row.dataset.msgId = m.id;
-        const avatar = m.direction === 'inbound'
-          ? `<div class="conv-avatar" style="width:28px;height:28px;font-size:11px">${(conv?.contact_name||'?')[0].toUpperCase()}</div>`
-          : '';
-        row.innerHTML = `${avatar}
-          <div class="msg-content">
-            <div class="msg-bubble">${m.content || ''}</div>
-            <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
-          </div>`;
+        const tmp = document.createElement('div');
+        tmp.innerHTML = renderMessageHtml(m, conv?.contact_name);
+        const row = tmp.firstElementChild;
         container.appendChild(row);
       });
       if (wasAtBottom) container.scrollTop = container.scrollHeight;
@@ -419,21 +477,44 @@ async function loadAndRenderChat(convId, conv) {
   const sendBtn   = document.getElementById('chatSendBtn');
   const chatInput = document.getElementById('chatInput');
 
+  chatInput?.addEventListener('input', () => {
+    chatInput.style.height = 'auto';
+    chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+    if (_isInternalMode) handleMentionInput(chatInput);
+    else closeMentionDropdown();
+  });
+
+  chatInput?.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeMentionDropdown(); return; }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (mentionDropdown?.style.display !== 'none') { e.preventDefault(); return; }
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
   async function sendMessage() {
     const content = chatInput.value.trim();
     if (!content) return;
     chatInput.value = '';
+    chatInput.style.height = 'auto';
+    closeMentionDropdown();
 
-    const container = document.getElementById('chatMessages');
-    const tempId = `temp-${Date.now()}`;
+    const isInternal = _isInternalMode;
+    const container  = document.getElementById('chatMessages');
+    const tempId     = `temp-${Date.now()}`;
     let tempRow = null;
     if (container) {
       tempRow = document.createElement('div');
       tempRow.className = 'msg-row outgoing';
       tempRow.id = tempId;
+      const internalLabel = isInternal
+        ? `<div class="internal-note-label">${_shieldSvg} Nota interna</div>`
+        : '';
       tempRow.innerHTML = `
         <div class="msg-content">
-          <div class="msg-bubble">${content}</div>
+          ${internalLabel}
+          <div class="msg-bubble${isInternal ? ' internal' : ''}">${content}</div>
           <div class="msg-time">${new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
         </div>`;
       container.appendChild(tempRow);
@@ -443,10 +524,8 @@ async function loadAndRenderChat(convId, conv) {
     try {
       const saved = await apiFetch(`/api/conversations/${convId}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ content, instance_id: activeInstanceId }),
+        body: JSON.stringify({ content, instance_id: activeInstanceId, is_internal: isInternal }),
       });
-      // Reconciliação: se o polling já inseriu esta mensagem, remove a linha
-      // otimista; senão, marca-a com o ID real para o polling não duplicar.
       if (tempRow && saved?.id) {
         const existing = container?.querySelector(`[data-msg-id="${saved.id}"]`);
         if (existing && existing !== tempRow) tempRow.remove();
@@ -460,9 +539,6 @@ async function loadAndRenderChat(convId, conv) {
   }
 
   sendBtn?.addEventListener('click', sendMessage);
-  chatInput?.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-  });
 }
 
 window.unloadConversations = function() {
