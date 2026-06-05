@@ -437,6 +437,9 @@ function initSidebarUser() {
 
 // ---- Notificações ----
 let _notifCache = [];
+let _notifInitialized = false;
+const _notifAudio = new Audio('assets/audio/notification.mp3');
+_notifAudio.volume = 0.6;
 
 function _timeAgo(dateStr) {
   const s = Math.floor((Date.now() - new Date(dateStr)) / 1000);
@@ -498,6 +501,14 @@ async function _fetchNotifications() {
   try {
     const notifs = await apiFetch('/api/notifications');
     if (!Array.isArray(notifs)) return;
+
+    // Toca som apenas quando chegam novas notificações (não na carga inicial)
+    if (_notifInitialized && notifs.length > _notifCache.length) {
+      _notifAudio.currentTime = 0;
+      _notifAudio.play().catch(() => {});
+    }
+    _notifInitialized = true;
+
     _notifCache = notifs;
     _updateNotifBadge(notifs.length);
     const dropdown = document.getElementById('notifDropdown');
