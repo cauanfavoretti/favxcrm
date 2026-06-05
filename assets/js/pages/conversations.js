@@ -491,7 +491,7 @@ async function loadAndRenderChat(convId, conv) {
   chatInput?.addEventListener('keydown', e => {
     if (e.key === 'Escape') { closeMentionDropdown(); return; }
     if (e.key === 'Enter' && !e.shiftKey) {
-      if (mentionDropdown?.style.display !== 'none') { e.preventDefault(); return; }
+      if (mentionDropdown && mentionDropdown.style.display !== 'none') { e.preventDefault(); return; }
       e.preventDefault();
       sendMessage();
     }

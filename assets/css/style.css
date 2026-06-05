@@ -1299,14 +1299,22 @@ tbody tr:hover { background: var(--color-surface-2); }
 }
 
 .msg-bubble.internal {
-  background: #ede9fe;
-  color: #4c1d95;
   border: 1px solid #c4b5fd;
   border-bottom-left-radius: 4px;
 }
+/* Higher specificity (0,3,0) beats .msg-row.outgoing .msg-bubble (0,3,0) via source order */
+.msg-row .msg-bubble.internal {
+  background: #ede9fe;
+  color: #4c1d95;
+}
+/* (0,4,0) — wins for outgoing shape */
 .msg-row.outgoing .msg-bubble.internal {
   border-bottom-left-radius: 18px;
   border-bottom-right-radius: 4px;
+}
+/* Fix timestamp color on light lavender background */
+.msg-row.outgoing .msg-bubble.internal + .msg-time {
+  color: rgba(124,58,237,0.55);
 }
 
 .internal-note-label {
