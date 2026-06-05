@@ -943,12 +943,11 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
 
     // Send via Evolution API if WhatsApp conversation
     if (conv[0].channel === 'whatsapp' && conv[0].contact_phone) {
-      // Busca instância: primeiro em whatsapp_instances, depois em subaccount_settings
       const { rows: instRows } = await pool.query(
         `SELECT api_url AS evolution_api_url, api_key AS evolution_api_key, instance_name AS evolution_instance_name
          FROM whatsapp_instances
-         WHERE subaccount_id = $1 AND status = 'connected'
-         ORDER BY connected_at DESC LIMIT 1`,
+         WHERE subaccount_id = $1
+         ORDER BY connected_at DESC NULLS LAST, created_at DESC LIMIT 1`,
         [subaccount_id]
       );
       let cfg = instRows[0];
@@ -962,12 +961,19 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
       }
       if (cfg?.evolution_api_url && cfg?.evolution_instance_name) {
         const number = conv[0].contact_phone.replace(/\D/g, '');
-        evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
-          `/message/sendText/${cfg.evolution_instance_name}`,
-          { number, text: content }
-        ).catch(e => console.warn('[evo send]', e.message));
-      } else {
-        console.warn('[evo send] nenhuma instância WhatsApp conectada para subaccount_id:', subaccount_id);
+        try {
+          const evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
+            `/message/sendText/${cfg.evolution_instance_name}`,
+            { number, text: content }
+          );
+          // Salva o ID retornado pela Evolution para deduplicar o echo do webhook
+          const externalId = evoResp?.key?.id;
+          if (externalId) {
+            await pool.query(`UPDATE messages SET external_id = $1 WHERE id = $2`, [externalId, rows[0].id]);
+          }
+        } catch (e) {
+          console.warn('[evo send] erro:', e.message);
+        }
       }
     }
 
@@ -1782,7 +1788,6 @@ app.post('/api/webhook/evolution', async (req, res) => {
   const key = data.key || {};
   const jid = key.remoteJid || '';
   if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') return res.sendStatus(200);
-  if (key.fromMe) return res.sendStatus(200);
 
   const phone = waCleanPhone(jid);
   if (!phone) return res.sendStatus(200);
