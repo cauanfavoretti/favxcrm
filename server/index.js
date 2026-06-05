@@ -847,9 +847,11 @@ app.get('/api/conversations', auth, async (req, res) => {
     if (contact_id) { params.push(contact_id); where += ` AND cv.contact_id = $${params.length}`; }
     const { rows } = await pool.query(
       `SELECT cv.id, cv.status, cv.unread_count, cv.last_message_at, cv.channel, cv.contact_id,
-              c.name AS contact_name, c.phone AS contact_phone
+              cv.assigned_to, c.name AS contact_name, c.phone AS contact_phone,
+              u.name AS owner_name
        FROM conversations cv
        JOIN contacts c ON c.id = cv.contact_id
+       LEFT JOIN users u ON u.id = cv.assigned_to
        ${where}
        ORDER BY cv.last_message_at DESC NULLS LAST, cv.created_at DESC
        LIMIT 60`,
@@ -927,8 +929,11 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
 
   try {
     const { rows: conv } = await pool.query(
-      `SELECT cv.id, cv.channel, c.phone AS contact_phone, c.name AS contact_name
-       FROM conversations cv JOIN contacts c ON c.id = cv.contact_id
+      `SELECT cv.id, cv.channel, c.phone AS contact_phone, c.name AS contact_name,
+              u.name AS owner_name
+       FROM conversations cv
+       JOIN contacts c ON c.id = cv.contact_id
+       LEFT JOIN users u ON u.id = cv.assigned_to
        WHERE cv.id = $1 AND cv.subaccount_id = $2`,
       [req.params.id, subaccount_id]
     );
@@ -995,7 +1000,7 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
           from_me:          true,
           message_type:     'texto',
           context:          null,
-          assigned_contact: null,
+          assigned_contact: conv[0].owner_name || null,
         });
       }
     }
@@ -1016,6 +1021,99 @@ app.post('/api/conversations/:id/read', auth, async (req, res) => {
     );
     res.json({ ok: true });
   } catch { res.json({ ok: true }); }
+});
+
+// Lista usuários disponíveis para atribuição (sem exigir admin)
+app.get('/api/conversations/members', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, email, role FROM users WHERE subaccount_id = $1 AND is_active = TRUE ORDER BY name ASC`,
+      [subaccount_id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[conv members GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// Retorna proprietário e seguidores de uma conversa
+app.get('/api/conversations/:id/assignment', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows: convRows } = await pool.query(
+      `SELECT cv.assigned_to, u.id AS owner_id, u.name AS owner_name, u.email AS owner_email
+       FROM conversations cv
+       LEFT JOIN users u ON u.id = cv.assigned_to
+       WHERE cv.id = $1 AND cv.subaccount_id = $2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!convRows.length) return res.status(404).json({ message: 'Conversa não encontrada.' });
+
+    const { rows: followerRows } = await pool.query(
+      `SELECT u.id, u.name, u.email
+       FROM conversation_followers cf
+       JOIN users u ON u.id = cf.user_id
+       WHERE cf.conversation_id = $1
+       ORDER BY cf.added_at ASC`,
+      [req.params.id]
+    );
+
+    const owner = convRows[0].owner_id
+      ? { id: convRows[0].owner_id, name: convRows[0].owner_name, email: convRows[0].owner_email }
+      : null;
+
+    res.json({ owner, followers: followerRows });
+  } catch (err) {
+    console.error('[conv assignment GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// Define o proprietário de uma conversa
+app.put('/api/conversations/:id/owner', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { user_id } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE conversations SET assigned_to = $1 WHERE id = $2 AND subaccount_id = $3 RETURNING id`,
+      [user_id || null, req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Conversa não encontrada.' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[conv owner PUT]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// Substitui a lista completa de seguidores de uma conversa
+app.put('/api/conversations/:id/followers', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { user_ids } = req.body;
+  if (!Array.isArray(user_ids)) return res.status(400).json({ message: 'user_ids deve ser um array.' });
+  try {
+    const { rows: convRows } = await pool.query(
+      `SELECT id FROM conversations WHERE id = $1 AND subaccount_id = $2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!convRows.length) return res.status(404).json({ message: 'Conversa não encontrada.' });
+
+    await pool.query(`DELETE FROM conversation_followers WHERE conversation_id = $1`, [req.params.id]);
+
+    if (user_ids.length) {
+      const values = user_ids.map((uid, i) => `($1, $${i + 2})`).join(',');
+      await pool.query(
+        `INSERT INTO conversation_followers (conversation_id, user_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+        [req.params.id, ...user_ids]
+      );
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[conv followers PUT]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
 });
 
 // ============================================================
@@ -1903,6 +2001,13 @@ app.post('/api/webhook/evolution', async (req, res) => {
       [conv_id]
     );
 
+    // Busca o proprietário da conversa para o payload do webhook
+    const { rows: ownerRows } = await pool.query(
+      `SELECT u.name FROM conversations cv LEFT JOIN users u ON u.id = cv.assigned_to WHERE cv.id = $1`,
+      [conv_id]
+    );
+    const ownerName = ownerRows[0]?.name || null;
+
     // Dispara webhooks de agentes com evento message_activity
     const msgTypeMap = {
       conversation: 'texto', extendedTextMessage: 'texto',
@@ -1921,7 +2026,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
       from_me:          fromMe,
       message_type:     msgTypeMap[msgType] || 'texto',
       context:          null,
-      assigned_contact: null,
+      assigned_contact: ownerName,
     });
   } catch (err) {
     console.error('[webhook evolution] ERRO:', err.message, err.stack);
@@ -2203,6 +2308,15 @@ app.get('/api/integrations/whatsapp', auth, async (req, res) => {
     await pool.query(`ALTER TABLE subaccount_settings ADD COLUMN IF NOT EXISTS evolution_instance_name VARCHAR(200)`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS external_id VARCHAR(200)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_external_id ON messages(conversation_id, external_id) WHERE external_id IS NOT NULL`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS conversation_followers (
+        conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        added_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (conversation_id, user_id)
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_conv_followers_conv ON conversation_followers(conversation_id)`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS agent_webhooks (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),

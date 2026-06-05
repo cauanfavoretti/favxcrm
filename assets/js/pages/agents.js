@@ -180,7 +180,7 @@ function openWebhookModal(existing) {
                       <span>from_me</span>
                       <span>message_type <span style="color:var(--color-text-3)">(texto / audio / imagem / video / documento)</span></span>
                       <span style="color:var(--color-text-3)">context <span style="font-size:10px">(em breve)</span></span>
-                      <span style="color:var(--color-text-3)">assigned_contact <span style="font-size:10px">(em breve)</span></span>
+                      <span>assigned_contact <span style="color:var(--color-text-3);font-size:11px">(nome do proprietário da conversa)</span></span>
                     </div>
                   </div>
                 </div>

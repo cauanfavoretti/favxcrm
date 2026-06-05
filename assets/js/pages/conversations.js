@@ -2,6 +2,7 @@ let activeConvId     = null;
 let _pollMsgInterval = null;
 let _pollListInterval = null;
 let _lastMsgSentAt   = null;
+let _convUsers       = [];
 
 function _convStopPolling() {
   clearInterval(_pollMsgInterval);
@@ -70,6 +71,13 @@ window.pageConversations = function(data) {
     <div class="chat-area" id="chatArea">
       ${activeConvId ? '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--color-text-3);font-size:13px">Selecione uma conversa</div>' : renderEmptyChat()}
     </div>
+
+    <!-- INFO PANEL -->
+    <div class="conv-info-panel" id="convInfoPanel">
+      <div style="padding:24px 16px;text-align:center;color:var(--color-text-3);font-size:12px">
+        Selecione uma conversa
+      </div>
+    </div>
   </div>
   `;
 };
@@ -81,6 +89,140 @@ function renderEmptyChat() {
       <p style="font-size:13px">Selecione uma conversa para começar</p>
     </div>
   `;
+}
+
+async function renderInfoPanel(convId) {
+  const panel = document.getElementById('convInfoPanel');
+  if (!panel) return;
+
+  panel.innerHTML = `<div style="padding:20px;display:flex;align-items:center;justify-content:center"><div style="width:20px;height:20px;border:2px solid #e5e7eb;border-top-color:var(--color-accent);border-radius:50%;animation:spin 0.7s linear infinite"></div></div>`;
+
+  const [assignment, freshUsers] = await Promise.all([
+    apiFetch(`/api/conversations/${convId}/assignment`).catch(() => ({ owner: null, followers: [] })),
+    _convUsers.length ? Promise.resolve(_convUsers) : apiFetch('/api/conversations/members').catch(() => []),
+  ]);
+  if (!_convUsers.length && Array.isArray(freshUsers)) _convUsers = freshUsers;
+  const allUsers = _convUsers;
+
+  const owner = assignment.owner || null;
+  const followers = Array.isArray(assignment.followers) ? assignment.followers : [];
+  const followerIds = new Set(followers.map(f => f.id));
+  const nonFollowers = allUsers.filter(u => !followerIds.has(u.id) && u.id !== owner?.id);
+
+  panel.innerHTML = `
+    <div class="conv-info-section">
+      <div class="conv-info-section-title">Proprietário</div>
+      <div style="position:relative">
+        <button id="ownerToggle" style="width:100%;border:none;background:none;cursor:pointer;display:flex;align-items:center;gap:8px;border-radius:var(--radius-sm);padding:6px 8px;text-align:left">
+          <div class="assign-mini-avatar">${owner ? owner.name[0].toUpperCase() : '?'}</div>
+          <span style="flex:1;font-size:13px;color:var(--color-text-${owner ? '1' : '3'})">${owner ? owner.name : 'Sem proprietário'}</span>
+          <i data-lucide="chevron-down" style="width:12px;height:12px;color:var(--color-text-3);flex-shrink:0"></i>
+        </button>
+        <div id="ownerDropdown" style="display:none;position:absolute;top:calc(100% + 2px);left:0;right:0;background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.12);z-index:300;padding:4px;max-height:220px;overflow-y:auto">
+          <button class="owner-opt" data-id="" style="display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;border:none;background:none;cursor:pointer;border-radius:6px;font-size:13px;color:var(--color-text-3);text-align:left">
+            <div class="assign-mini-avatar" style="opacity:0.4">?</div>
+            Sem proprietário
+          </button>
+          ${allUsers.map(u => `
+            <button class="owner-opt" data-id="${u.id}" style="display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;border:none;background:none;cursor:pointer;border-radius:6px;font-size:13px;color:var(--color-text-1);text-align:left;${owner?.id === u.id ? 'background:var(--color-accent-lite);' : ''}">
+              <div class="assign-mini-avatar">${u.name[0].toUpperCase()}</div>
+              ${u.name}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+
+    <div class="conv-info-section">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div class="conv-info-section-title" style="margin-bottom:0">Seguidores${followers.length > 0 ? ` (${followers.length})` : ''}</div>
+        <button id="addFollowerBtn" class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;height:auto;line-height:1.6">+ Adicionar</button>
+      </div>
+      <div style="position:relative">
+        <div id="followersList">
+          ${followers.length === 0
+            ? `<div style="font-size:12px;color:var(--color-text-3);padding:4px 8px">Nenhum seguidor ainda.</div>`
+            : followers.map(f => `
+              <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--radius-sm)">
+                <div class="assign-mini-avatar">${f.name[0].toUpperCase()}</div>
+                <span style="flex:1;font-size:13px;color:var(--color-text-1)">${f.name}</span>
+                <button class="remove-follower-btn" data-id="${f.id}" style="border:none;background:none;cursor:pointer;color:var(--color-text-3);padding:2px 4px;border-radius:4px;font-size:15px;line-height:1" title="Remover">×</button>
+              </div>
+            `).join('')}
+        </div>
+        <div id="addFollowerDropdown" style="display:none;position:absolute;top:calc(100% + 2px);left:0;right:0;background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.12);z-index:300;padding:4px;max-height:200px;overflow-y:auto">
+          ${nonFollowers.length === 0
+            ? `<div style="padding:10px;font-size:12px;color:var(--color-text-3);text-align:center">Todos já adicionados</div>`
+            : nonFollowers.map(u => `
+              <button class="add-follower-opt" data-id="${u.id}" style="display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;border:none;background:none;cursor:pointer;border-radius:6px;font-size:13px;color:var(--color-text-1);text-align:left">
+                <div class="assign-mini-avatar">${u.name[0].toUpperCase()}</div>
+                ${u.name}
+              </button>
+            `).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+
+  lucide.createIcons();
+
+  const ownerToggle   = document.getElementById('ownerToggle');
+  const ownerDropdown = document.getElementById('ownerDropdown');
+  const addFollowerBtn      = document.getElementById('addFollowerBtn');
+  const addFollowerDropdown = document.getElementById('addFollowerDropdown');
+
+  ownerToggle?.addEventListener('click', e => {
+    e.stopPropagation();
+    ownerDropdown.style.display = ownerDropdown.style.display === 'none' ? 'block' : 'none';
+    if (addFollowerDropdown) addFollowerDropdown.style.display = 'none';
+  });
+
+  panel.querySelectorAll('.owner-opt').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const userId = btn.dataset.id || null;
+      ownerDropdown.style.display = 'none';
+      try {
+        await apiFetch(`/api/conversations/${convId}/owner`, {
+          method: 'PUT',
+          body: JSON.stringify({ user_id: userId }),
+        });
+        await renderInfoPanel(convId);
+      } catch (err) { console.error('[assign owner]', err.message); }
+    });
+  });
+
+  addFollowerBtn?.addEventListener('click', e => {
+    e.stopPropagation();
+    addFollowerDropdown.style.display = addFollowerDropdown.style.display === 'none' ? 'block' : 'none';
+    if (ownerDropdown) ownerDropdown.style.display = 'none';
+  });
+
+  panel.querySelectorAll('.add-follower-opt').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const userId = btn.dataset.id;
+      addFollowerDropdown.style.display = 'none';
+      try {
+        await apiFetch(`/api/conversations/${convId}/followers`, {
+          method: 'PUT',
+          body: JSON.stringify({ user_ids: [...followers.map(f => f.id), userId] }),
+        });
+        await renderInfoPanel(convId);
+      } catch (err) { console.error('[add follower]', err.message); }
+    });
+  });
+
+  panel.querySelectorAll('.remove-follower-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const userId = btn.dataset.id;
+      try {
+        await apiFetch(`/api/conversations/${convId}/followers`, {
+          method: 'PUT',
+          body: JSON.stringify({ user_ids: followers.filter(f => f.id !== userId).map(f => f.id) }),
+        });
+        await renderInfoPanel(convId);
+      } catch (err) { console.error('[remove follower]', err.message); }
+    });
+  });
 }
 
 async function loadAndRenderChat(convId, conv) {
@@ -161,6 +303,9 @@ async function loadAndRenderChat(convId, conv) {
   lucide.createIcons();
   const chatMessages = document.getElementById('chatMessages');
   if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  // Carrega o painel de proprietário/seguidores
+  renderInfoPanel(convId);
 
   // Instance switcher logic
   const instBtn = document.getElementById('instSwitchBtn');
@@ -320,10 +465,21 @@ async function loadAndRenderChat(convId, conv) {
   });
 }
 
-window.unloadConversations = function() { _convStopPolling(); };
+window.unloadConversations = function() {
+  _convStopPolling();
+  _convUsers = [];
+};
 
 window.initConversations = function(data) {
   const convs = Array.isArray(data) ? data : [];
+
+  // Fecha dropdowns do painel ao clicar fora
+  document.addEventListener('click', () => {
+    const d1 = document.getElementById('ownerDropdown');
+    const d2 = document.getElementById('addFollowerDropdown');
+    if (d1) d1.style.display = 'none';
+    if (d2) d2.style.display = 'none';
+  });
 
   document.querySelectorAll('.conv-item').forEach(el => {
     el.addEventListener('click', async () => {
