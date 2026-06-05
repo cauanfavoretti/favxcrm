@@ -927,7 +927,7 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
 
   try {
     const { rows: conv } = await pool.query(
-      `SELECT cv.id, cv.channel, c.phone AS contact_phone
+      `SELECT cv.id, cv.channel, c.phone AS contact_phone, c.name AS contact_name
        FROM conversations cv JOIN contacts c ON c.id = cv.contact_id
        WHERE cv.id = $1 AND cv.subaccount_id = $2`,
       [req.params.id, subaccount_id]
@@ -978,7 +978,6 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
             `/message/sendText/${cfg.evolution_instance_name}`,
             { number, text: content }
           );
-          // Salva o ID retornado pela Evolution para deduplicar o echo do webhook
           const externalId = evoResp?.key?.id;
           if (externalId) {
             await pool.query(`UPDATE messages SET external_id = $1 WHERE id = $2`, [externalId, rows[0].id]);
@@ -986,6 +985,18 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
         } catch (e) {
           console.warn('[evo send] erro:', e.message);
         }
+
+        // Dispara webhooks de agentes — mensagem enviada pelo CRM
+        fireAgentWebhooks(subaccount_id, 'message_activity', {
+          contact_name:     conv[0].contact_name || conv[0].contact_phone,
+          phone_number:     conv[0].contact_phone,
+          instance:         cfg.evolution_instance_name,
+          message:          content,
+          from_me:          true,
+          message_type:     'texto',
+          context:          null,
+          assigned_contact: null,
+        });
       }
     }
 
