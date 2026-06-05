@@ -15,7 +15,7 @@ const WEBHOOK_EVENTS = [
     id: 'message_activity',
     label: 'Atividade de mensagem',
     desc: 'Disparado a cada mensagem recebida ou enviada no WhatsApp.',
-    fields: ['contact_name','phone_number','instance','message','from_me','message_type','context','assigned_contact'],
+    fields: ['conversation_id','contact_id','contact_name','phone_number','instance','message','from_me','message_type','context','assigned_contact'],
   },
 ];
 

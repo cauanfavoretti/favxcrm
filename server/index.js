@@ -933,7 +933,7 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
 
   try {
     const { rows: conv } = await pool.query(
-      `SELECT cv.id, cv.channel, c.phone AS contact_phone, c.name AS contact_name,
+      `SELECT cv.id, cv.channel, c.id AS contact_id, c.phone AS contact_phone, c.name AS contact_name,
               u.name AS owner_name
        FROM conversations cv
        JOIN contacts c ON c.id = cv.contact_id
@@ -1027,6 +1027,7 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
         // Dispara webhooks de agentes — mensagem enviada pelo CRM
         fireAgentWebhooks(subaccount_id, 'message_activity', {
           conversation_id:  req.params.id,
+          contact_id:       conv[0].contact_id,
           contact_name:     conv[0].contact_name || conv[0].contact_phone,
           phone_number:     conv[0].contact_phone,
           instance:         cfg.evolution_instance_name,
@@ -2083,6 +2084,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
 
     fireAgentWebhooks(subaccount_id, 'message_activity', {
       conversation_id:  conv_id,
+      contact_id:       contact_id,
       contact_name:     pushName || phone,
       phone_number:     '+' + phone,
       instance:         instance,
