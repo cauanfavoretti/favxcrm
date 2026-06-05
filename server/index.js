@@ -959,17 +959,21 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
 
     // Mensagens internas não são enviadas ao contato
     if (is_internal) {
-      // Cria notificações para usuários mencionados
+      // Cria notificações para usuários mencionados (erros aqui não afetam o envio da mensagem)
       if (Array.isArray(mention_ids) && mention_ids.length) {
         const senderName = senderRows[0]?.sender_name || 'Alguém';
         const preview    = content.length > 100 ? content.slice(0, 100) + '…' : content;
         for (const uid of [...new Set(mention_ids)]) {
           if (uid === user_id) continue;
-          await pool.query(
-            `INSERT INTO notifications (subaccount_id, user_id, type, title, body, entity_type, entity_id)
-             VALUES ($1, $2, 'mention', $3, $4, 'conversation', $5)`,
-            [subaccount_id, uid, `${senderName} mencionou você em uma nota interna`, preview, req.params.id]
-          );
+          try {
+            await pool.query(
+              `INSERT INTO notifications (subaccount_id, user_id, type, title, body, entity_type, entity_id)
+               VALUES ($1, $2, 'mention', $3, $4, 'conversation', $5)`,
+              [subaccount_id, uid, `${senderName} mencionou você em uma nota interna`, preview, req.params.id]
+            );
+          } catch (e) {
+            console.warn('[mention notification]', e.message);
+          }
         }
       }
       return res.status(201).json(savedMsg);

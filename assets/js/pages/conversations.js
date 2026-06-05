@@ -254,10 +254,12 @@ async function loadAndRenderChat(convId, conv) {
 
   chatArea.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%"><div style="width:24px;height:24px;border:2px solid #e5e7eb;border-top-color:var(--color-accent);border-radius:50%;animation:spin 0.7s linear infinite"></div></div>`;
 
-  const [messages, instances] = await Promise.all([
+  const [messages, instances, freshMembers] = await Promise.all([
     apiFetch(`/api/conversations/${convId}/messages`).catch(() => []),
     apiFetch('/api/whatsapp-instances').catch(() => []),
+    _convUsers.length ? Promise.resolve(_convUsers) : apiFetch('/api/conversations/members').catch(() => []),
   ]);
+  if (!_convUsers.length && Array.isArray(freshMembers)) _convUsers = freshMembers;
   const msgs = Array.isArray(messages) ? messages : [];
   const insts = Array.isArray(instances) ? instances : [];
 
