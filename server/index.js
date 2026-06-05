@@ -1026,6 +1026,7 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
 
         // Dispara webhooks de agentes — mensagem enviada pelo CRM
         fireAgentWebhooks(subaccount_id, 'message_activity', {
+          conversation_id:  req.params.id,
           contact_name:     conv[0].contact_name || conv[0].contact_phone,
           phone_number:     conv[0].contact_phone,
           instance:         cfg.evolution_instance_name,
@@ -2081,6 +2082,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
     const msgType = Object.keys(msgTypeMap).find(k => rawMsg[k]) || 'texto';
 
     fireAgentWebhooks(subaccount_id, 'message_activity', {
+      conversation_id:  conv_id,
       contact_name:     pushName || phone,
       phone_number:     '+' + phone,
       instance:         instance,
