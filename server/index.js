@@ -968,7 +968,7 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
           await pool.query(
             `INSERT INTO notifications (subaccount_id, user_id, type, title, body, entity_type, entity_id)
              VALUES ($1, $2, 'mention', $3, $4, 'conversation', $5)`,
-            [subaccount_id, uid, `${senderName} te mencionou`, preview, req.params.id]
+            [subaccount_id, uid, `${senderName} mencionou você em uma nota interna`, preview, req.params.id]
           );
         }
       }
