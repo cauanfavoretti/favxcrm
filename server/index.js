@@ -1032,7 +1032,7 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
           message:          content,
           from_me:          true,
           message_type:     'texto',
-          context:          null,
+          context:          is_internal ? 'nota_interna' : 'mensagem_publica',
           assigned_contact: conv[0].owner_name || null,
         });
       }
@@ -2087,7 +2087,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
       message:          content,
       from_me:          fromMe,
       message_type:     msgTypeMap[msgType] || 'texto',
-      context:          null,
+      context:          'mensagem_publica',
       assigned_contact: ownerName,
     });
   } catch (err) {
