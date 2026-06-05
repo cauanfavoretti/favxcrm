@@ -922,7 +922,7 @@ app.get('/api/conversations/:id/messages', auth, async (req, res) => {
 
 app.post('/api/conversations/:id/messages', auth, async (req, res) => {
   const { subaccount_id, sub: user_id } = req.user;
-  const { content } = req.body;
+  const { content, instance_id } = req.body;
   if (!content) return res.status(400).json({ message: 'Conteúdo é obrigatório.' });
 
   try {
@@ -943,14 +943,26 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
 
     // Send via Evolution API if WhatsApp conversation
     if (conv[0].channel === 'whatsapp' && conv[0].contact_phone) {
-      const { rows: instRows } = await pool.query(
-        `SELECT api_url AS evolution_api_url, api_key AS evolution_api_key, instance_name AS evolution_instance_name
-         FROM whatsapp_instances
-         WHERE subaccount_id = $1
-         ORDER BY connected_at DESC NULLS LAST, created_at DESC LIMIT 1`,
-        [subaccount_id]
-      );
-      let cfg = instRows[0];
+      let cfg;
+      if (instance_id) {
+        // Instância específica selecionada pelo usuário
+        const { rows: specific } = await pool.query(
+          `SELECT api_url AS evolution_api_url, api_key AS evolution_api_key, instance_name AS evolution_instance_name
+           FROM whatsapp_instances WHERE id = $1 AND subaccount_id = $2`,
+          [instance_id, subaccount_id]
+        );
+        cfg = specific[0];
+      }
+      if (!cfg) {
+        const { rows: instRows } = await pool.query(
+          `SELECT api_url AS evolution_api_url, api_key AS evolution_api_key, instance_name AS evolution_instance_name
+           FROM whatsapp_instances
+           WHERE subaccount_id = $1
+           ORDER BY connected_at DESC NULLS LAST, created_at DESC LIMIT 1`,
+          [subaccount_id]
+        );
+        cfg = instRows[0];
+      }
       if (!cfg) {
         const { rows: cfgRows } = await pool.query(
           `SELECT evolution_api_url, evolution_api_key, evolution_instance_name

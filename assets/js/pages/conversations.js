@@ -92,14 +92,38 @@ async function loadAndRenderChat(convId, conv) {
 
   chatArea.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%"><div style="width:24px;height:24px;border:2px solid #e5e7eb;border-top-color:var(--color-accent);border-radius:50%;animation:spin 0.7s linear infinite"></div></div>`;
 
-  const messages = await apiFetch(`/api/conversations/${convId}/messages`).catch(() => []);
+  const [messages, instances] = await Promise.all([
+    apiFetch(`/api/conversations/${convId}/messages`).catch(() => []),
+    apiFetch('/api/whatsapp-instances').catch(() => []),
+  ]);
   const msgs = Array.isArray(messages) ? messages : [];
+  const insts = Array.isArray(instances) ? instances : [];
+
+  let activeInstanceId = insts[0]?.id || null;
 
   // Track last message time for delta polling
   if (msgs.length) _lastMsgSentAt = msgs[msgs.length - 1].sent_at;
 
   // Reset unread badge on open
   apiFetch(`/api/conversations/${convId}/read`, { method: 'POST' }).catch(() => {});
+
+  const instanceSwitcherHtml = insts.length > 1 ? `
+    <div style="position:relative;display:inline-block" id="instSwitchWrap">
+      <button id="instSwitchBtn" class="btn btn-ghost btn-sm" style="gap:5px;font-size:12px;border:1px solid var(--color-border)">
+        <span style="width:7px;height:7px;border-radius:50%;background:#22c55e;display:inline-block;flex-shrink:0"></span>
+        <span id="instSwitchLabel">${insts[0]?.instance_name || 'Instância 1'}</span>
+        <i data-lucide="chevron-down" style="width:12px;height:12px"></i>
+      </button>
+      <div id="instDropdown" style="display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:190px;z-index:200;padding:4px">
+        ${insts.map(inst => `
+          <button class="inst-opt" data-id="${inst.id}" data-name="${inst.instance_name}" style="display:flex;align-items:center;gap:8px;width:100%;padding:8px 12px;border:none;background:none;cursor:pointer;border-radius:6px;font-size:13px;color:var(--color-text-1);text-align:left">
+            <span style="width:7px;height:7px;border-radius:50%;background:${inst.status === 'connected' ? '#22c55e' : '#9ca3af'};flex-shrink:0"></span>
+            ${inst.instance_name}
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  ` : '';
 
   chatArea.innerHTML = `
     <div class="chat-header">
@@ -108,8 +132,8 @@ async function loadAndRenderChat(convId, conv) {
         <div class="chat-header-name">${conv?.contact_name || 'Desconhecido'}</div>
         <div class="chat-header-status">${conv?.contact_phone || conv?.channel || '—'}</div>
       </div>
-      <div style="display:flex;gap:6px;margin-left:auto">
-        <button class="btn btn-ghost btn-sm"><i data-lucide="more-vertical" style="width:14px;height:14px"></i></button>
+      <div style="display:flex;gap:6px;margin-left:auto;align-items:center">
+        ${instanceSwitcherHtml}
       </div>
     </div>
     <div class="chat-messages" id="chatMessages">
@@ -137,6 +161,24 @@ async function loadAndRenderChat(convId, conv) {
   lucide.createIcons();
   const chatMessages = document.getElementById('chatMessages');
   if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  // Instance switcher logic
+  const instBtn = document.getElementById('instSwitchBtn');
+  const instDropdown = document.getElementById('instDropdown');
+  if (instBtn && instDropdown) {
+    instBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      instDropdown.style.display = instDropdown.style.display === 'none' ? 'block' : 'none';
+    });
+    document.addEventListener('click', () => { instDropdown.style.display = 'none'; }, { once: false });
+    instDropdown.querySelectorAll('.inst-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        activeInstanceId = btn.dataset.id;
+        document.getElementById('instSwitchLabel').textContent = btn.dataset.name;
+        instDropdown.style.display = 'none';
+      });
+    });
+  }
 
   // Poll for new messages every 3s
   _pollMsgInterval = setInterval(async () => {
@@ -256,7 +298,7 @@ async function loadAndRenderChat(convId, conv) {
     try {
       const saved = await apiFetch(`/api/conversations/${convId}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, instance_id: activeInstanceId }),
       });
       // Reconciliação: se o polling já inseriu esta mensagem, remove a linha
       // otimista; senão, marca-a com o ID real para o polling não duplicar.
