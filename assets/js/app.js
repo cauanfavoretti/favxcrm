@@ -435,6 +435,105 @@ function initSidebarUser() {
   } catch {}
 }
 
+// ---- Notificações ----
+let _notifCache = [];
+
+function _timeAgo(dateStr) {
+  const s = Math.floor((Date.now() - new Date(dateStr)) / 1000);
+  if (s < 60)    return 'agora';
+  if (s < 3600)  return `${Math.floor(s / 60)}min atrás`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h atrás`;
+  return `${Math.floor(s / 86400)}d atrás`;
+}
+
+function _updateNotifBadge(count) {
+  const badge = document.getElementById('notifBadge');
+  if (!badge) return;
+  if (count > 0) {
+    badge.textContent = count > 99 ? '99+' : count;
+    badge.style.display = 'flex';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+const _shieldSvgNotif = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;
+
+function _renderNotifList(notifs) {
+  const list = document.getElementById('notifList');
+  if (!list) return;
+  if (!notifs.length) {
+    list.innerHTML = `<div style="padding:24px;text-align:center;color:var(--color-text-3);font-size:13px">Sem novas notificações</div>`;
+    return;
+  }
+  list.innerHTML = notifs.map(n => `
+    <div class="notif-item" data-id="${n.id}" data-conv-id="${n.entity_id || ''}">
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <div style="width:30px;height:30px;border-radius:50%;background:rgba(124,58,237,0.1);color:#7c3aed;display:flex;align-items:center;justify-content:center;flex-shrink:0">${_shieldSvgNotif}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:600;color:var(--color-text-1);margin-bottom:2px">${n.title || ''}</div>
+          <div style="font-size:12px;color:var(--color-text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${n.body || ''}</div>
+          <div style="font-size:11px;color:var(--color-text-3);margin-top:3px">${_timeAgo(n.created_at)}</div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.notif-item').forEach(item => {
+    item.addEventListener('click', async () => {
+      const notifId = item.dataset.id;
+      const convId  = item.dataset.convId;
+      try { await apiFetch(`/api/notifications/${notifId}/read`, { method: 'POST' }); } catch {}
+      document.getElementById('notifDropdown').style.display = 'none';
+      if (convId) {
+        window.__openConversationId = convId;
+        await navigateTo('conversations');
+      }
+      _fetchNotifications();
+    });
+  });
+}
+
+async function _fetchNotifications() {
+  try {
+    const notifs = await apiFetch('/api/notifications');
+    if (!Array.isArray(notifs)) return;
+    _notifCache = notifs;
+    _updateNotifBadge(notifs.length);
+    const dropdown = document.getElementById('notifDropdown');
+    if (dropdown && dropdown.style.display !== 'none') _renderNotifList(notifs);
+  } catch {}
+}
+
+function initNotifications() {
+  const notifBtn  = document.getElementById('notifBtn');
+  const notifDrop = document.getElementById('notifDropdown');
+  const readAllBtn = document.getElementById('readAllBtn');
+
+  notifBtn?.addEventListener('click', e => {
+    e.stopPropagation();
+    const isOpen = notifDrop.style.display !== 'none';
+    notifDrop.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) _renderNotifList(_notifCache);
+  });
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#notifWrap') && notifDrop) {
+      notifDrop.style.display = 'none';
+    }
+  });
+
+  readAllBtn?.addEventListener('click', async e => {
+    e.stopPropagation();
+    try { await apiFetch('/api/notifications/read-all', { method: 'POST' }); } catch {}
+    await _fetchNotifications();
+    _renderNotifList(_notifCache);
+  });
+
+  _fetchNotifications();
+  setInterval(_fetchNotifications, 15000);
+}
+
 // ---- Logout ----
 document.getElementById('logoutBtn')?.addEventListener('click', () => {
   ['favx_token', 'favx_user', 'favx_subaccount'].forEach(k => {
@@ -447,6 +546,7 @@ document.getElementById('logoutBtn')?.addEventListener('click', () => {
 // ---- Initial load ----
 initSidebarUser();
 initSubaccountSwitcher();
+initNotifications();
 
 const _showWelcome = sessionStorage.getItem('favx_show_welcome') === '1';
 sessionStorage.removeItem('favx_show_welcome');

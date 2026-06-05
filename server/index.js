@@ -928,7 +928,7 @@ app.get('/api/conversations/:id/messages', auth, async (req, res) => {
 
 app.post('/api/conversations/:id/messages', auth, async (req, res) => {
   const { subaccount_id, sub: user_id } = req.user;
-  const { content, instance_id, is_internal } = req.body;
+  const { content, instance_id, is_internal, mention_ids } = req.body;
   if (!content) return res.status(400).json({ message: 'Conteúdo é obrigatório.' });
 
   try {
@@ -959,6 +959,19 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
 
     // Mensagens internas não são enviadas ao contato
     if (is_internal) {
+      // Cria notificações para usuários mencionados
+      if (Array.isArray(mention_ids) && mention_ids.length) {
+        const senderName = senderRows[0]?.sender_name || 'Alguém';
+        const preview    = content.length > 100 ? content.slice(0, 100) + '…' : content;
+        for (const uid of [...new Set(mention_ids)]) {
+          if (uid === user_id) continue;
+          await pool.query(
+            `INSERT INTO notifications (subaccount_id, user_id, type, title, body, entity_type, entity_id)
+             VALUES ($1, $2, 'mention', $3, $4, 'conversation', $5)`,
+            [subaccount_id, uid, `${senderName} te mencionou`, preview, req.params.id]
+          );
+        }
+      }
       return res.status(201).json(savedMsg);
     }
 
@@ -2307,6 +2320,51 @@ app.delete('/api/agent-webhooks/:id', auth, requireAdmin, async (req, res) => {
   }
 });
 
+// ============================================================
+// NOTIFICAÇÕES
+// ============================================================
+
+app.get('/api/notifications', auth, async (req, res) => {
+  const { sub: user_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, type, title, body, entity_type, entity_id, created_at
+       FROM notifications WHERE user_id = $1 AND is_read = FALSE
+       ORDER BY created_at DESC LIMIT 50`,
+      [user_id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[notifications GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.post('/api/notifications/read-all', auth, async (req, res) => {
+  const { sub: user_id } = req.user;
+  try {
+    await pool.query(`UPDATE notifications SET is_read = TRUE WHERE user_id = $1`, [user_id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[notifications read-all]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.post('/api/notifications/:id/read', auth, async (req, res) => {
+  const { sub: user_id } = req.user;
+  try {
+    await pool.query(
+      `UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_id = $2`,
+      [req.params.id, user_id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[notifications read]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 async function fireAgentWebhooks(subaccount_id, event, payload) {
   try {
     const { rows } = await pool.query(
@@ -2363,6 +2421,21 @@ app.get('/api/integrations/whatsapp', auth, async (req, res) => {
       )
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_conv_followers_conv ON conversation_followers(conversation_id)`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        subaccount_id UUID NOT NULL,
+        user_id       UUID NOT NULL,
+        type          VARCHAR(50) NOT NULL DEFAULT 'mention',
+        title         VARCHAR(200),
+        body          TEXT,
+        entity_type   VARCHAR(50) DEFAULT 'conversation',
+        entity_id     UUID,
+        is_read       BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read, created_at DESC)`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS agent_webhooks (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),

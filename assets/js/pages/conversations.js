@@ -4,6 +4,7 @@ let _pollListInterval = null;
 let _lastMsgSentAt   = null;
 let _convUsers       = [];
 let _isInternalMode  = false;
+let _pendingMentions = new Set();
 
 function _convStopPolling() {
   clearInterval(_pollMsgInterval);
@@ -245,7 +246,8 @@ function renderMessageHtml(m, contactName) {
 async function loadAndRenderChat(convId, conv) {
   _convStopPolling();
   _lastMsgSentAt  = null;
-  _isInternalMode = false;
+  _isInternalMode  = false;
+  _pendingMentions = new Set();
 
   const chatArea = document.getElementById('chatArea');
   if (!chatArea) return;
@@ -354,7 +356,7 @@ async function loadAndRenderChat(convId, conv) {
     if (!users.length) { closeMentionDropdown(); return; }
 
     mentionDropdown.innerHTML = users.map(u => `
-      <button class="mention-opt" data-name="${u.name}">
+      <button class="mention-opt" data-id="${u.id}" data-name="${u.name}">
         <div class="assign-mini-avatar">${u.name[0].toUpperCase()}</div>
         ${u.name}
       </button>`).join('');
@@ -363,7 +365,9 @@ async function loadAndRenderChat(convId, conv) {
     mentionDropdown.querySelectorAll('.mention-opt').forEach(btn => {
       btn.addEventListener('mousedown', e => {
         e.preventDefault();
-        const name  = btn.dataset.name;
+        const name   = btn.dataset.name;
+        const userId = btn.dataset.id;
+        if (userId) _pendingMentions.add(userId);
         const after = text.slice(cursor);
         textarea.value = before.slice(0, atIdx) + '@' + name + ' ' + after;
         textarea.dispatchEvent(new Event('input'));
@@ -500,8 +504,10 @@ async function loadAndRenderChat(convId, conv) {
     chatInput.style.height = 'auto';
     closeMentionDropdown();
 
-    const isInternal = _isInternalMode;
-    const container  = document.getElementById('chatMessages');
+    const isInternal  = _isInternalMode;
+    const mentionIds  = [..._pendingMentions];
+    _pendingMentions  = new Set();
+    const container   = document.getElementById('chatMessages');
     const tempId     = `temp-${Date.now()}`;
     let tempRow = null;
     if (container) {
@@ -524,7 +530,7 @@ async function loadAndRenderChat(convId, conv) {
     try {
       const saved = await apiFetch(`/api/conversations/${convId}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ content, instance_id: activeInstanceId, is_internal: isInternal }),
+        body: JSON.stringify({ content, instance_id: activeInstanceId, is_internal: isInternal, mention_ids: mentionIds }),
       });
       if (tempRow && saved?.id) {
         const existing = container?.querySelector(`[data-msg-id="${saved.id}"]`);
@@ -566,6 +572,21 @@ window.initConversations = function(data) {
       await loadAndRenderChat(activeConvId, conv);
     });
   });
+
+  // Abertura via notificação de @menção
+  const notifConvId = window.__openConversationId;
+  if (notifConvId) {
+    window.__openConversationId = null;
+    const conv = convs.find(c => c.id === notifConvId);
+    if (conv) {
+      activeConvId = notifConvId;
+      document.querySelectorAll('.conv-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.convId === notifConvId);
+      });
+      loadAndRenderChat(notifConvId, conv);
+      return;
+    }
+  }
 
   // Contato vindo da aba Contatos
   const pending = window.__convContact;
