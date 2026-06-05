@@ -435,6 +435,15 @@ function initSidebarUser() {
   } catch {}
 }
 
+// ---- Logout ----
+document.getElementById('logoutBtn')?.addEventListener('click', () => {
+  ['favx_token', 'favx_user', 'favx_subaccount'].forEach(k => {
+    localStorage.removeItem(k);
+    sessionStorage.removeItem(k);
+  });
+  window.location.href = 'login.html';
+});
+
 // ---- Initial load ----
 initSidebarUser();
 initSubaccountSwitcher();
