@@ -1969,6 +1969,33 @@ app.post('/api/webhook/evolution', async (req, res) => {
       );
     }
 
+    // Quando a mensagem é enviada por mim, busca o nome real do contato na Evolution API em background
+    if (fromMe) {
+      (async () => {
+        try {
+          const { rows: instCfg } = await pool.query(
+            `SELECT api_url, api_key FROM whatsapp_instances WHERE instance_name = $1 LIMIT 1`,
+            [instance]
+          );
+          if (!instCfg[0]) return;
+          const profileResp = await evoRequest('POST', instCfg[0].api_url, instCfg[0].api_key,
+            `/chat/fetchProfile/${instance}`,
+            { number: phone }
+          );
+          const profileName = profileResp?.name || profileResp?.pushName || null;
+          if (profileName) {
+            await pool.query(
+              `UPDATE contacts SET name = $1 WHERE id = $2 AND (name IS NULL OR name = phone OR name = $3)`,
+              [profileName, contact_id, '+' + phone]
+            );
+            console.log(`[webhook] nome do contato atualizado via fetchProfile: ${phone} → "${profileName}"`);
+          }
+        } catch (e) {
+          console.warn(`[webhook] fetchProfile ${phone}:`, e.message);
+        }
+      })();
+    }
+
     const { rows: convs } = await pool.query(
       `SELECT id FROM conversations WHERE subaccount_id = $1 AND contact_id = $2 AND channel = 'whatsapp' AND status = 'open' LIMIT 1`,
       [subaccount_id, contact_id]
