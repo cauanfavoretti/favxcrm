@@ -173,9 +173,9 @@ async function loadAndRenderChat(convId, conv) {
       const sideItem = document.querySelector(`.conv-item[data-conv-id="${convId}"] .conv-time`);
       if (sideItem) sideItem.textContent = new Date(_lastMsgSentAt).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
     } catch {}
-  }, 3000);
+  }, 1000);
 
-  // Poll sidebar conv list every 8s for new conversations from other contacts
+  // Poll sidebar conv list every 5s for new conversations from other contacts
   _pollListInterval = setInterval(async () => {
     try {
       const fresh = await apiFetch('/api/conversations');
@@ -226,7 +226,7 @@ async function loadAndRenderChat(convId, conv) {
         }
       });
     } catch {}
-  }, 8000);
+  }, 5000);
 
   // Enviar mensagem
   const sendBtn   = document.getElementById('chatSendBtn');
