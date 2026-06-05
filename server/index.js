@@ -943,16 +943,31 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
 
     // Send via Evolution API if WhatsApp conversation
     if (conv[0].channel === 'whatsapp' && conv[0].contact_phone) {
-      const { rows: cfg } = await pool.query(
-        `SELECT evolution_api_url, evolution_api_key, evolution_instance_name FROM subaccount_settings WHERE subaccount_id = $1`,
+      // Busca instância: primeiro em whatsapp_instances, depois em subaccount_settings
+      const { rows: instRows } = await pool.query(
+        `SELECT api_url AS evolution_api_url, api_key AS evolution_api_key, instance_name AS evolution_instance_name
+         FROM whatsapp_instances
+         WHERE subaccount_id = $1 AND status = 'connected'
+         ORDER BY connected_at DESC LIMIT 1`,
         [subaccount_id]
       );
-      if (cfg[0]?.evolution_api_url && cfg[0]?.evolution_instance_name) {
+      let cfg = instRows[0];
+      if (!cfg) {
+        const { rows: cfgRows } = await pool.query(
+          `SELECT evolution_api_url, evolution_api_key, evolution_instance_name
+           FROM subaccount_settings WHERE subaccount_id = $1`,
+          [subaccount_id]
+        );
+        cfg = cfgRows[0];
+      }
+      if (cfg?.evolution_api_url && cfg?.evolution_instance_name) {
         const number = conv[0].contact_phone.replace(/\D/g, '');
-        evoRequest('POST', cfg[0].evolution_api_url, cfg[0].evolution_api_key,
-          `/message/sendText/${cfg[0].evolution_instance_name}`,
+        evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
+          `/message/sendText/${cfg.evolution_instance_name}`,
           { number, text: content }
         ).catch(e => console.warn('[evo send]', e.message));
+      } else {
+        console.warn('[evo send] nenhuma instância WhatsApp conectada para subaccount_id:', subaccount_id);
       }
     }
 
