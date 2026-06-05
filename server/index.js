@@ -1953,14 +1953,16 @@ app.post('/api/webhook/evolution', async (req, res) => {
       contact_id = contacts[0].id;
     } else {
       const displayPhone = '+' + phone;
+      // pushName quando fromMe=true é o nome do remetente (eu), não do contato
+      const contactName = (!fromMe && pushName) ? pushName : displayPhone;
       const { rows: newContact } = await pool.query(
         `INSERT INTO contacts (subaccount_id, name, phone) VALUES ($1, $2, $3) RETURNING id`,
-        [subaccount_id, pushName || displayPhone, displayPhone]
+        [subaccount_id, contactName, displayPhone]
       );
       contact_id = newContact[0].id;
     }
 
-    if (pushName) {
+    if (!fromMe && pushName) {
       await pool.query(
         `UPDATE contacts SET name = $1 WHERE id = $2 AND (name IS NULL OR name = phone OR name = $3)`,
         [pushName, contact_id, '+' + phone]
