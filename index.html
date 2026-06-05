@@ -62,6 +62,19 @@
       position: absolute; inset: 0; z-index: 20; pointer-events: none; opacity: 0;
       background: radial-gradient(circle at 50% 50%, #ffffff 0%, #f5f8ff 64%, #eef3ff 100%);
     }
+    .i-logo {
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%,-50%) translateY(calc((1 - var(--g,0)) * 14px)) scale(calc(0.965 + var(--g,0)*0.035));
+      width: clamp(180px, 28vw, 440px); height: auto;
+      user-select: none; pointer-events: none;
+      opacity: calc(0.04 + var(--g,0)*0.96);
+      filter:
+        brightness(calc(0.12 + var(--g,0)*0.88))
+        drop-shadow(0 0 calc(var(--g,0)*26px) rgba(95,140,255,calc(var(--g,0)*0.85)))
+        drop-shadow(0 0 calc(var(--g,0)*64px) rgba(39,71,214,calc(var(--g,0)*0.6)))
+        drop-shadow(0 0 calc(var(--g,0)*120px) rgba(20,40,140,calc(var(--g,0)*0.4)));
+      z-index: 3; will-change: opacity,filter,transform;
+    }
     @media (prefers-reduced-motion: reduce) { .i-haze { animation: none; } }
   </style>
 </head>
@@ -214,6 +227,7 @@
   <div id="intro-wrap">
     <div class="i-light"    id="i-light"></div>
     <div class="i-haze"></div>
+    <img  class="i-logo"    id="i-logo" src="assets/img/fx-logo.png" alt="FAVX" draggable="false" />
     <div class="i-bloom"    id="i-bloom"></div>
     <div class="i-vignette"></div>
     <div class="i-whiteout" id="i-whiteout"></div>
@@ -225,6 +239,7 @@
     const TRACKS = ['/assets/audio/riser-1.mp3', '/assets/audio/riser-2.mp3'];
 
     const lightEl = document.getElementById('i-light');
+    const logoEl  = document.getElementById('i-logo');
     const bloomEl = document.getElementById('i-bloom');
     const whiteEl = document.getElementById('i-whiteout');
     const audio   = document.getElementById('i-audio');
@@ -249,6 +264,7 @@
     function reset(){
       lightEl.style.setProperty('--li', 0);
       lightEl.style.setProperty('--ls', 0.35);
+      logoEl.style.setProperty('--g', 0);
       bloomEl.style.opacity = 0;
       bloomEl.style.transform = 'translate(-50%,-50%) scale(0.6)';
       whiteEl.style.opacity = 0;
@@ -258,6 +274,10 @@
       const li = smooth(clamp(p*1.05,0,1));
       lightEl.style.setProperty('--li', (0.15+li*0.95).toFixed(3));
       lightEl.style.setProperty('--ls', (0.35+smooth(p)*0.95).toFixed(3));
+
+      let g = smooth(band(p,0.12,0.82));
+      if (p > 0.80) g = Math.max(g, 0.7 + smooth(band(p,0.80,0.95))*0.3);
+      logoEl.style.setProperty('--g', g.toFixed(3));
 
       const b    = band(p,0.80,0.96);
       const fade = band(p,0.90,1.0);
