@@ -1792,6 +1792,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
   const phone = waCleanPhone(jid);
   if (!phone) return res.sendStatus(200);
 
+  const fromMe     = !!key.fromMe;
   const content    = waExtractContent(data);
   const pushName   = data.pushName || null;
   const externalId = key.id || null;
@@ -1870,12 +1871,12 @@ app.post('/api/webhook/evolution', async (req, res) => {
 
     await pool.query(
       `INSERT INTO messages (conversation_id, direction, sender_type, content, external_id)
-       VALUES ($1, 'inbound', 'contact', $2, $3)`,
-      [conv_id, content, externalId]
+       VALUES ($1, $2, $3, $4, $5)`,
+      [conv_id, fromMe ? 'outbound' : 'inbound', fromMe ? 'user' : 'contact', content, externalId]
     );
 
     await pool.query(
-      `UPDATE conversations SET last_message_at = NOW(), unread_count = unread_count + 1 WHERE id = $1`,
+      `UPDATE conversations SET last_message_at = NOW(), unread_count = unread_count + ${fromMe ? 0 : 1} WHERE id = $1`,
       [conv_id]
     );
   } catch (err) {
