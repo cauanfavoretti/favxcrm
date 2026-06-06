@@ -8,6 +8,8 @@ function showForgot(e, back = false) {
   if (e) e.preventDefault();
   document.getElementById('formLogin').hidden = !back;
   document.getElementById('formForgot').hidden = back;
+  const heading = document.getElementById('loginHeading');
+  if (heading) heading.hidden = !back;
   setError('loginError', null);
   setError('forgotError', null);
   document.getElementById('forgotSuccess').hidden = true;

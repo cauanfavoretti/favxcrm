@@ -6,6 +6,7 @@
   <title>FAVX CRM — Entrar</title>
   <link rel="stylesheet" href="assets/css/auth.css" />
   <style>
+    /* ── Intro overlay (ativado após login bem-sucedido) ── */
     #intro-wrap{position:fixed;inset:0;z-index:9999;overflow:hidden;display:none;
       background:radial-gradient(120% 120% at 50% 52%,#03040c 0%,#000004 60%,#000 100%)}
     .i-light{position:absolute;left:50%;top:52%;width:140vmax;height:140vmax;
@@ -38,97 +39,193 @@
 </head>
 <body>
 
-  <div style="display:flex;flex-direction:column;align-items:center;width:100%">
-    <div class="auth-card">
+  <div class="auth-layout">
 
-      <!-- Logo -->
-      <div class="auth-logo-wrap">
-        <img src="assets/img/fx-logo.png" alt="FAVX" />
-      </div>
+    <!-- ════════════════════════════════
+         PAINEL ESQUERDO — Institucional
+         ════════════════════════════════ -->
+    <div class="auth-left">
+      <!-- Orbs decorativos -->
+      <div class="auth-orb auth-orb-1"></div>
+      <div class="auth-orb auth-orb-2"></div>
+      <div class="auth-orb auth-orb-3"></div>
 
-      <div class="auth-card-header">
-        <h2>Entrar na sua conta</h2>
-        <p>Acesso restrito a usuários cadastrados.</p>
-      </div>
+      <div class="auth-left-content">
 
-      <!-- FORMULÁRIO LOGIN -->
-      <form class="auth-form" id="formLogin" onsubmit="handleLogin(event)" novalidate>
-        <div class="form-group">
-          <label for="loginEmail">E-mail</label>
-          <div class="input-wrap">
-            <svg class="input-icon" viewBox="0 0 20 20" fill="none"><path d="M2.5 5.5A1.5 1.5 0 014 4h12a1.5 1.5 0 011.5 1.5v9A1.5 1.5 0 0116 16H4a1.5 1.5 0 01-1.5-1.5v-9z" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 6l7.5 5.5L17.5 6" stroke="currentColor" stroke-width="1.4"/></svg>
-            <input type="email" id="loginEmail" placeholder="seu@email.com" autocomplete="email" required />
+        <!-- Brand mark -->
+        <div class="auth-left-brand">
+          <div class="auth-left-brand-dot">
+            <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M2 3h7.5M2 8h5M2 13l5-10" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+              <path d="M10 13L8 8M10 13l2-5M8 8l4 0" stroke="#a5b4fc" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <span class="auth-left-brand-name">FAVX CRM</span>
+        </div>
+
+        <!-- Headline -->
+        <h1 class="auth-left-headline">
+          Inteligência para<br />
+          <em>vendas modernas.</em>
+        </h1>
+        <p class="auth-left-sub">
+          Gerencie conversas, contatos e automações com IA — tudo em um só lugar, em tempo real.
+        </p>
+
+        <!-- Feature pills -->
+        <div class="auth-pills">
+          <span class="auth-pill"><span class="auth-pill-dot"></span>Atendimento com IA</span>
+          <span class="auth-pill"><span class="auth-pill-dot"></span>Funis de vendas</span>
+          <span class="auth-pill"><span class="auth-pill-dot"></span>Webhooks em tempo real</span>
+          <span class="auth-pill"><span class="auth-pill-dot"></span>Multi-subconta</span>
+        </div>
+
+        <!-- Metric cards -->
+        <div class="auth-metrics">
+          <div class="auth-metric-card">
+            <div>
+              <div class="auth-metric-label">Conversas este mês</div>
+              <div class="auth-metric-val">2.847</div>
+            </div>
+            <span class="auth-metric-badge">↑ +18%</span>
+          </div>
+          <div class="auth-metric-card">
+            <div class="auth-metric-label">Taxa de resposta</div>
+            <div class="auth-metric-val">98.4%</div>
+          </div>
+          <div class="auth-metric-card">
+            <div class="auth-metric-label">Agentes de IA ativos</div>
+            <div class="auth-metric-val">12</div>
           </div>
         </div>
 
-        <div class="form-group">
-          <label for="loginPassword">
-            Senha
-            <a href="#" class="forgot-link" onclick="showForgot(event)">Ops, esqueci minha senha</a>
-          </label>
-          <div class="input-wrap">
-            <svg class="input-icon" viewBox="0 0 20 20" fill="none"><rect x="4" y="9" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M7 9V6.5a3 3 0 016 0V9" stroke="currentColor" stroke-width="1.4"/></svg>
-            <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password" required />
-            <button type="button" class="toggle-pwd" onclick="togglePassword('loginPassword', this)">
-              <svg viewBox="0 0 20 20" fill="none"><path d="M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5z" stroke="currentColor" stroke-width="1.4"/><circle cx="10" cy="10" r="2.5" stroke="currentColor" stroke-width="1.4"/></svg>
-            </button>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label class="checkbox-label">
-            <input type="checkbox" id="rememberMe" />
-            <span class="checkbox-custom"></span>
-            Lembrar-me por 30 dias
-          </label>
-        </div>
-
-        <button type="submit" class="btn-primary" id="btnLogin">
-          <span class="btn-text">Entrar</span>
-          <span class="btn-spinner" hidden>
-            <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2.5" stroke-dasharray="32" stroke-dashoffset="12" class="spin"/></svg>
-          </span>
-        </button>
-
-        <div class="auth-error" id="loginError" hidden></div>
-      </form>
-
-      <!-- RECUPERAR SENHA -->
-      <div class="auth-form" id="formForgot" hidden>
-        <button class="back-btn" onclick="showForgot(null, true)">
-          <svg viewBox="0 0 20 20" fill="none"><path d="M12 4l-6 6 6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Voltar ao login
-        </button>
-        <div class="forgot-header">
-          <h3>Recuperar senha</h3>
-          <p>Informe seu e-mail cadastrado e enviaremos um link de redefinição.</p>
-        </div>
-        <div class="form-group">
-          <label for="forgotEmail">E-mail</label>
-          <div class="input-wrap">
-            <svg class="input-icon" viewBox="0 0 20 20" fill="none"><path d="M2.5 5.5A1.5 1.5 0 014 4h12a1.5 1.5 0 011.5 1.5v9A1.5 1.5 0 0116 16H4a1.5 1.5 0 01-1.5-1.5v-9z" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 6l7.5 5.5L17.5 6" stroke="currentColor" stroke-width="1.4"/></svg>
-            <input type="email" id="forgotEmail" placeholder="seu@email.com" />
-          </div>
-        </div>
-        <button class="btn-primary" onclick="handleForgot()">
-          <span class="btn-text">Enviar link de recuperação</span>
-        </button>
-        <div class="auth-success" id="forgotSuccess" hidden>
-          Link enviado! Verifique sua caixa de entrada.
-        </div>
-        <div class="auth-error" id="forgotError" hidden></div>
       </div>
-
     </div>
 
-    <p class="auth-footer-text">&copy; 2026 FAVX. Todos os direitos reservados.</p>
-  </div>
+    <!-- ════════════════════════════════
+         PAINEL DIREITO — Formulário
+         ════════════════════════════════ -->
+    <div class="auth-right">
+      <div class="auth-form-wrap">
 
-  <!-- Intro overlay (ativado após login bem-sucedido) -->
+        <!-- Logo -->
+        <div class="auth-logo-wrap">
+          <img src="assets/img/fx-logo.png" alt="FAVX" />
+        </div>
+
+        <!-- Heading (trocado pelo form de recuperação quando ativo) -->
+        <div class="auth-heading" id="loginHeading">
+          <h2>Bem-vindo de volta</h2>
+          <p>Acesse sua conta para continuar.</p>
+        </div>
+
+        <!-- ── FORMULÁRIO DE LOGIN ── -->
+        <form class="auth-form" id="formLogin" onsubmit="handleLogin(event)" novalidate>
+
+          <div class="form-group">
+            <label for="loginEmail">E-mail</label>
+            <div class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 20 20" fill="none">
+                <path d="M2.5 5.5A1.5 1.5 0 014 4h12a1.5 1.5 0 011.5 1.5v9A1.5 1.5 0 0116 16H4a1.5 1.5 0 01-1.5-1.5v-9z" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M2.5 6l7.5 5.5L17.5 6" stroke="currentColor" stroke-width="1.4"/>
+              </svg>
+              <input type="email" id="loginEmail" placeholder="seu@email.com" autocomplete="email" required />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="loginPassword">
+              Senha
+              <a href="#" class="forgot-link" onclick="showForgot(event)">Esqueci minha senha</a>
+            </label>
+            <div class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 20 20" fill="none">
+                <rect x="4" y="9" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M7 9V6.5a3 3 0 016 0V9" stroke="currentColor" stroke-width="1.4"/>
+              </svg>
+              <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password" required />
+              <button type="button" class="toggle-pwd" onclick="togglePassword('loginPassword', this)" tabindex="-1">
+                <svg viewBox="0 0 20 20" fill="none">
+                  <path d="M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5z" stroke="currentColor" stroke-width="1.4"/>
+                  <circle cx="10" cy="10" r="2.5" stroke="currentColor" stroke-width="1.4"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="rememberMe" />
+              <span class="checkbox-custom"></span>
+              Lembrar-me por 30 dias
+            </label>
+          </div>
+
+          <div class="auth-divider"></div>
+
+          <button type="submit" class="btn-primary" id="btnLogin">
+            <span class="btn-text">Entrar</span>
+            <span class="btn-spinner" hidden>
+              <svg viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke="rgba(255,255,255,0.3)" stroke-width="2.5"/>
+                <path d="M12 2a10 10 0 0110 10" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+              </svg>
+            </span>
+          </button>
+
+          <div class="auth-error" id="loginError" hidden></div>
+
+        </form>
+
+        <!-- ── RECUPERAR SENHA ── -->
+        <div class="auth-form" id="formForgot" hidden>
+
+          <button class="back-btn" onclick="showForgot(null, true)">
+            <svg viewBox="0 0 20 20" fill="none">
+              <path d="M12 4l-6 6 6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Voltar ao login
+          </button>
+
+          <div class="forgot-header">
+            <h3>Recuperar senha</h3>
+            <p>Informe seu e-mail e enviaremos um link de redefinição.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="forgotEmail">E-mail</label>
+            <div class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 20 20" fill="none">
+                <path d="M2.5 5.5A1.5 1.5 0 014 4h12a1.5 1.5 0 011.5 1.5v9A1.5 1.5 0 0116 16H4a1.5 1.5 0 01-1.5-1.5v-9z" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M2.5 6l7.5 5.5L17.5 6" stroke="currentColor" stroke-width="1.4"/>
+              </svg>
+              <input type="email" id="forgotEmail" placeholder="seu@email.com" autocomplete="email" />
+            </div>
+          </div>
+
+          <button class="btn-primary" onclick="handleForgot()">
+            <span class="btn-text">Enviar link de recuperação</span>
+          </button>
+
+          <div class="auth-success" id="forgotSuccess" hidden>
+            Link enviado! Verifique sua caixa de entrada.
+          </div>
+          <div class="auth-error" id="forgotError" hidden></div>
+
+        </div>
+
+        <p class="auth-footer-text">&copy; 2026 FAVX. Todos os direitos reservados.</p>
+
+      </div>
+    </div>
+
+  </div><!-- .auth-layout -->
+
+  <!-- ── Intro overlay (ativado após login bem-sucedido) ── -->
   <div id="intro-wrap">
     <div class="i-light" id="i-light"></div>
     <div class="i-haze"></div>
-    <img  class="i-logo" src="assets/img/fx-logo.png" alt="FAVX" draggable="false" id="i-logo" />
+    <img class="i-logo" src="assets/img/fx-logo.png" alt="FAVX" draggable="false" id="i-logo" />
     <div class="i-bloom" id="i-bloom"></div>
     <div class="i-vignette"></div>
     <div class="i-whiteout" id="i-whiteout"></div>
@@ -136,5 +233,6 @@
 
   <script src="assets/js/config.js"></script>
   <script src="assets/js/auth.js"></script>
+
 </body>
 </html>
