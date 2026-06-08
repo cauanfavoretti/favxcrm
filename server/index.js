@@ -1018,12 +1018,11 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
           if (msgType === 'audio' && file_data) {
             const comma = file_data.indexOf(',');
             const b64   = comma !== -1 ? file_data.slice(comma + 1) : file_data;
-            // WhatsApp PTT exige OGG/Opus — declarar esse mimetype permite que a
-            // Evolution API transcreva automaticamente o WebM recebido do browser
             console.log('[evo audio] number:', number, 'b64 length:', b64.length);
+            // sendAudio com encoding:true faz a Evolution API transcodar webm→ogg/ptt automaticamente
             evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
-              `/message/sendMedia/${cfg.evolution_instance_name}`,
-              { number, mediatype: 'audio', media: b64, mimetype: 'audio/ogg; codecs=opus', fileName: 'audio.ogg', ptt: true }
+              `/message/sendWhatsAppAudio/${cfg.evolution_instance_name}`,
+              { number, audio: b64, encoding: true }
             );
             console.log('[evo audio] resp:', JSON.stringify(evoResp)?.slice(0, 300));
           } else {
@@ -2106,13 +2105,19 @@ app.post('/api/webhook/evolution', async (req, res) => {
           const mediaResp = await evoRequest('POST', instCreds[0].api_url, instCreds[0].api_key,
             `/message/downloadMedia/${instance}`, data
           );
-          if (mediaResp?.base64) {
-            const mime = mediaResp.mimetype || 'audio/ogg';
-            inboundFileData = `data:${mime};base64,${mediaResp.base64}`;
+          console.log('[webhook] downloadMedia keys:', Object.keys(mediaResp || {}), 'mimetype:', mediaResp?.mimetype, 'base64 length:', mediaResp?.base64?.length ?? 0);
+          const rawB64 = mediaResp?.base64 || mediaResp?.data || mediaResp?.mediaData;
+          if (rawB64) {
+            // Garante que o b64 não tem prefixo de data URI
+            const cleanB64 = rawB64.includes(',') ? rawB64.split(',')[1] : rawB64;
+            const mime = mediaResp.mimetype || 'audio/ogg; codecs=opus';
+            inboundFileData = `data:${mime};base64,${cleanB64}`;
+          } else {
+            console.warn('[webhook] downloadMedia sem base64:', JSON.stringify(mediaResp)?.slice(0, 200));
           }
         }
       } catch (e) {
-        console.warn('[webhook] downloadMedia audio:', e.message);
+        console.warn('[webhook] downloadMedia erro:', e.message);
       }
     }
 
