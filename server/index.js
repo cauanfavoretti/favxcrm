@@ -2162,6 +2162,23 @@ app.post('/api/webhook/evolution', async (req, res) => {
 });
 
 // ============================================================
+// DIAGNÓSTICO — verifica e cria colunas de áudio se necessário
+// ============================================================
+app.get('/api/diagnostic/audio-columns', auth, async (req, res) => {
+  try {
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS message_type VARCHAR(20) NOT NULL DEFAULT 'text'`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_data TEXT`);
+    const { rows } = await pool.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'messages' AND column_name IN ('message_type','file_data')
+    `);
+    res.json({ ok: true, columns: rows.map(r => r.column_name) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ============================================================
 // ENDPOINT — Clara AI
 // Recebe do n8n o conversation_id + texto e exibe no CRM
 // como mensagem "bot" (bolha verde, label Clara AI).

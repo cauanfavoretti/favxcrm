@@ -635,8 +635,13 @@ async function loadAndRenderChat(convId, conv) {
           if (tempRow && saved?.id) tempRow.dataset.msgId = saved.id;
           if (saved?.sent_at) _lastMsgSentAt = saved.sent_at;
         } catch (err) {
-          console.error('[audio send]', err.message);
-          document.getElementById(tempId)?.remove();
+          console.error('[audio send] erro ao salvar — player mantido localmente:', err.message);
+          const tempRow = document.getElementById(tempId);
+          if (tempRow) {
+            tempRow.style.opacity = '0.6';
+            const timeEl = tempRow.querySelector('.msg-time');
+            if (timeEl) timeEl.textContent += ' · erro ao enviar';
+          }
         }
       };
       reader.readAsDataURL(blob);
