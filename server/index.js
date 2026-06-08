@@ -1933,27 +1933,37 @@ function waExtractContent(data) {
 app.post('/api/webhook/evolution', async (req, res) => {
   const body = req.body || {};
   const eventRaw = (body.event || body.type || '').toLowerCase().replace(/[-_]/g, '.');
-  const isUpsert   = eventRaw.includes('messages.upsert') || eventRaw.includes('message.upsert');
-  const isSent     = eventRaw.includes('send.message') || eventRaw.includes('message.sent');
-  if (!isUpsert && !isSent) return res.sendStatus(200);
+
+  // Log ALL incoming events (incl. descartados) para diagnóstico no Vercel
+  console.log(`[evo-in] event="${eventRaw}" instance="${body.instance}" keys=${Object.keys(body.data||{}).join(',')}`);
+
+  const isUpsert = eventRaw.includes('messages.upsert') || eventRaw.includes('message.upsert');
+  const isSent   = eventRaw.includes('send.message')   || eventRaw.includes('message.sent');
+  if (!isUpsert && !isSent) {
+    console.log(`[evo-in] descartado (evento não tratado): "${eventRaw}"`);
+    return res.sendStatus(200);
+  }
 
   const instance = body.instance;
   const data     = body.data || body.messages?.[0];
-  if (!data) return res.sendStatus(200);
+  if (!data) { console.log('[evo-in] descartado: body.data vazio'); return res.sendStatus(200); }
 
   const key = data.key || {};
   const jid = key.remoteJid || '';
-  if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') return res.sendStatus(200);
+  if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') {
+    console.log(`[evo-in] descartado: jid inválido/grupo "${jid}"`);
+    return res.sendStatus(200);
+  }
 
   const phone = waCleanPhone(jid);
-  if (!phone) return res.sendStatus(200);
+  if (!phone) { console.log(`[evo-in] descartado: phone vazio jid="${jid}"`); return res.sendStatus(200); }
 
   const fromMe     = !!key.fromMe;
   const content    = waExtractContent(data);
   const pushName   = data.pushName || null;
   const externalId = key.id || null;
 
-  console.log(`[webhook] event="${eventRaw}" instance="${instance}" phone="${phone}" externalId="${externalId}"`);
+  console.log(`[evo-in] processando event="${eventRaw}" fromMe=${fromMe} instance="${instance}" phone="${phone}" extId="${externalId}" content="${(content||'').slice(0,60)}"`);
 
   try {
     let cfgRows;
@@ -1968,11 +1978,11 @@ app.post('/api/webhook/evolution', async (req, res) => {
       ));
     }
     if (!cfgRows.length) {
-      console.warn(`[webhook] instância não encontrada: "${instance}"`);
+      console.warn(`[evo-in] DESCARTADO instância não encontrada: "${instance}"`);
       return res.sendStatus(200);
     }
     const subaccount_id = cfgRows[0].subaccount_id;
-    console.log(`[webhook] subaccount_id="${subaccount_id}"`);
+    console.log(`[evo-in] subconta="${subaccount_id}"`);
 
     const variants = waPhoneVariants(phone);
     const placeholders = variants.map((_, i) => `$${i + 2}`).join(',');
@@ -1986,15 +1996,16 @@ app.post('/api/webhook/evolution', async (req, res) => {
     let contact_id;
     if (contacts.length) {
       contact_id = contacts[0].id;
+      console.log(`[evo-in] contato existente id="${contact_id}"`);
     } else {
       const displayPhone = '+' + phone;
-      // pushName quando fromMe=true é o nome do remetente (eu), não do contato
       const contactName = (!fromMe && pushName) ? pushName : displayPhone;
       const { rows: newContact } = await pool.query(
         `INSERT INTO contacts (subaccount_id, name, phone) VALUES ($1, $2, $3) RETURNING id`,
         [subaccount_id, contactName, displayPhone]
       );
       contact_id = newContact[0].id;
+      console.log(`[evo-in] contato criado id="${contact_id}" phone="${displayPhone}"`);
     }
 
     if (!fromMe && pushName) {
@@ -2038,12 +2049,14 @@ app.post('/api/webhook/evolution', async (req, res) => {
     let conv_id;
     if (convs.length) {
       conv_id = convs[0].id;
+      console.log(`[evo-in] conversa existente id="${conv_id}"`);
     } else {
       const { rows: newConv } = await pool.query(
         `INSERT INTO conversations (subaccount_id, contact_id, channel, status) VALUES ($1, $2, 'whatsapp', 'open') RETURNING id`,
         [subaccount_id, contact_id]
       );
       conv_id = newConv[0].id;
+      console.log(`[evo-in] conversa criada id="${conv_id}"`);
     }
 
     if (externalId) {
@@ -2051,7 +2064,10 @@ app.post('/api/webhook/evolution', async (req, res) => {
         `SELECT id FROM messages WHERE conversation_id = $1 AND external_id = $2 LIMIT 1`,
         [conv_id, externalId]
       );
-      if (dup.length) return res.sendStatus(200);
+      if (dup.length) {
+        console.log(`[evo-in] DESCARTADO dedup extId="${externalId}" já existe em conv="${conv_id}"`);
+        return res.sendStatus(200);
+      }
     }
 
     const [,, ownerResult] = await Promise.all([
@@ -2070,6 +2086,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
       ),
     ]);
     const ownerName = ownerResult.rows[0]?.name || null;
+    console.log(`[evo-in] mensagem SALVA conv="${conv_id}" fromMe=${fromMe} dir=${fromMe?'outbound':'inbound'}`);
 
     // Dispara webhooks de agentes com evento message_activity
     const msgTypeMap = {
@@ -2094,7 +2111,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
       assigned_contact: ownerName,
     });
   } catch (err) {
-    console.error('[webhook evolution] ERRO:', err.message, err.stack);
+    console.error(`[evo-in] ERRO ao processar event="${eventRaw}" instance="${body.instance}":`, err.message, err.stack);
   }
 
   res.sendStatus(200);
@@ -2546,10 +2563,19 @@ async function resyncAllWebhooks() {
 }
 
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`[FAVX CRM API] Rodando em http://localhost:${PORT}`);
-    resyncAllWebhooks();
-  });
+  app.listen(PORT, () => console.log(`[FAVX CRM API] Rodando em http://localhost:${PORT}`));
 }
+
+// Roda em qualquer ambiente (servidor tradicional OU Vercel serverless).
+// No Vercel, require.main !== module, então o bloco acima é ignorado,
+// mas este IIFE executa na carga do módulo (cold start).
+let _resyncDone = false;
+(async () => {
+  if (_resyncDone) return;
+  _resyncDone = true;
+  // Pequeno delay para dar tempo à pool de conectar
+  await new Promise(r => setTimeout(r, 1500));
+  resyncAllWebhooks();
+})();
 
 module.exports = app;
