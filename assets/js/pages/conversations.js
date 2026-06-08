@@ -324,14 +324,18 @@ async function loadAndRenderChat(convId, conv) {
   `;
 
   lucide.createIcons();
+
+  chatArea.style.position = 'relative';
+  const loadingOverlay = document.createElement('div');
+  loadingOverlay.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:var(--color-surface-2);z-index:10';
+  loadingOverlay.innerHTML = `<div style="width:24px;height:24px;border:2px solid #e5e7eb;border-top-color:var(--color-accent);border-radius:50%;animation:spin 0.7s linear infinite"></div>`;
+  chatArea.appendChild(loadingOverlay);
+
   const chatMessages = document.getElementById('chatMessages');
-  if (chatMessages) {
-    chatMessages.style.visibility = 'hidden';
-    requestAnimationFrame(() => {
-      chatMessages.scrollTop = chatMessages.scrollHeight;
-      chatMessages.style.visibility = '';
-    });
-  }
+  requestAnimationFrame(() => {
+    if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
+    loadingOverlay.remove();
+  });
 
   // Carrega o painel de proprietário/seguidores
   renderInfoPanel(convId);
