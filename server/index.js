@@ -2134,9 +2134,6 @@ app.post('/api/webhook/evolution', async (req, res) => {
 // ============================================================
 
 app.post('/api/ai-message', async (req, res) => {
-  const dbUrlDefined = !!process.env.DATABASE_URL;
-  const dbUrlPrefix  = process.env.DATABASE_URL?.slice(0, 30) || 'undefined';
-  console.log('[ai-message] DATABASE_URL defined:', dbUrlDefined, '| prefix:', dbUrlPrefix);
   const { conversation_id, message } = req.body || {};
   if (!conversation_id || !message) {
     return res.status(400).json({ message: 'conversation_id e message são obrigatórios.' });
