@@ -307,7 +307,7 @@ async function loadAndRenderChat(convId, conv) {
     <div class="chat-messages" id="chatMessages">
       ${msgs.length === 0 ? `
         <div style="text-align:center;color:var(--color-text-3);font-size:13px;padding:24px">Nenhuma mensagem ainda.</div>
-      ` : msgs.map(m => renderMessageHtml(m, conv?.contact_name)).join('')}
+      ` : msgs.slice().reverse().map(m => renderMessageHtml(m, conv?.contact_name)).join('')}
     </div>
     <div class="chat-input-area" id="chatInputArea">
       <div id="mentionDropdown" class="mention-dropdown" style="display:none"></div>
@@ -324,18 +324,7 @@ async function loadAndRenderChat(convId, conv) {
   `;
 
   lucide.createIcons();
-
-  chatArea.style.position = 'relative';
-  const loadingOverlay = document.createElement('div');
-  loadingOverlay.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:var(--color-surface-2);z-index:10';
-  loadingOverlay.innerHTML = `<div style="width:24px;height:24px;border:2px solid #e5e7eb;border-top-color:var(--color-accent);border-radius:50%;animation:spin 0.7s linear infinite"></div>`;
-  chatArea.appendChild(loadingOverlay);
-
   const chatMessages = document.getElementById('chatMessages');
-  requestAnimationFrame(() => {
-    if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
-    loadingOverlay.remove();
-  });
 
   // Carrega o painel de proprietário/seguidores
   renderInfoPanel(convId);
@@ -424,7 +413,7 @@ async function loadAndRenderChat(convId, conv) {
       const container = document.getElementById('chatMessages');
       if (!container) return;
 
-      const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+      const wasAtBottom = container.scrollTop < 60;
       newMsgs.forEach(m => {
         if (container.querySelector(`[data-msg-id="${m.id}"]`)) return;
         if (m.direction === 'outbound') {
@@ -434,9 +423,9 @@ async function loadAndRenderChat(convId, conv) {
         const tmp = document.createElement('div');
         tmp.innerHTML = renderMessageHtml(m, conv?.contact_name);
         const row = tmp.firstElementChild;
-        container.appendChild(row);
+        container.prepend(row);
       });
-      if (wasAtBottom) container.scrollTop = container.scrollHeight;
+      if (wasAtBottom) container.scrollTop = 0;
 
       // Update sidebar unread for this conv
       const sideItem = document.querySelector(`.conv-item[data-conv-id="${convId}"] .conv-time`);
@@ -543,8 +532,8 @@ async function loadAndRenderChat(convId, conv) {
           <div class="msg-bubble${isInternal ? ' internal' : ''}">${content}</div>
           <div class="msg-time">${new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
         </div>`;
-      container.appendChild(tempRow);
-      container.scrollTop = container.scrollHeight;
+      container.prepend(tempRow);
+      container.scrollTop = 0;
     }
 
     try {
