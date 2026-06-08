@@ -959,8 +959,8 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
 
     await pool.query('UPDATE conversations SET last_message_at = NOW() WHERE id = $1', [req.params.id]);
 
-    // Mensagens internas e de áudio não são enviadas ao contato
-    if (is_internal || msgType === 'audio') {
+    // Mensagens internas não são enviadas ao contato
+    if (is_internal) {
       // Cria notificações para usuários mencionados (erros aqui não afetam o envio da mensagem)
       if (Array.isArray(mention_ids) && mention_ids.length) {
         const senderName = senderRows[0]?.sender_name || 'Alguém';
@@ -1014,10 +1014,21 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
       if (cfg?.evolution_api_url && cfg?.evolution_instance_name) {
         const number = conv[0].contact_phone.replace(/\D/g, '');
         try {
-          const evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
-            `/message/sendText/${cfg.evolution_instance_name}`,
-            { number, text: content }
-          );
+          let evoResp;
+          if (msgType === 'audio' && file_data) {
+            const comma   = file_data.indexOf(',');
+            const b64     = comma !== -1 ? file_data.slice(comma + 1) : file_data;
+            const mime    = comma !== -1 ? file_data.slice(5, file_data.indexOf(';')) : 'audio/webm';
+            evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
+              `/message/sendMedia/${cfg.evolution_instance_name}`,
+              { number, mediatype: 'audio', media: b64, mimetype: mime, ptt: true }
+            );
+          } else {
+            evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
+              `/message/sendText/${cfg.evolution_instance_name}`,
+              { number, text: content }
+            );
+          }
           const externalId = evoResp?.key?.id;
           if (externalId) {
             await pool.query(`UPDATE messages SET external_id = $1 WHERE id = $2`, [externalId, rows[0].id]);
@@ -1968,6 +1979,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
   if (!phone) { console.log(`[evo-in] descartado: phone vazio jid="${jid}"`); return res.sendStatus(200); }
 
   const fromMe     = !!key.fromMe;
+  const isAudioMsg = !!(data.message?.audioMessage || data.message?.pttMessage);
   const content    = waExtractContent(data);
   const pushName   = data.pushName || null;
   const externalId = key.id || null;
@@ -2079,11 +2091,34 @@ app.post('/api/webhook/evolution', async (req, res) => {
       }
     }
 
+    // Para mensagens de áudio, tenta baixar a mídia via Evolution API
+    let inboundFileData = null;
+    if (isAudioMsg) {
+      try {
+        const { rows: instCreds } = await pool.query(
+          `SELECT api_url, api_key FROM whatsapp_instances WHERE instance_name = $1 LIMIT 1`,
+          [instance]
+        );
+        if (instCreds.length) {
+          const mediaResp = await evoRequest('POST', instCreds[0].api_url, instCreds[0].api_key,
+            `/message/downloadMedia/${instance}`, data
+          );
+          if (mediaResp?.base64) {
+            const mime = mediaResp.mimetype || 'audio/ogg';
+            inboundFileData = `data:${mime};base64,${mediaResp.base64}`;
+          }
+        }
+      } catch (e) {
+        console.warn('[webhook] downloadMedia audio:', e.message);
+      }
+    }
+
+    const inboundMsgType = isAudioMsg ? 'audio' : 'text';
     const [,, ownerResult] = await Promise.all([
       pool.query(
-        `INSERT INTO messages (conversation_id, direction, sender_type, content, external_id)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [conv_id, fromMe ? 'outbound' : 'inbound', fromMe ? 'user' : 'contact', content, externalId]
+        `INSERT INTO messages (conversation_id, direction, sender_type, content, external_id, message_type, file_data)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [conv_id, fromMe ? 'outbound' : 'inbound', fromMe ? 'user' : 'contact', content, externalId, inboundMsgType, inboundFileData]
       ),
       pool.query(
         `UPDATE conversations SET last_message_at = NOW(), unread_count = unread_count + ${fromMe ? 0 : 1} WHERE id = $1`,
