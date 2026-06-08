@@ -928,8 +928,10 @@ app.get('/api/conversations/:id/messages', auth, async (req, res) => {
 
 app.post('/api/conversations/:id/messages', auth, async (req, res) => {
   const { subaccount_id, sub: user_id } = req.user;
-  const { content, instance_id, is_internal, mention_ids } = req.body;
-  if (!content) return res.status(400).json({ message: 'Conteúdo é obrigatório.' });
+  const { content, instance_id, is_internal, mention_ids, message_type, file_data } = req.body;
+  const msgType = message_type || 'text';
+  if (msgType === 'text' && !content) return res.status(400).json({ message: 'Conteúdo é obrigatório.' });
+  if (msgType === 'audio' && !file_data) return res.status(400).json({ message: 'Dados de áudio são obrigatórios.' });
 
   try {
     const { rows: conv } = await pool.query(
@@ -944,9 +946,9 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
     if (!conv.length) return res.status(404).json({ message: 'Conversa não encontrada.' });
 
     const { rows } = await pool.query(
-      `INSERT INTO messages (conversation_id, direction, sender_type, sender_id, content, is_internal)
-       VALUES ($1, 'outbound', 'user', $2, $3, $4) RETURNING *`,
-      [req.params.id, user_id, content, !!is_internal]
+      `INSERT INTO messages (conversation_id, direction, sender_type, sender_id, content, is_internal, message_type, file_data)
+       VALUES ($1, 'outbound', 'user', $2, $3, $4, $5, $6) RETURNING *`,
+      [req.params.id, user_id, content || '', !!is_internal, msgType, file_data || null]
     );
 
     // Busca sender_name para retornar ao cliente (necessário para renderização imediata)
@@ -957,8 +959,8 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
 
     await pool.query('UPDATE conversations SET last_message_at = NOW() WHERE id = $1', [req.params.id]);
 
-    // Mensagens internas não são enviadas ao contato
-    if (is_internal) {
+    // Mensagens internas e de áudio não são enviadas ao contato
+    if (is_internal || msgType === 'audio') {
       // Cria notificações para usuários mencionados (erros aqui não afetam o envio da mensagem)
       if (Array.isArray(mention_ids) && mention_ids.length) {
         const senderName = senderRows[0]?.sender_name || 'Alguém';
@@ -2555,6 +2557,8 @@ app.get('/api/integrations/whatsapp', auth, async (req, res) => {
     await pool.query(`ALTER TABLE subaccount_settings ADD COLUMN IF NOT EXISTS evolution_instance_name VARCHAR(200)`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS external_id VARCHAR(200)`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_internal BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS message_type VARCHAR(20) NOT NULL DEFAULT 'text'`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_data TEXT`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_external_id ON messages(conversation_id, external_id) WHERE external_id IS NOT NULL`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS conversation_followers (

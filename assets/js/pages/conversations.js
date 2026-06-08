@@ -234,14 +234,18 @@ function renderMessageHtml(m, contactName) {
   const isInternal = !!m.is_internal;
   const isBot      = m.sender_type === 'bot' && !isInternal;
   const isInbound  = m.direction === 'inbound';
+  const isAudio    = m.message_type === 'audio';
   const bubbleClass = isInternal ? ' internal' : isBot ? ' ai' : '';
+  const bubbleContent = isAudio
+    ? `<audio controls src="${m.file_data}" style="max-width:220px;width:100%;outline:none;display:block"></audio>`
+    : (m.content || '');
   return `
     <div class="msg-row ${isInbound ? 'incoming' : 'outgoing'}" data-msg-id="${m.id}">
       ${isInbound ? `<div class="conv-avatar" style="width:28px;height:28px;font-size:11px">${(contactName||'?')[0].toUpperCase()}</div>` : ''}
       <div class="msg-content">
         ${isInternal ? `<div class="internal-note-label">${_shieldSvg} Nota interna${m.sender_name ? ` · ${m.sender_name}` : ''}</div>` : ''}
         ${isBot ? `<div class="ai-label">${_sparkSvg} Clara AI</div>` : ''}
-        <div class="msg-bubble${bubbleClass}">${m.content || ''}</div>
+        <div class="msg-bubble${bubbleClass}">${bubbleContent}</div>
         <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
       </div>
     </div>`;
@@ -319,6 +323,7 @@ async function loadAndRenderChat(convId, conv) {
         </button>
       </div>
       <textarea class="chat-input" id="chatInput" rows="1" placeholder="Digite uma mensagem..."></textarea>
+      <button id="audioRecordBtn" class="btn btn-ghost btn-sm" style="padding:6px;flex-shrink:0" title="Gravar áudio"><i data-lucide="mic" style="width:16px;height:16px"></i></button>
       <button class="chat-send-btn" id="chatSendBtn"><i data-lucide="send" style="width:16px;height:16px"></i></button>
     </div>
   `;
@@ -554,6 +559,110 @@ async function loadAndRenderChat(convId, conv) {
   }
 
   sendBtn?.addEventListener('click', sendMessage);
+
+  // ── Gravação de áudio ──────────────────────────────────────────
+  const audioRecordBtn = document.getElementById('audioRecordBtn');
+  let _mediaRecorder = null;
+  let _audioChunks   = [];
+  let _recTimerEl    = null;
+  let _recSeconds    = 0;
+  let _recInterval   = null;
+
+  function _stopRecordingUI() {
+    clearInterval(_recInterval);
+    _recTimerEl?.remove();
+    _recTimerEl = null;
+    audioRecordBtn.style.color = '';
+    audioRecordBtn.innerHTML = '<i data-lucide="mic" style="width:16px;height:16px"></i>';
+    lucide.createIcons({ nodes: [audioRecordBtn] });
+  }
+
+  audioRecordBtn?.addEventListener('click', async () => {
+    if (_mediaRecorder && _mediaRecorder.state === 'recording') {
+      _mediaRecorder.stop();
+      return;
+    }
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      alert('Não foi possível acessar o microfone. Verifique as permissões do navegador.');
+      return;
+    }
+
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : 'audio/webm';
+
+    _audioChunks   = [];
+    _mediaRecorder = new MediaRecorder(stream, { mimeType });
+
+    _mediaRecorder.ondataavailable = e => { if (e.data.size > 0) _audioChunks.push(e.data); };
+
+    _mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      _stopRecordingUI();
+
+      const blob   = new Blob(_audioChunks, { type: mimeType });
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const fileData  = reader.result;
+        const container = document.getElementById('chatMessages');
+        const tempId    = `temp-${Date.now()}`;
+
+        if (container) {
+          const tempRow = document.createElement('div');
+          tempRow.className = 'msg-row outgoing';
+          tempRow.id = tempId;
+          tempRow.innerHTML = `
+            <div class="msg-content">
+              <div class="msg-bubble">
+                <audio controls src="${fileData}" style="max-width:220px;width:100%;outline:none;display:block"></audio>
+              </div>
+              <div class="msg-time">${new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
+            </div>`;
+          container.prepend(tempRow);
+          container.scrollTop = 0;
+        }
+
+        try {
+          const saved = await apiFetch(`/api/conversations/${convId}/messages`, {
+            method: 'POST',
+            body: JSON.stringify({ content: '', message_type: 'audio', file_data: fileData, instance_id: activeInstanceId, is_internal: _isInternalMode }),
+          });
+          const tempRow = document.getElementById(tempId);
+          if (tempRow && saved?.id) tempRow.dataset.msgId = saved.id;
+          if (saved?.sent_at) _lastMsgSentAt = saved.sent_at;
+        } catch (err) {
+          console.error('[audio send]', err.message);
+          document.getElementById(tempId)?.remove();
+        }
+      };
+      reader.readAsDataURL(blob);
+    };
+
+    _mediaRecorder.start(1000);
+
+    // UI de gravação
+    audioRecordBtn.style.color = '#ef4444';
+    audioRecordBtn.innerHTML = '<i data-lucide="stop-circle" style="width:16px;height:16px"></i>';
+    lucide.createIcons({ nodes: [audioRecordBtn] });
+
+    _recSeconds = 0;
+    _recTimerEl = document.createElement('span');
+    _recTimerEl.style.cssText = 'font-size:11px;color:#ef4444;font-variant-numeric:tabular-nums;min-width:32px';
+    _recTimerEl.textContent = '0:00';
+    audioRecordBtn.insertAdjacentElement('beforebegin', _recTimerEl);
+
+    _recInterval = setInterval(() => {
+      _recSeconds++;
+      const m = Math.floor(_recSeconds / 60);
+      const s = String(_recSeconds % 60).padStart(2, '0');
+      if (_recTimerEl) _recTimerEl.textContent = `${m}:${s}`;
+      if (_recSeconds >= 120) _mediaRecorder?.stop();
+    }, 1000);
+  });
 }
 
 window.unloadConversations = function() {
