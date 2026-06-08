@@ -1025,7 +1025,7 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
         }
 
         // Dispara webhooks de agentes — mensagem enviada pelo CRM
-        fireAgentWebhooks(subaccount_id, 'message_activity', {
+        await fireAgentWebhooks(subaccount_id, 'message_activity', {
           conversation_id:  req.params.id,
           contact_id:       conv[0].contact_id,
           contact_name:     conv[0].contact_name || conv[0].contact_phone,
@@ -2081,7 +2081,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
     const rawMsg = data.message || {};
     const msgType = Object.keys(msgTypeMap).find(k => rawMsg[k]) || 'texto';
 
-    fireAgentWebhooks(subaccount_id, 'message_activity', {
+    await fireAgentWebhooks(subaccount_id, 'message_activity', {
       conversation_id:  conv_id,
       contact_id:       contact_id,
       contact_name:     pushName || phone,
@@ -2399,19 +2399,25 @@ async function _getWebhookRows(subaccount_id) {
 async function fireAgentWebhooks(subaccount_id, event, payload) {
   try {
     const rows = await _getWebhookRows(subaccount_id);
+    const targets = rows.filter(wh => Array.isArray(wh.events) && wh.events.includes(event));
+    if (!targets.length) return;
+
     const body = JSON.stringify({ event, timestamp: new Date().toISOString(), ...payload });
-    for (const wh of rows) {
-      if (!Array.isArray(wh.events) || !wh.events.includes(event)) continue;
+
+    // Promise.allSettled garante que TODOS os fetch completam (ou atingem timeout)
+    // antes de retornar — essencial em ambientes serverless onde o processo pode
+    // ser pausado logo após enviar a resposta HTTP.
+    await Promise.allSettled(targets.map(wh => {
       const ac    = new AbortController();
       const timer = setTimeout(() => ac.abort(), 5000);
-      fetch(wh.url, {
+      return fetch(wh.url, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
         signal:  ac.signal,
       }).then(() => clearTimeout(timer))
         .catch(e => { clearTimeout(timer); console.warn(`[agent-webhook fire] ${wh.url}:`, e.message); });
-    }
+    }));
   } catch (err) {
     console.error('[agent-webhook fire]', err.message);
   }
