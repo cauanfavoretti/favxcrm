@@ -1181,6 +1181,7 @@ tbody tr:hover { background: var(--color-surface-2); }
   flex-direction: column-reverse;
   gap: 12px;
   background: var(--color-surface-2);
+  overflow-anchor: none;
 }
 
 .msg-row {

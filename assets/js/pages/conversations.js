@@ -604,28 +604,30 @@ async function loadAndRenderChat(convId, conv) {
       stream.getTracks().forEach(t => t.stop());
       _stopRecordingUI();
 
-      const blob   = new Blob(_audioChunks, { type: mimeType });
+      const blob      = new Blob(_audioChunks, { type: mimeType });
+      const localUrl  = URL.createObjectURL(blob);
+      const container = document.getElementById('chatMessages');
+      const tempId    = `temp-${Date.now()}`;
+
+      if (container) {
+        const tempRow = document.createElement('div');
+        tempRow.className = 'msg-row outgoing';
+        tempRow.id = tempId;
+        tempRow.innerHTML = `
+          <div class="msg-content">
+            <div class="msg-bubble">
+              <audio controls src="${localUrl}" style="max-width:220px;width:100%;outline:none;display:block"></audio>
+            </div>
+            <div class="msg-time">${new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
+          </div>`;
+        container.prepend(tempRow);
+        requestAnimationFrame(() => { container.scrollTop = 0; });
+      }
+
+      // Converte para base64 para salvar no banco e enviar ao WhatsApp
       const reader = new FileReader();
       reader.onloadend = async () => {
-        const fileData  = reader.result;
-        const container = document.getElementById('chatMessages');
-        const tempId    = `temp-${Date.now()}`;
-
-        if (container) {
-          const tempRow = document.createElement('div');
-          tempRow.className = 'msg-row outgoing';
-          tempRow.id = tempId;
-          tempRow.innerHTML = `
-            <div class="msg-content">
-              <div class="msg-bubble">
-                <audio controls src="${fileData}" style="max-width:220px;width:100%;outline:none;display:block"></audio>
-              </div>
-              <div class="msg-time">${new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
-            </div>`;
-          container.prepend(tempRow);
-          container.scrollTop = 0;
-        }
-
+        const fileData = reader.result;
         try {
           const saved = await apiFetch(`/api/conversations/${convId}/messages`, {
             method: 'POST',
@@ -642,6 +644,8 @@ async function loadAndRenderChat(convId, conv) {
             const timeEl = tempRow.querySelector('.msg-time');
             if (timeEl) timeEl.textContent += ' · erro ao enviar';
           }
+        } finally {
+          URL.revokeObjectURL(localUrl);
         }
       };
       reader.readAsDataURL(blob);
