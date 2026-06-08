@@ -578,7 +578,9 @@ async function loadAndRenderChat(convId, conv) {
   }
 
   audioRecordBtn?.addEventListener('click', async () => {
+    console.log('[audio] click — state:', _mediaRecorder?.state ?? 'null');
     if (_mediaRecorder && _mediaRecorder.state === 'recording') {
+      console.log('[audio] stopping recorder');
       _mediaRecorder.stop();
       return;
     }
@@ -586,31 +588,40 @@ async function loadAndRenderChat(convId, conv) {
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
+      console.log('[audio] mic ok');
+    } catch (e) {
       alert('Não foi possível acessar o microfone. Verifique as permissões do navegador.');
+      console.error('[audio] mic error:', e);
       return;
     }
 
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus'
       : 'audio/webm';
+    console.log('[audio] mimeType:', mimeType);
 
     _audioChunks   = [];
     _mediaRecorder = new MediaRecorder(stream, { mimeType });
 
-    _mediaRecorder.ondataavailable = e => { if (e.data.size > 0) _audioChunks.push(e.data); };
+    _mediaRecorder.ondataavailable = e => {
+      console.log('[audio] data chunk:', e.data.size);
+      if (e.data.size > 0) _audioChunks.push(e.data);
+    };
 
     _mediaRecorder.onstop = () => {
+      console.log('[audio] onstop — chunks:', _audioChunks.length);
       stream.getTracks().forEach(t => t.stop());
       _stopRecordingUI();
 
       const blob    = new Blob(_audioChunks, { type: mimeType });
+      console.log('[audio] blob size:', blob.size, 'type:', blob.type);
       const tempId  = `temp-${Date.now()}`;
       const timeStr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
       // Lê como base64 primeiro — audio elements não suportam range requests em blob URLs
       const reader = new FileReader();
       reader.onloadend = async () => {
+        console.log('[audio] reader done, fileData length:', reader.result?.length, 'convId:', convId, 'instanceId:', activeInstanceId);
         const fileData  = reader.result;
         const container = document.getElementById('chatMessages');
 
@@ -627,18 +638,23 @@ async function loadAndRenderChat(convId, conv) {
             </div>`;
           container.prepend(tempRow);
           requestAnimationFrame(() => { container.scrollTop = 0; });
+          console.log('[audio] player inserido no DOM');
+        } else {
+          console.warn('[audio] chatMessages container não encontrado');
         }
 
         try {
+          console.log('[audio] enviando para API...');
           const saved = await apiFetch(`/api/conversations/${convId}/messages`, {
             method: 'POST',
             body: JSON.stringify({ content: '', message_type: 'audio', file_data: fileData, instance_id: activeInstanceId, is_internal: _isInternalMode }),
           });
+          console.log('[audio] API ok:', saved?.id);
           const tempRow = document.getElementById(tempId);
           if (tempRow && saved?.id) tempRow.dataset.msgId = saved.id;
           if (saved?.sent_at) _lastMsgSentAt = saved.sent_at;
         } catch (err) {
-          console.error('[audio send] erro ao salvar — player mantido localmente:', err.message);
+          console.error('[audio send] erro:', err);
           const tempRow = document.getElementById(tempId);
           if (tempRow) {
             tempRow.style.opacity = '0.6';
