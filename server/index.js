@@ -2157,8 +2157,8 @@ app.post('/api/ai-message', async (req, res) => {
 
     res.status(201).json({ message_id: msg.id });
   } catch (err) {
-    console.error('[ai-message] erro:', err.message);
-    res.status(500).json({ message: 'Erro interno.' });
+    console.error('[ai-message] erro:', err.message, '| conversation_id:', conversation_id);
+    res.status(500).json({ message: err.message });
   }
 });
 
