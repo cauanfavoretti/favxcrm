@@ -626,19 +626,34 @@ async function loadAndRenderChat(convId, conv) {
         const container = document.getElementById('chatMessages');
 
         if (container) {
+          // Cria o elemento de áudio via DOM API para evitar problemas com innerHTML + base64 longa
+          const audioEl = document.createElement('audio');
+          audioEl.controls = true;
+          audioEl.src = fileData;
+          audioEl.style.cssText = 'max-width:220px;width:100%;outline:none;display:block';
+
+          const bubble = document.createElement('div');
+          bubble.className = 'msg-bubble';
+          bubble.appendChild(audioEl);
+
+          const timeEl = document.createElement('div');
+          timeEl.className = 'msg-time';
+          timeEl.textContent = timeStr;
+
+          const content = document.createElement('div');
+          content.className = 'msg-content';
+          content.appendChild(bubble);
+          content.appendChild(timeEl);
+
           const tempRow = document.createElement('div');
           tempRow.className = 'msg-row outgoing';
           tempRow.id = tempId;
-          tempRow.innerHTML = `
-            <div class="msg-content">
-              <div class="msg-bubble">
-                <audio controls src="${fileData}" style="max-width:220px;width:100%;outline:none;display:block"></audio>
-              </div>
-              <div class="msg-time">${timeStr}</div>
-            </div>`;
+          tempRow.appendChild(content);
+
           container.prepend(tempRow);
-          requestAnimationFrame(() => { container.scrollTop = 0; });
-          console.log('[audio] player inserido no DOM');
+          tempRow.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+          container.scrollTop = 0;
+          console.log('[audio] player inserido — offsetHeight:', tempRow.offsetHeight, 'rect:', JSON.stringify(tempRow.getBoundingClientRect()));
         } else {
           console.warn('[audio] chatMessages container não encontrado');
         }

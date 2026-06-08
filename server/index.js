@@ -1019,10 +1019,12 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
             const comma   = file_data.indexOf(',');
             const b64     = comma !== -1 ? file_data.slice(comma + 1) : file_data;
             const mime    = comma !== -1 ? file_data.slice(5, file_data.indexOf(';')) : 'audio/webm';
+            console.log('[evo audio] number:', number, 'mime:', mime, 'b64 length:', b64.length);
             evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
               `/message/sendMedia/${cfg.evolution_instance_name}`,
               { number, mediatype: 'audio', media: b64, mimetype: mime, ptt: true }
             );
+            console.log('[evo audio] resp:', JSON.stringify(evoResp)?.slice(0, 200));
           } else {
             evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
               `/message/sendText/${cfg.evolution_instance_name}`,
@@ -1034,7 +1036,7 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
             await pool.query(`UPDATE messages SET external_id = $1 WHERE id = $2`, [externalId, rows[0].id]);
           }
         } catch (e) {
-          console.warn('[evo send] erro:', e.message);
+          console.warn('[evo send] erro:', e.message, e.stack?.split('\n')[1]);
         }
 
         // Dispara webhooks de agentes — mensagem enviada pelo CRM
