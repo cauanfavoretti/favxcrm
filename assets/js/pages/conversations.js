@@ -325,7 +325,13 @@ async function loadAndRenderChat(convId, conv) {
 
   lucide.createIcons();
   const chatMessages = document.getElementById('chatMessages');
-  if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
+  if (chatMessages) {
+    chatMessages.style.visibility = 'hidden';
+    requestAnimationFrame(() => {
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+      chatMessages.style.visibility = '';
+    });
+  }
 
   // Carrega o painel de proprietário/seguidores
   renderInfoPanel(convId);
