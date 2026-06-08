@@ -2125,77 +2125,35 @@ app.post('/api/webhook/evolution', async (req, res) => {
 });
 
 // ============================================================
-// ENDPOINT — Clara AI (n8n envia aqui após disparar pelo Evolution)
-// Salva a mensagem com sender_type='bot' para exibição visual especial.
+// ENDPOINT — Clara AI
+// Recebe do n8n o conversation_id + texto e exibe no CRM
+// como mensagem "bot" (bolha verde, label Clara AI).
 //
 // POST /api/ai-message
-// Headers: x-instance-name, x-api-key
-// Body:    { phone, message }
+// Body: { conversation_id, message }
 // ============================================================
 
 app.post('/api/ai-message', async (req, res) => {
-  const instanceName = (req.headers['x-instance-name'] || '').trim();
-  const apiKey       = (req.headers['x-api-key'] || '').trim();
-
-  if (!instanceName || !apiKey) {
-    return res.status(401).json({ message: 'Headers x-instance-name e x-api-key são obrigatórios.' });
+  const { conversation_id, message } = req.body || {};
+  if (!conversation_id || !message) {
+    return res.status(400).json({ message: 'conversation_id e message são obrigatórios.' });
   }
 
-  const { rows: instRows } = await pool.query(
-    `SELECT subaccount_id FROM whatsapp_instances WHERE instance_name = $1 AND api_key = $2 LIMIT 1`,
-    [instanceName, apiKey]
-  );
-  if (!instRows.length) return res.status(401).json({ message: 'Credenciais inválidas.' });
-
-  const { subaccount_id } = instRows[0];
-  const { phone, message } = req.body || {};
-  if (!phone || !message) return res.status(400).json({ message: 'phone e message são obrigatórios.' });
-
-  const phoneClean = phone.replace(/\D/g, '');
-  if (!phoneClean) return res.status(400).json({ message: 'phone inválido.' });
-
   try {
-    const variants     = waPhoneVariants(phoneClean);
-    const placeholders = variants.map((_, i) => `$${i + 2}`).join(',');
-    const { rows: contacts } = await pool.query(
-      `SELECT id FROM contacts WHERE subaccount_id = $1
-       AND REGEXP_REPLACE(phone, '[^0-9]', '', 'g') = ANY(ARRAY[${placeholders}]) LIMIT 1`,
-      [subaccount_id, ...variants]
+    const { rows: conv } = await pool.query(
+      `SELECT id FROM conversations WHERE id = $1 LIMIT 1`, [conversation_id]
     );
-
-    let contact_id;
-    if (contacts.length) {
-      contact_id = contacts[0].id;
-    } else {
-      const { rows: nc } = await pool.query(
-        `INSERT INTO contacts (subaccount_id, name, phone) VALUES ($1, $2, $3) RETURNING id`,
-        [subaccount_id, '+' + phoneClean, '+' + phoneClean]
-      );
-      contact_id = nc[0].id;
-    }
-
-    const { rows: convRows } = await pool.query(
-      `SELECT id FROM conversations
-       WHERE subaccount_id = $1 AND contact_id = $2 AND channel = 'whatsapp' AND status = 'open' LIMIT 1`,
-      [subaccount_id, contact_id]
-    );
-    const conv_id = convRows.length
-      ? convRows[0].id
-      : (await pool.query(
-          `INSERT INTO conversations (subaccount_id, contact_id, channel, status)
-           VALUES ($1, $2, 'whatsapp', 'open') RETURNING id`,
-          [subaccount_id, contact_id]
-        )).rows[0].id;
+    if (!conv.length) return res.status(404).json({ message: 'Conversa não encontrada.' });
 
     const { rows: [msg] } = await pool.query(
       `INSERT INTO messages (conversation_id, direction, sender_type, content)
        VALUES ($1, 'outbound', 'bot', $2) RETURNING id`,
-      [conv_id, message]
+      [conversation_id, message]
     );
 
-    await pool.query(`UPDATE conversations SET last_message_at = NOW() WHERE id = $1`, [conv_id]);
+    await pool.query(`UPDATE conversations SET last_message_at = NOW() WHERE id = $1`, [conversation_id]);
 
-    res.status(201).json({ conversation_id: conv_id, contact_id, message_id: msg.id });
+    res.status(201).json({ message_id: msg.id });
   } catch (err) {
     console.error('[ai-message] erro:', err.message);
     res.status(500).json({ message: 'Erro interno.' });
