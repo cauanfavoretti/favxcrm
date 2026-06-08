@@ -88,6 +88,9 @@ function _waInstanceCard(inst, i) {
     <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
       <span class="badge ${isConnected ? 'badge-green' : 'badge-yellow'}">${isConnected ? 'Conectado' : 'Desconectado'}</span>
       ${!isConnected ? `<button class="btn btn-primary btn-sm" onclick="_waOpenQr('${inst.id}','${inst.instance_name}')">Conectar</button>` : ''}
+      <button class="btn btn-ghost btn-sm" title="Re-sincronizar webhook (resolve mensagens externas não aparecendo no CRM)" onclick="_waSyncWebhook('${inst.id}')">
+        <i data-lucide="refresh-cw" style="width:14px;height:14px"></i>
+      </button>
       <button class="btn btn-ghost btn-sm" style="color:var(--color-red)" onclick="_waDeleteInstance('${inst.id}')">
         <i data-lucide="trash-2" style="width:14px;height:14px"></i>
       </button>
@@ -261,6 +264,20 @@ function _waOpenQrModal(id, instanceName, base64) {
     } catch {}
   }, 3000);
 }
+
+// ── Sync webhook ─────────────────────────────────────────────
+
+window._waSyncWebhook = async function(id) {
+  try {
+    const btn = document.querySelector(`#waCard_${id} [onclick*="_waSyncWebhook"]`);
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+    await apiFetch(`/api/whatsapp-instances/${id}/sync-webhook`, { method: 'POST' });
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+    alert('Webhook re-sincronizado! Mensagens enviadas externamente (n8n, API) agora aparecerão no CRM.');
+  } catch (err) {
+    alert('Erro ao sincronizar: ' + err.message);
+  }
+};
 
 // ── Delete instance ───────────────────────────────────────────
 

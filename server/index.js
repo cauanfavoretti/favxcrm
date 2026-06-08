@@ -1933,9 +1933,9 @@ function waExtractContent(data) {
 app.post('/api/webhook/evolution', async (req, res) => {
   const body = req.body || {};
   const eventRaw = (body.event || body.type || '').toLowerCase().replace(/[-_]/g, '.');
-  if (!eventRaw.includes('messages.upsert') && !eventRaw.includes('message.upsert')) {
-    return res.sendStatus(200);
-  }
+  const isUpsert   = eventRaw.includes('messages.upsert') || eventRaw.includes('message.upsert');
+  const isSent     = eventRaw.includes('send.message') || eventRaw.includes('message.sent');
+  if (!isUpsert && !isSent) return res.sendStatus(200);
 
   const instance = body.instance;
   const data     = body.data || body.messages?.[0];
@@ -2104,6 +2104,19 @@ app.post('/api/webhook/evolution', async (req, res) => {
 // INTEGRATIONS — WHATSAPP (Evolution API proxy)
 // ============================================================
 
+async function evoSetWebhook(apiUrl, apiKey, instanceName) {
+  const webhookBase = (process.env.WEBHOOK_BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+  await evoRequest('POST', apiUrl, apiKey, `/webhook/set/${instanceName}`, {
+    webhook: {
+      enabled: true,
+      url: `${webhookBase}/api/webhook/evolution`,
+      webhookByEvents: false,
+      webhookBase64: false,
+      events: ['MESSAGES_UPSERT', 'SEND_MESSAGE', 'MESSAGE_SENT', 'CONNECTION_UPDATE'],
+    }
+  });
+}
+
 async function evoRequest(method, baseUrl, apiKey, path, body) {
   const url = `${baseUrl.replace(/\/$/, '')}${path}`;
   const res = await fetch(url, {
@@ -2162,21 +2175,8 @@ app.post('/api/whatsapp-instances', auth, requireAdmin, async (req, res) => {
       [subaccount_id, instanceName, api_url.trim(), api_key.trim()]
     );
 
-    const webhookBase = (process.env.WEBHOOK_BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
-    try {
-      await evoRequest('POST', api_url.trim(), api_key.trim(),
-        `/webhook/set/${instanceName}`, {
-          webhook: {
-            enabled: true,
-            url: `${webhookBase}/api/webhook/evolution`,
-            webhookByEvents: false,
-            webhookBase64: false,
-            events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
-          }
-        });
-    } catch (whErr) {
-      console.warn('[evo webhook setup]', whErr.message);
-    }
+    try { await evoSetWebhook(api_url.trim(), api_key.trim(), instanceName); }
+    catch (whErr) { console.warn('[evo webhook setup]', whErr.message); }
 
     const base64 = qrData?.qrcode?.base64 || qrData?.base64 || null;
     const state  = qrData?.instance?.state || null;
@@ -2246,6 +2246,22 @@ app.delete('/api/whatsapp-instances/:id', auth, requireAdmin, async (req, res) =
     } catch {}
     await pool.query('DELETE FROM whatsapp_instances WHERE id = $1', [inst.id]);
     res.status(204).send();
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.post('/api/whatsapp-instances/:id/sync-webhook', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM whatsapp_instances WHERE id = $1 AND subaccount_id = $2',
+      [req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Instância não encontrada.' });
+    const inst = rows[0];
+    await evoSetWebhook(inst.api_url, inst.api_key, inst.instance_name);
+    res.json({ ok: true, message: 'Webhook re-sincronizado com sucesso.' });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
