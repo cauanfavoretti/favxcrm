@@ -237,15 +237,18 @@ function renderMessageHtml(m, contactName) {
   const isAudio    = m.message_type === 'audio';
   const bubbleClass = isInternal ? ' internal' : isBot ? ' ai' : '';
   const bubbleContent = isAudio
-    ? `<audio controls src="${m.file_data}" style="max-width:220px;width:100%;outline:none;display:block"></audio>`
+    ? `<audio controls src="${m.file_data || ''}" style="width:240px;max-width:100%;outline:none;display:block;height:40px"></audio>`
     : (m.content || '');
+  const bubbleStyle = isAudio
+    ? (isInbound ? 'background:#dbeafe;padding:8px 12px' : 'background:#1d4ed8;padding:8px 12px')
+    : '';
   return `
     <div class="msg-row ${isInbound ? 'incoming' : 'outgoing'}" data-msg-id="${m.id}">
       ${isInbound ? `<div class="conv-avatar" style="width:28px;height:28px;font-size:11px">${(contactName||'?')[0].toUpperCase()}</div>` : ''}
       <div class="msg-content">
         ${isInternal ? `<div class="internal-note-label">${_shieldSvg} Nota interna${m.sender_name ? ` · ${m.sender_name}` : ''}</div>` : ''}
         ${isBot ? `<div class="ai-label">${_sparkSvg} Clara AI</div>` : ''}
-        <div class="msg-bubble${bubbleClass}">${bubbleContent}</div>
+        <div class="msg-bubble${bubbleClass}" ${bubbleStyle ? `style="${bubbleStyle}"` : ''}>${bubbleContent}</div>
         <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
       </div>
     </div>`;
@@ -630,10 +633,11 @@ async function loadAndRenderChat(convId, conv) {
           const audioEl = document.createElement('audio');
           audioEl.controls = true;
           audioEl.src = fileData;
-          audioEl.style.cssText = 'max-width:220px;width:100%;outline:none;display:block';
+          audioEl.style.cssText = 'width:240px;outline:none;display:block;height:40px';
 
           const bubble = document.createElement('div');
           bubble.className = 'msg-bubble';
+          bubble.style.cssText = 'background:#1d4ed8;padding:8px 12px';
           bubble.appendChild(audioEl);
 
           const timeEl = document.createElement('div');
@@ -651,18 +655,8 @@ async function loadAndRenderChat(convId, conv) {
           tempRow.appendChild(content);
 
           container.prepend(tempRow);
-          // duplo RAF para garantir que o layout foi processado antes de scrollar
-          requestAnimationFrame(() => requestAnimationFrame(() => {
-            container.scrollTop = 0;
-          }));
-          const cRect = container.getBoundingClientRect();
-          const rRect = tempRow.getBoundingClientRect();
-          console.log('[audio] container rect:', JSON.stringify({top: Math.round(cRect.top), bottom: Math.round(cRect.bottom), h: Math.round(cRect.height), scrollTop: container.scrollTop, scrollH: container.scrollHeight, clientH: container.clientHeight}));
-          console.log('[audio] tempRow rect:', JSON.stringify({top: Math.round(rRect.top), bottom: Math.round(rRect.bottom), h: Math.round(rRect.height)}));
-          setTimeout(() => {
-            const el = document.getElementById(tempId);
-            console.log('[audio] 3s check — still in DOM:', !!el, 'offsetHeight:', el?.offsetHeight, 'data-msg-id:', el?.dataset.msgId);
-          }, 3000);
+          container.scrollTop = 0;
+          console.log('[audio] player inserido — scrollTop após prepend:', container.scrollTop);
         } else {
           console.warn('[audio] chatMessages container não encontrado');
         }
