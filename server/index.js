@@ -1934,7 +1934,8 @@ app.post('/api/webhook/evolution', async (req, res) => {
   const body = req.body || {};
   const eventRaw = (body.event || body.type || '').toLowerCase().replace(/[-_]/g, '.');
 
-  // Log ALL incoming events (incl. descartados) para diagnóstico no Vercel
+  // DIAGNÓSTICO TEMPORÁRIO — remover após confirmar o payload do n8n
+  console.log('[evo-in] RAW:', JSON.stringify(body).slice(0, 800));
   console.log(`[evo-in] event="${eventRaw}" instance="${body.instance}" keys=${Object.keys(body.data||{}).join(',')}`);
 
   const isUpsert = eventRaw.includes('messages.upsert') || eventRaw.includes('message.upsert');
