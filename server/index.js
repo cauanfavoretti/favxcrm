@@ -2164,7 +2164,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
 // ============================================================
 // DIAGNÓSTICO — verifica e cria colunas de áudio se necessário
 // ============================================================
-app.get('/api/diagnostic/audio-columns', auth, async (req, res) => {
+app.get('/api/diagnostic/audio-columns', async (req, res) => {
   try {
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS message_type VARCHAR(20) NOT NULL DEFAULT 'text'`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_data TEXT`);
