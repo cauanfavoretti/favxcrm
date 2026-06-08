@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 3001;
 
 app.set('etag', false);
 app.use(cors({ origin: '*' }));
-app.use(express.json());
+app.use(express.json({ limit: '20mb' }));
 app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 app.use(express.static(require('path').join(__dirname, '..')));
 
