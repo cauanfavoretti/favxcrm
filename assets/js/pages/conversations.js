@@ -228,16 +228,20 @@ async function renderInfoPanel(convId) {
 }
 
 const _shieldSvg = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;
+const _sparkSvg  = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>`;
 
 function renderMessageHtml(m, contactName) {
   const isInternal = !!m.is_internal;
+  const isBot      = m.sender_type === 'bot' && !isInternal;
   const isInbound  = m.direction === 'inbound';
+  const bubbleClass = isInternal ? ' internal' : isBot ? ' ai' : '';
   return `
     <div class="msg-row ${isInbound ? 'incoming' : 'outgoing'}" data-msg-id="${m.id}">
       ${isInbound ? `<div class="conv-avatar" style="width:28px;height:28px;font-size:11px">${(contactName||'?')[0].toUpperCase()}</div>` : ''}
       <div class="msg-content">
         ${isInternal ? `<div class="internal-note-label">${_shieldSvg} Nota interna${m.sender_name ? ` · ${m.sender_name}` : ''}</div>` : ''}
-        <div class="msg-bubble${isInternal ? ' internal' : ''}">${m.content || ''}</div>
+        ${isBot ? `<div class="ai-label">${_sparkSvg} Clara AI</div>` : ''}
+        <div class="msg-bubble${bubbleClass}">${m.content || ''}</div>
         <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
       </div>
     </div>`;
