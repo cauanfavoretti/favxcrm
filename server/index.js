@@ -2134,6 +2134,8 @@ app.post('/api/webhook/evolution', async (req, res) => {
 // ============================================================
 
 app.post('/api/ai-message', async (req, res) => {
+  console.log('[ai-message] body:', JSON.stringify(req.body));
+  console.log('[ai-message] content-type:', req.headers['content-type']);
   const { conversation_id, message } = req.body || {};
   if (!conversation_id || !message) {
     return res.status(400).json({ message: 'conversation_id e message são obrigatórios.' });
