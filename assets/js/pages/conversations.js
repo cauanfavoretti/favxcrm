@@ -417,6 +417,10 @@ async function loadAndRenderChat(convId, conv) {
       const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
       newMsgs.forEach(m => {
         if (container.querySelector(`[data-msg-id="${m.id}"]`)) return;
+        if (m.direction === 'outbound') {
+          const tempRow = container.querySelector('.msg-row.outgoing:not([data-msg-id])');
+          if (tempRow) { tempRow.dataset.msgId = m.id; return; }
+        }
         const tmp = document.createElement('div');
         tmp.innerHTML = renderMessageHtml(m, conv?.contact_name);
         const row = tmp.firstElementChild;
