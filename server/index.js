@@ -1938,15 +1938,21 @@ app.post('/api/webhook/evolution', async (req, res) => {
   console.log(`[evo-in] event="${eventRaw}" instance="${body.instance}" keys=${Object.keys(body.data||{}).join(',')}`);
 
   const isUpsert = eventRaw.includes('messages.upsert') || eventRaw.includes('message.upsert');
-  const isSent   = eventRaw.includes('send.message')   || eventRaw.includes('message.sent');
+  const isSent   = eventRaw.includes('send.message')   || eventRaw.includes('message.sent') || eventRaw.includes('messages.sent');
   if (!isUpsert && !isSent) {
     console.log(`[evo-in] descartado (evento não tratado): "${eventRaw}"`);
     return res.sendStatus(200);
   }
 
   const instance = body.instance;
-  const data     = body.data || body.messages?.[0];
+  let data = body.data || body.messages?.[0];
   if (!data) { console.log('[evo-in] descartado: body.data vazio'); return res.sendStatus(200); }
+
+  // Evolution API v2: MESSAGES_UPSERT envolve as mensagens em data.messages[]
+  // Quando n8n ou outra API envia, o payload chega como { data: { messages: [{key,message,...}], type: 'notify' } }
+  if (!data.key && Array.isArray(data.messages) && data.messages.length) {
+    data = data.messages[0];
+  }
 
   const key = data.key || {};
   const jid = key.remoteJid || '';
