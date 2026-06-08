@@ -2054,23 +2054,22 @@ app.post('/api/webhook/evolution', async (req, res) => {
       if (dup.length) return res.sendStatus(200);
     }
 
-    await pool.query(
-      `INSERT INTO messages (conversation_id, direction, sender_type, content, external_id)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [conv_id, fromMe ? 'outbound' : 'inbound', fromMe ? 'user' : 'contact', content, externalId]
-    );
-
-    await pool.query(
-      `UPDATE conversations SET last_message_at = NOW(), unread_count = unread_count + ${fromMe ? 0 : 1} WHERE id = $1`,
-      [conv_id]
-    );
-
-    // Busca o proprietário da conversa para o payload do webhook
-    const { rows: ownerRows } = await pool.query(
-      `SELECT u.name FROM conversations cv LEFT JOIN users u ON u.id = cv.assigned_to WHERE cv.id = $1`,
-      [conv_id]
-    );
-    const ownerName = ownerRows[0]?.name || null;
+    const [,, ownerResult] = await Promise.all([
+      pool.query(
+        `INSERT INTO messages (conversation_id, direction, sender_type, content, external_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [conv_id, fromMe ? 'outbound' : 'inbound', fromMe ? 'user' : 'contact', content, externalId]
+      ),
+      pool.query(
+        `UPDATE conversations SET last_message_at = NOW(), unread_count = unread_count + ${fromMe ? 0 : 1} WHERE id = $1`,
+        [conv_id]
+      ),
+      pool.query(
+        `SELECT u.name FROM conversations cv LEFT JOIN users u ON u.id = cv.assigned_to WHERE cv.id = $1`,
+        [conv_id]
+      ),
+    ]);
+    const ownerName = ownerResult.rows[0]?.name || null;
 
     // Dispara webhooks de agentes com evento message_activity
     const msgTypeMap = {
@@ -2281,6 +2280,7 @@ app.post('/api/agent-webhooks', auth, requireAdmin, async (req, res) => {
        VALUES ($1, $2, $3, $4) RETURNING *`,
       [subaccount_id, name.trim(), url.trim(), JSON.stringify(events || [])]
     );
+    _invalidateWhCache(subaccount_id);
     res.status(201).json(rows[0]);
   } catch (err) {
     console.error('[agent-webhooks POST]', err.message);
@@ -2306,6 +2306,7 @@ app.put('/api/agent-webhooks/:id', auth, requireAdmin, async (req, res) => {
        req.params.id, subaccount_id]
     );
     if (!rows.length) return res.status(404).json({ message: 'Webhook não encontrado.' });
+    _invalidateWhCache(subaccount_id);
     res.json(rows[0]);
   } catch (err) {
     console.error('[agent-webhooks PUT]', err.message);
@@ -2321,6 +2322,7 @@ app.delete('/api/agent-webhooks/:id', auth, requireAdmin, async (req, res) => {
       [req.params.id, subaccount_id]
     );
     if (!rowCount) return res.status(404).json({ message: 'Webhook não encontrado.' });
+    _invalidateWhCache(subaccount_id);
     res.status(204).send();
   } catch (err) {
     console.error('[agent-webhooks DELETE]', err.message);
@@ -2373,19 +2375,42 @@ app.post('/api/notifications/:id/read', auth, async (req, res) => {
   }
 });
 
+// Cache em memória para URLs de webhook por subconta — evita query no banco a cada mensagem
+const _whCache = new Map(); // subaccount_id → { rows: [{url,events}], expiry }
+const WH_CACHE_TTL = 30_000; // 30 segundos
+
+function _invalidateWhCache(subaccount_id) {
+  _whCache.delete(subaccount_id);
+}
+
+async function _getWebhookRows(subaccount_id) {
+  const now    = Date.now();
+  const cached = _whCache.get(subaccount_id);
+  if (cached && cached.expiry > now) return cached.rows;
+
+  const { rows } = await pool.query(
+    `SELECT url, events FROM agent_webhooks WHERE subaccount_id = $1 AND is_active = TRUE`,
+    [subaccount_id]
+  );
+  _whCache.set(subaccount_id, { rows, expiry: now + WH_CACHE_TTL });
+  return rows;
+}
+
 async function fireAgentWebhooks(subaccount_id, event, payload) {
   try {
-    const { rows } = await pool.query(
-      `SELECT url FROM agent_webhooks
-       WHERE subaccount_id = $1 AND is_active = TRUE AND events @> $2::jsonb`,
-      [subaccount_id, JSON.stringify([event])]
-    );
+    const rows = await _getWebhookRows(subaccount_id);
+    const body = JSON.stringify({ event, timestamp: new Date().toISOString(), ...payload });
     for (const wh of rows) {
+      if (!Array.isArray(wh.events) || !wh.events.includes(event)) continue;
+      const ac    = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 5000);
       fetch(wh.url, {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event, timestamp: new Date().toISOString(), ...payload }),
-      }).catch(e => console.warn(`[agent-webhook fire] ${wh.url}:`, e.message));
+        body,
+        signal:  ac.signal,
+      }).then(() => clearTimeout(timer))
+        .catch(e => { clearTimeout(timer); console.warn(`[agent-webhook fire] ${wh.url}:`, e.message); });
     }
   } catch (err) {
     console.error('[agent-webhook fire]', err.message);
