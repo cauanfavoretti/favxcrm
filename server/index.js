@@ -2529,8 +2529,27 @@ app.get('/api/integrations/whatsapp', auth, async (req, res) => {
   } catch {}
 })();
 
+// Re-sincroniza webhooks de todas as instâncias na inicialização
+// Garante que SEND_MESSAGE/MESSAGE_SENT fiquem sempre configurados,
+// incluindo instâncias conectadas antes deste deploy.
+async function resyncAllWebhooks() {
+  try {
+    const { rows } = await pool.query(`SELECT api_url, api_key, instance_name FROM whatsapp_instances`);
+    await Promise.allSettled(rows.map(inst =>
+      evoSetWebhook(inst.api_url, inst.api_key, inst.instance_name)
+        .then(() => console.log(`[webhook resync] OK: ${inst.instance_name}`))
+        .catch(e  => console.warn(`[webhook resync] ${inst.instance_name}:`, e.message))
+    ));
+  } catch (e) {
+    console.warn('[webhook resync] erro geral:', e.message);
+  }
+}
+
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`[FAVX CRM API] Rodando em http://localhost:${PORT}`));
+  app.listen(PORT, () => {
+    console.log(`[FAVX CRM API] Rodando em http://localhost:${PORT}`);
+    resyncAllWebhooks();
+  });
 }
 
 module.exports = app;
