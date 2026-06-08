@@ -2130,15 +2130,28 @@ app.post('/api/webhook/evolution', async (req, res) => {
 
 async function evoSetWebhook(apiUrl, apiKey, instanceName) {
   const webhookBase = (process.env.WEBHOOK_BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
-  await evoRequest('POST', apiUrl, apiKey, `/webhook/set/${instanceName}`, {
-    webhook: {
-      enabled: true,
-      url: `${webhookBase}/api/webhook/evolution`,
-      webhookByEvents: false,
-      webhookBase64: false,
-      events: ['MESSAGES_UPSERT', 'SEND_MESSAGE', 'MESSAGE_SENT', 'CONNECTION_UPDATE'],
-    }
-  });
+  const webhookUrl  = `${webhookBase}/api/webhook/evolution`;
+
+  // Inclui nomes em UPPER_SNAKE (Evolution v1) e lower.dot (Evolution v2)
+  // para garantir compatibilidade independente da versão instalada.
+  const events = [
+    'MESSAGES_UPSERT', 'messages.upsert',
+    'SEND_MESSAGE',    'send.message',
+    'MESSAGE_SENT',    'message.sent',
+    'MESSAGES_SENT',   'messages.sent',
+    'CONNECTION_UPDATE',
+  ];
+
+  // Tenta endpoint v2 primeiro; cai no v1 se falhar
+  try {
+    await evoRequest('POST', apiUrl, apiKey, `/webhook/set/${instanceName}`, {
+      webhook: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events },
+    });
+  } catch {
+    await evoRequest('POST', apiUrl, apiKey, `/webhook/set/${instanceName}`, {
+      enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events,
+    });
+  }
 }
 
 async function evoRequest(method, baseUrl, apiKey, path, body) {
@@ -2270,6 +2283,22 @@ app.delete('/api/whatsapp-instances/:id', auth, requireAdmin, async (req, res) =
     } catch {}
     await pool.query('DELETE FROM whatsapp_instances WHERE id = $1', [inst.id]);
     res.status(204).send();
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Endpoint interno para forçar resync de todos os webhooks manualmente
+app.post('/api/admin/resync-webhooks', auth, requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT api_url, api_key, instance_name FROM whatsapp_instances`);
+    const results = await Promise.allSettled(
+      rows.map(inst => evoSetWebhook(inst.api_url, inst.api_key, inst.instance_name)
+        .then(() => ({ instance: inst.instance_name, ok: true }))
+        .catch(e  => ({ instance: inst.instance_name, ok: false, error: e.message }))
+      )
+    );
+    res.json({ results: results.map(r => r.value || r.reason) });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
