@@ -651,9 +651,18 @@ async function loadAndRenderChat(convId, conv) {
           tempRow.appendChild(content);
 
           container.prepend(tempRow);
-          tempRow.scrollIntoView({ behavior: 'instant', block: 'nearest' });
-          container.scrollTop = 0;
-          console.log('[audio] player inserido — offsetHeight:', tempRow.offsetHeight, 'rect:', JSON.stringify(tempRow.getBoundingClientRect()));
+          // duplo RAF para garantir que o layout foi processado antes de scrollar
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            container.scrollTop = 0;
+          }));
+          const cRect = container.getBoundingClientRect();
+          const rRect = tempRow.getBoundingClientRect();
+          console.log('[audio] container rect:', JSON.stringify({top: Math.round(cRect.top), bottom: Math.round(cRect.bottom), h: Math.round(cRect.height), scrollTop: container.scrollTop, scrollH: container.scrollHeight, clientH: container.clientHeight}));
+          console.log('[audio] tempRow rect:', JSON.stringify({top: Math.round(rRect.top), bottom: Math.round(rRect.bottom), h: Math.round(rRect.height)}));
+          setTimeout(() => {
+            const el = document.getElementById(tempId);
+            console.log('[audio] 3s check — still in DOM:', !!el, 'offsetHeight:', el?.offsetHeight, 'data-msg-id:', el?.dataset.msgId);
+          }, 3000);
         } else {
           console.warn('[audio] chatMessages container não encontrado');
         }
