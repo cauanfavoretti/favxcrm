@@ -237,7 +237,7 @@ function renderMessageHtml(m, contactName) {
   const isAudio    = m.message_type === 'audio';
   const bubbleClass = isInternal ? ' internal' : isBot ? ' ai' : '';
   const bubbleContent = isAudio
-    ? `<audio controls src="${m.file_data || ''}" style="width:240px;max-width:100%;outline:none;display:block;height:40px"></audio>`
+    ? `<audio controls src="${m.file_data || ''}" style="width:240px;max-width:100%;outline:none;display:block"></audio>`
     : (m.content || '');
   const bubbleStyle = isAudio
     ? (isInbound ? 'background:#dbeafe;padding:8px 12px' : 'background:#1d4ed8;padding:8px 12px')
@@ -633,7 +633,7 @@ async function loadAndRenderChat(convId, conv) {
           const audioEl = document.createElement('audio');
           audioEl.controls = true;
           audioEl.src = fileData;
-          audioEl.style.cssText = 'width:240px;outline:none;display:block;height:40px';
+          audioEl.style.cssText = 'width:240px;outline:none;display:block';
 
           const bubble = document.createElement('div');
           bubble.className = 'msg-bubble';
