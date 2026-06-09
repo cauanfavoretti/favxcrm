@@ -2102,18 +2102,27 @@ app.post('/api/webhook/evolution', async (req, res) => {
           [instance]
         );
         if (instCreds.length) {
-          const mediaResp = await evoRequest('POST', instCreds[0].api_url, instCreds[0].api_key,
-            `/message/downloadMedia/${instance}`, data
-          );
-          console.log('[webhook] downloadMedia keys:', Object.keys(mediaResp || {}), 'mimetype:', mediaResp?.mimetype, 'base64 length:', mediaResp?.base64?.length ?? 0);
+          // Evolution API v2 usa getBase64FromMediaMessage; body deve conter a mensagem completa
+          const mediaBody = { message: { key: data.key, message: data.message } };
+          let mediaResp;
+          try {
+            mediaResp = await evoRequest('POST', instCreds[0].api_url, instCreds[0].api_key,
+              `/message/getBase64FromMediaMessage/${instance}`, mediaBody
+            );
+          } catch {
+            // fallback para o endpoint antigo
+            mediaResp = await evoRequest('POST', instCreds[0].api_url, instCreds[0].api_key,
+              `/message/downloadMedia/${instance}`, data
+            );
+          }
+          console.log('[webhook] media keys:', Object.keys(mediaResp || {}), 'mimetype:', mediaResp?.mimetype, 'b64 len:', mediaResp?.base64?.length ?? 0);
           const rawB64 = mediaResp?.base64 || mediaResp?.data || mediaResp?.mediaData;
           if (rawB64) {
-            // Garante que o b64 não tem prefixo de data URI
             const cleanB64 = rawB64.includes(',') ? rawB64.split(',')[1] : rawB64;
             const mime = mediaResp.mimetype || 'audio/ogg; codecs=opus';
             inboundFileData = `data:${mime};base64,${cleanB64}`;
           } else {
-            console.warn('[webhook] downloadMedia sem base64:', JSON.stringify(mediaResp)?.slice(0, 200));
+            console.warn('[webhook] media sem base64:', JSON.stringify(mediaResp)?.slice(0, 300));
           }
         }
       } catch (e) {
