@@ -2102,27 +2102,31 @@ app.post('/api/webhook/evolution', async (req, res) => {
           [instance]
         );
         if (instCreds.length) {
-          // Evolution API v2 usa getBase64FromMediaMessage; body deve conter a mensagem completa
-          const mediaBody = { message: { key: data.key, message: data.message } };
+          const { api_url, api_key } = instCreds[0];
+          const msgBody  = { message: { key: data.key, message: data.message }, convertToMp4: false };
+          const attempts = [
+            ['/chat/getBase64FromMediaMessage',    msgBody],
+            ['/message/getBase64FromMediaMessage', msgBody],
+            ['/message/getBase64FromMediaMessage', data],
+            ['/message/downloadMedia',             data],
+          ];
           let mediaResp;
-          try {
-            mediaResp = await evoRequest('POST', instCreds[0].api_url, instCreds[0].api_key,
-              `/message/getBase64FromMediaMessage/${instance}`, mediaBody
-            );
-          } catch {
-            // fallback para o endpoint antigo
-            mediaResp = await evoRequest('POST', instCreds[0].api_url, instCreds[0].api_key,
-              `/message/downloadMedia/${instance}`, data
-            );
+          for (const [path, body] of attempts) {
+            try {
+              mediaResp = await evoRequest('POST', api_url, api_key, `${path}/${instance}`, body);
+              if (mediaResp?.base64) { console.log('[webhook] media ok via', path); break; }
+            } catch (e) {
+              console.log('[webhook] media tentativa falhou:', path, e.message);
+            }
           }
-          console.log('[webhook] media keys:', Object.keys(mediaResp || {}), 'mimetype:', mediaResp?.mimetype, 'b64 len:', mediaResp?.base64?.length ?? 0);
           const rawB64 = mediaResp?.base64 || mediaResp?.data || mediaResp?.mediaData;
           if (rawB64) {
             const cleanB64 = rawB64.includes(',') ? rawB64.split(',')[1] : rawB64;
-            const mime = mediaResp.mimetype || 'audio/ogg; codecs=opus';
+            const mime = (mediaResp.mimetype || 'audio/ogg; codecs=opus').split(';')[0].trim();
             inboundFileData = `data:${mime};base64,${cleanB64}`;
+            console.log('[webhook] áudio inbound armazenado, mime:', mime, 'b64 len:', cleanB64.length);
           } else {
-            console.warn('[webhook] media sem base64:', JSON.stringify(mediaResp)?.slice(0, 300));
+            console.warn('[webhook] nenhum endpoint retornou base64 para áudio inbound');
           }
         }
       } catch (e) {
