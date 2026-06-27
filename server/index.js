@@ -911,8 +911,17 @@ app.get('/api/conversations/:id/messages', auth, async (req, res) => {
     let sinceClause = '';
     if (since) { params.push(since); sinceClause = ` AND sent_at > $${params.length}`; }
 
+    // Para o poll (?since=...) omite file_data para evitar respostas de centenas de KB
+    // por mensagem de áudio/imagem. A carga inicial busca tudo.
+    const fileDataCol = since
+      ? `CASE WHEN m.message_type IN ('audio','image') THEN NULL ELSE m.file_data END AS file_data`
+      : 'm.file_data';
+
     const { rows } = await pool.query(
-      `SELECT m.*, u.name AS sender_name
+      `SELECT m.id, m.conversation_id, m.direction, m.sender_type, m.sender_id,
+              m.content, m.is_internal, m.message_type, m.external_id, m.sent_at,
+              ${fileDataCol},
+              u.name AS sender_name
        FROM messages m
        LEFT JOIN users u ON u.id = m.sender_id AND m.sender_type = 'user'
        WHERE m.conversation_id = $1${sinceClause}
@@ -1012,54 +1021,66 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
         cfg = cfgRows[0];
       }
       if (cfg?.evolution_api_url && cfg?.evolution_instance_name) {
-        const number = conv[0].contact_phone.replace(/\D/g, '');
-        try {
-          let evoResp;
-          if (msgType === 'audio' && file_data) {
-            const comma = file_data.indexOf(',');
-            const b64   = comma !== -1 ? file_data.slice(comma + 1) : file_data;
-            console.log('[evo audio] number:', number, 'b64 length:', b64.length);
-            evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
-              `/message/sendWhatsAppAudio/${cfg.evolution_instance_name}`,
-              { number, audio: b64, encoding: true }
-            );
-            console.log('[evo audio] resp:', JSON.stringify(evoResp)?.slice(0, 300));
-          } else if (msgType === 'image' && file_data) {
-            const comma = file_data.indexOf(',');
-            const b64   = comma !== -1 ? file_data.slice(comma + 1) : file_data;
-            console.log('[evo image] number:', number, 'b64 length:', b64.length);
-            evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
-              `/message/sendMedia/${cfg.evolution_instance_name}`,
-              { number, mediatype: 'image', media: b64, caption: content || '' }
-            );
-            console.log('[evo image] resp:', JSON.stringify(evoResp)?.slice(0, 300));
-          } else {
-            evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
-              `/message/sendText/${cfg.evolution_instance_name}`,
-              { number, text: content }
-            );
-          }
-          const externalId = evoResp?.key?.id;
-          if (externalId) {
-            await pool.query(`UPDATE messages SET external_id = $1 WHERE id = $2`, [externalId, rows[0].id]);
-          }
-        } catch (e) {
-          console.warn('[evo send] erro:', e.message, e.stack?.split('\n')[1]);
-        }
+        const number     = conv[0].contact_phone.replace(/\D/g, '');
+        const msgId      = rows[0].id;
+        const cfgCopy    = { ...cfg };
+        const convCopy   = { ...conv[0] };
 
-        // Dispara webhooks de agentes — mensagem enviada pelo CRM
-        await fireAgentWebhooks(subaccount_id, 'message_activity', {
-          conversation_id:  req.params.id,
-          contact_id:       conv[0].contact_id,
-          contact_name:     conv[0].contact_name || conv[0].contact_phone,
-          phone_number:     conv[0].contact_phone,
-          instance:         cfg.evolution_instance_name,
-          message:          content,
-          from_me:          true,
-          message_type:     'texto',
-          context:          is_internal ? 'nota_interna' : 'mensagem_publica',
-          assigned_contact: conv[0].owner_name || null,
-        });
+        // Responde ao cliente ANTES da chamada à Evolution API para evitar timeout do Vercel.
+        // Áudio e imagem são operações lentas (transcodificação); o envio ocorre em background.
+        res.status(201).json(savedMsg);
+
+        // Fire-and-forget: envia para WhatsApp sem bloquear a resposta
+        ;(async () => {
+          try {
+            let evoResp;
+            if (msgType === 'audio' && file_data) {
+              const comma = file_data.indexOf(',');
+              const b64   = comma !== -1 ? file_data.slice(comma + 1) : file_data;
+              console.log('[evo audio] number:', number, 'b64 length:', b64.length);
+              evoResp = await evoRequest('POST', cfgCopy.evolution_api_url, cfgCopy.evolution_api_key,
+                `/message/sendWhatsAppAudio/${cfgCopy.evolution_instance_name}`,
+                { number, audio: b64, encoding: true }
+              );
+              console.log('[evo audio] resp:', JSON.stringify(evoResp)?.slice(0, 300));
+            } else if (msgType === 'image' && file_data) {
+              const comma = file_data.indexOf(',');
+              const b64   = comma !== -1 ? file_data.slice(comma + 1) : file_data;
+              console.log('[evo image] number:', number, 'b64 length:', b64.length);
+              evoResp = await evoRequest('POST', cfgCopy.evolution_api_url, cfgCopy.evolution_api_key,
+                `/message/sendMedia/${cfgCopy.evolution_instance_name}`,
+                { number, mediatype: 'image', media: b64, caption: content || '' }
+              );
+              console.log('[evo image] resp:', JSON.stringify(evoResp)?.slice(0, 300));
+            } else {
+              evoResp = await evoRequest('POST', cfgCopy.evolution_api_url, cfgCopy.evolution_api_key,
+                `/message/sendText/${cfgCopy.evolution_instance_name}`,
+                { number, text: content }
+              );
+            }
+            const externalId = evoResp?.key?.id;
+            if (externalId) {
+              await pool.query(`UPDATE messages SET external_id = $1 WHERE id = $2`, [externalId, msgId]);
+            }
+          } catch (e) {
+            console.warn('[evo send bg] erro:', e.message);
+          }
+
+          // Dispara webhooks de agentes
+          fireAgentWebhooks(subaccount_id, 'message_activity', {
+            conversation_id:  req.params.id,
+            contact_id:       convCopy.contact_id,
+            contact_name:     convCopy.contact_name || convCopy.contact_phone,
+            phone_number:     convCopy.contact_phone,
+            instance:         cfgCopy.evolution_instance_name,
+            message:          content,
+            from_me:          true,
+            message_type:     msgType,
+            context:          is_internal ? 'nota_interna' : 'mensagem_publica',
+            assigned_contact: convCopy.owner_name || null,
+          }).catch(() => {});
+        })();
+        return; // res já foi enviado acima
       }
     }
 
