@@ -2132,30 +2132,28 @@ app.post('/api/webhook/evolution', async (req, res) => {
           );
 
           // Busca número de telefone conectado e salva
-          // Tenta múltiplos campos da resposta e do payload do evento
           try {
-            const phoneFromEvent = connData.number || connData.wid?.user || null;
-            if (phoneFromEvent) {
+            // v2: me.id = "5511999...@s.whatsapp.net" | v1: number, wid.user
+            const rawFromEvent = connData.me?.id || connData.number || connData.wid?.user || null;
+            console.log(`[evo-conn] connData keys:`, Object.keys(connData || {}), 'rawFromEvent:', rawFromEvent);
+            let phoneDigits = rawFromEvent
+              ? rawFromEvent.replace(/@.+/, '').replace(/\D/g, '')
+              : null;
+            if (phoneDigits && phoneDigits.length >= 8) {
               await pool.query(
                 `UPDATE whatsapp_instances SET phone_number = $1 WHERE id = $2`,
-                ['+' + phoneFromEvent.replace(/\D/g, ''), inst[0].id]
+                ['+' + phoneDigits, inst[0].id]
               );
-              console.log(`[evo-conn] phone (do evento) salvo: ${phoneFromEvent} instance="${instance}"`);
+              console.log(`[evo-conn] phone (do evento) salvo: +${phoneDigits} instance="${instance}"`);
             } else {
-              // Fallback: busca via /instance/fetchInstances
-              const profileResp = await evoRequest('GET', inst[0].api_url, inst[0].api_key,
-                `/instance/fetchInstances`
-              );
-              const instData = Array.isArray(profileResp)
-                ? profileResp.find(i => i.instance?.instanceName === instance || i.instanceName === instance)
-                : null;
-              const phone = instData?.instance?.number || instData?.number || null;
+              // Fallback: busca via evoFetchPhone
+              const phone = await evoFetchPhone(inst[0].api_url, inst[0].api_key, instance);
               if (phone) {
                 await pool.query(
                   `UPDATE whatsapp_instances SET phone_number = $1 WHERE id = $2`,
-                  ['+' + phone.replace(/\D/g, ''), inst[0].id]
+                  ['+' + phone, inst[0].id]
                 );
-                console.log(`[evo-conn] phone (fetchInstances) salvo: ${phone} instance="${instance}"`);
+                console.log(`[evo-conn] phone (evoFetchPhone) salvo: +${phone} instance="${instance}"`);
               } else {
                 console.warn(`[evo-conn] phone não encontrado para instance="${instance}"`);
               }
@@ -2320,22 +2318,45 @@ app.post('/api/ai-message', async (req, res) => {
 // Busca o número de telefone conectado na instância via Evolution API.
 // Retorna string limpa (apenas dígitos) ou null se não encontrar.
 async function evoFetchPhone(apiUrl, apiKey, instanceName) {
-  // Tenta connectionState primeiro (resposta mais rápida)
+  // Extrai número de qualquer campo — suporta formato JID (55119...@s.whatsapp.net) e puro
+  function extractPhone(obj) {
+    if (!obj) return null;
+    // Campos candidatos em ordem de prioridade (nomes variam por versão da Evolution API)
+    const candidates = [
+      obj?.instance?.owner, obj?.instance?.number, obj?.instance?.wid,
+      obj?.instance?.me?.id, obj?.instance?.phoneNumber,
+      obj?.owner, obj?.number, obj?.wid, obj?.me?.id, obj?.phoneNumber,
+      obj?.instance?.profilePicUrl, // não é phone, mas descartamos abaixo
+    ].filter(v => typeof v === 'string' && /\d{6,}/.test(v));
+    for (const raw of candidates) {
+      const digits = raw.replace(/@.+/, '').replace(/\D/g, '');
+      if (digits.length >= 8) return digits;
+    }
+    return null;
+  }
+
+  // Tenta connectionState primeiro (resposta mais rápida em algumas versões)
   try {
     const r = await evoRequest('GET', apiUrl, apiKey, `/instance/connectionState/${instanceName}`);
-    const raw = r?.instance?.owner || r?.instance?.number || r?.owner || r?.number || null;
-    if (raw) return raw.replace(/@.+/, '').replace(/\D/g, '');
-  } catch {}
+    console.log(`[evo-phone] connectionState raw:`, JSON.stringify(r).slice(0, 300));
+    const phone = extractPhone(r);
+    if (phone) return phone;
+  } catch (e) {
+    console.warn(`[evo-phone] connectionState falhou:`, e.message);
+  }
 
   // Fallback: fetchInstances (lista todas, acha pelo nome)
   try {
     const list = await evoRequest('GET', apiUrl, apiKey, `/instance/fetchInstances`);
+    console.log(`[evo-phone] fetchInstances raw (truncado):`, JSON.stringify(list).slice(0, 500));
     const found = Array.isArray(list)
       ? list.find(i => (i.instance?.instanceName || i.instanceName) === instanceName)
       : list;
-    const raw = found?.instance?.owner || found?.instance?.number || found?.owner || found?.number || null;
-    if (raw) return raw.replace(/@.+/, '').replace(/\D/g, '');
-  } catch {}
+    const phone = extractPhone(found);
+    if (phone) return phone;
+  } catch (e) {
+    console.warn(`[evo-phone] fetchInstances falhou:`, e.message);
+  }
 
   return null;
 }
