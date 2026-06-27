@@ -2062,8 +2062,72 @@ app.post('/api/webhook/evolution', async (req, res) => {
   console.log('[evo-in] RAW:', JSON.stringify(body).slice(0, 800));
   console.log(`[evo-in] event="${eventRaw}" instance="${body.instance}" keys=${Object.keys(body.data||{}).join(',')}`);
 
-  const isUpsert = eventRaw.includes('messages.upsert') || eventRaw.includes('message.upsert');
-  const isSent   = eventRaw.includes('send.message')   || eventRaw.includes('message.sent') || eventRaw.includes('messages.sent');
+  const isUpsert    = eventRaw.includes('messages.upsert') || eventRaw.includes('message.upsert');
+  const isSent      = eventRaw.includes('send.message')   || eventRaw.includes('message.sent') || eventRaw.includes('messages.sent');
+  const isConnUpdate = eventRaw.includes('connection.update');
+
+  // ── Evento de conexão (QR escaneado / desconectado) ──────────
+  if (isConnUpdate) {
+    const instance = body.instance;
+    const connData = body.data || {};
+    const state    = connData.state || connData.connection || '';
+    console.log(`[evo-conn] instance="${instance}" state="${state}"`);
+
+    if (state === 'open') {
+      try {
+        const { rows: inst } = await pool.query(
+          `SELECT id, api_url, api_key FROM whatsapp_instances WHERE instance_name = $1 LIMIT 1`,
+          [instance]
+        );
+        if (inst.length) {
+          // Atualiza status no banco
+          await pool.query(
+            `UPDATE whatsapp_instances SET status = 'connected', connected_at = NOW() WHERE id = $1`,
+            [inst[0].id]
+          );
+
+          // Busca número de telefone conectado e salva
+          try {
+            const profileResp = await evoRequest('GET', inst[0].api_url, inst[0].api_key,
+              `/instance/fetchInstances`
+            );
+            const instData = Array.isArray(profileResp)
+              ? profileResp.find(i => i.instance?.instanceName === instance || i.instanceName === instance)
+              : null;
+            const phone = instData?.instance?.number || instData?.number || connData.number || null;
+            if (phone) {
+              await pool.query(
+                `UPDATE whatsapp_instances SET phone_number = $1 WHERE id = $2`,
+                ['+' + phone.replace(/\D/g, ''), inst[0].id]
+              );
+              console.log(`[evo-conn] phone salvo: ${phone} para instance="${instance}"`);
+            }
+          } catch (e) {
+            console.warn(`[evo-conn] fetchInstances falhou:`, e.message);
+          }
+
+          // Re-sincroniza webhook para garantir que está apontando para o CRM
+          try { await evoSetWebhook(inst[0].api_url, inst[0].api_key, instance); }
+          catch (e) { console.warn(`[evo-conn] evoSetWebhook falhou:`, e.message); }
+
+          console.log(`[evo-conn] instância "${instance}" marcada como connected`);
+        }
+      } catch (e) {
+        console.error(`[evo-conn] ERRO ao processar connection.update:`, e.message);
+      }
+    } else if (state === 'close' || state === 'refused') {
+      try {
+        await pool.query(
+          `UPDATE whatsapp_instances SET status = 'disconnected' WHERE instance_name = $1`,
+          [instance]
+        );
+        console.log(`[evo-conn] instância "${instance}" marcada como disconnected`);
+      } catch {}
+    }
+
+    return res.sendStatus(200);
+  }
+
   if (!isUpsert && !isSent) {
     console.log(`[evo-in] descartado (evento não tratado): "${eventRaw}"`);
     return res.sendStatus(200);
