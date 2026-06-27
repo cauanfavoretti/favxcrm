@@ -2324,33 +2324,39 @@ async function evoSetWebhook(apiUrl, apiKey, instanceName) {
   }
   const webhookUrl = `${webhookBase}/api/webhook/evolution`;
 
-  // IMPORTANTE: não misturar nomes v1 e v2 no mesmo payload.
-  // Evolution API v1 usa UPPER_SNAKE; v2 usa lower.dot.
   const eventsV2 = ['messages.upsert', 'send.message', 'message.sent', 'messages.sent', 'connection.update'];
   const eventsV1 = ['MESSAGES_UPSERT', 'SEND_MESSAGE', 'MESSAGE_SENT', 'MESSAGES_SENT', 'CONNECTION_UPDATE'];
-  const base     = { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false };
 
+  // Testa 7 combinações de formato/payload/path para máxima compatibilidade
   const attempts = [
-    // v2: body aninhado em "webhook" + eventos lower.dot
-    { label: 'v2-nested', body: { webhook: { ...base, events: eventsV2 } } },
-    // v1: body plano + eventos UPPER_SNAKE
-    { label: 'v1-flat',   body: { ...base, events: eventsV1 } },
-    // alguns builds intermediários aceitam body plano com eventos lower.dot
-    { label: 'v2-flat',   body: { ...base, events: eventsV2 } },
+    // v2: body aninhado em "webhook" + eventos lower.dot (Evolution v2+)
+    { label: 'v2-nested-events',   path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: eventsV2 } } },
+    // v1: body plano + eventos UPPER_SNAKE (Evolution v1)
+    { label: 'v1-flat-events',     path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: eventsV1 } },
+    // Mínimo v2 nested sem eventos (usa todos os eventos do servidor)
+    { label: 'v2-nested-noevents', path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl } } },
+    // Mínimo v1 flat sem eventos
+    { label: 'v1-flat-noevents',   path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl } },
+    // v2 flat com eventos lower.dot (alguns forks)
+    { label: 'v2-flat-events',     path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: eventsV2 } },
+    // Alguns forks usam /instance/webhook em vez de /webhook/set
+    { label: 'v1-instpath-noevents', path: `/instance/webhook/${instanceName}`, body: { enabled: true, url: webhookUrl } },
+    // Path alternativo com body nested
+    { label: 'v2-instpath-events', path: `/instance/webhook/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, events: eventsV2 } } },
   ];
 
   let lastErr;
-  for (const { label, body } of attempts) {
+  for (const { label, path, body } of attempts) {
     try {
-      await evoRequest('POST', apiUrl, apiKey, `/webhook/set/${instanceName}`, body);
-      console.log(`[evo-webhook] OK (${label}) instance="${instanceName}" url="${webhookUrl}"`);
+      await evoRequest('POST', apiUrl, apiKey, path, body);
+      console.log(`[evo-webhook] OK formato="${label}" instance="${instanceName}" url="${webhookUrl}"`);
       return;
     } catch (e) {
-      console.warn(`[evo-webhook] tentativa ${label} falhou para "${instanceName}":`, e.message);
+      console.warn(`[evo-webhook] formato="${label}" falhou: ${e.message}`);
       lastErr = e;
     }
   }
-  throw lastErr;
+  throw new Error(`Nenhum formato suportado pela Evolution API. Último erro: ${lastErr?.message}`);
 }
 
 async function evoRequest(method, baseUrl, apiKey, path, body) {
@@ -2363,7 +2369,11 @@ async function evoRequest(method, baseUrl, apiKey, path, body) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = {}; }
-  if (!res.ok) throw new Error(data.message || data.error || `Evolution API: HTTP ${res.status}`);
+  if (!res.ok) {
+    // Inclui body bruto no erro para facilitar diagnóstico
+    const msg = data.message || data.error || data.reason || (Array.isArray(data.message) ? data.message.join('; ') : null) || text.slice(0, 200) || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
   return data;
 }
 
@@ -2569,7 +2579,7 @@ app.post('/api/whatsapp-instances/:id/sync-webhook', auth, requireAdmin, async (
   }
 });
 
-// Diagnóstico: mostra configuração atual do webhook na Evolution API e variáveis de ambiente
+// Diagnóstico completo: testa conectividade, webhook e estado da instância
 app.get('/api/whatsapp-instances/:id/diagnostic', auth, requireAdmin, async (req, res) => {
   const { subaccount_id } = req.user;
   try {
@@ -2580,45 +2590,79 @@ app.get('/api/whatsapp-instances/:id/diagnostic', auth, requireAdmin, async (req
     if (!rows.length) return res.status(404).json({ message: 'Instância não encontrada.' });
     const inst = rows[0];
 
-    const webhookBase   = (process.env.WEBHOOK_BASE_URL || '').replace(/\/$/, '');
-    const expectedUrl   = webhookBase ? `${webhookBase}/api/webhook/evolution` : null;
-    const envOk         = !!webhookBase;
+    const webhookBase = (process.env.WEBHOOK_BASE_URL || '').replace(/\/$/, '');
+    const expectedUrl = webhookBase ? `${webhookBase}/api/webhook/evolution` : null;
 
-    // Busca webhook atual configurado na Evolution API
-    let currentWebhook = null, webhookError = null;
-    try {
-      currentWebhook = await evoRequest('GET', inst.api_url, inst.api_key,
-        `/webhook/find/${inst.instance_name}`);
-    } catch (e) {
-      webhookError = e.message;
+    // Busca webhook atual — tenta vários paths pois variam por versão
+    let currentWebhook = null, webhookFindPath = null, webhookError = null;
+    for (const path of [
+      `/webhook/find/${inst.instance_name}`,
+      `/instance/webhook/${inst.instance_name}`,
+      `/webhook/${inst.instance_name}`,
+    ]) {
+      try {
+        currentWebhook = await evoRequest('GET', inst.api_url, inst.api_key, path);
+        webhookFindPath = path;
+        break;
+      } catch (e) {
+        webhookError = `${path}: ${e.message}`;
+      }
     }
 
-    // Verifica estado da conexão na Evolution API
+    // Estado de conexão
     let connectionState = null, connectionError = null;
-    try {
-      const stateResp = await evoRequest('GET', inst.api_url, inst.api_key,
-        `/instance/connectionState/${inst.instance_name}`);
-      connectionState = stateResp?.instance?.state || stateResp?.state || null;
-    } catch (e) {
-      connectionError = e.message;
+    for (const path of [
+      `/instance/connectionState/${inst.instance_name}`,
+      `/instance/fetchInstances`,
+    ]) {
+      try {
+        const r = await evoRequest('GET', inst.api_url, inst.api_key, path);
+        connectionState = r?.instance?.state || r?.state
+          || (Array.isArray(r) ? r.find(i => i.instance?.instanceName === inst.instance_name || i.instanceName === inst.instance_name)?.instance?.state : null)
+          || null;
+        if (connectionState) break;
+      } catch (e) {
+        connectionError = e.message;
+      }
     }
 
-    const configuredUrl = currentWebhook?.webhook?.url || currentWebhook?.url || null;
+    // Testa um set de webhook de forma não-destrutiva (dry-run: registra mas não falha o diagnóstico)
+    let webhookSetResult = null;
+    if (expectedUrl) {
+      const testPayloads = [
+        { label: 'v2-nested', body: { webhook: { enabled: true, url: expectedUrl, webhookByEvents: false, webhookBase64: false, events: ['messages.upsert','connection.update'] } } },
+        { label: 'v1-flat',   body: { enabled: true, url: expectedUrl, webhookByEvents: false, webhookBase64: false, events: ['MESSAGES_UPSERT','CONNECTION_UPDATE'] } },
+        { label: 'minimal',   body: { enabled: true, url: expectedUrl } },
+      ];
+      for (const { label, body } of testPayloads) {
+        try {
+          await evoRequest('POST', inst.api_url, inst.api_key, `/webhook/set/${inst.instance_name}`, body);
+          webhookSetResult = `OK (${label})`;
+          break;
+        } catch (e) {
+          webhookSetResult = `${label}: ${e.message}`;
+        }
+      }
+    }
+
+    const configuredUrl  = currentWebhook?.webhook?.url || currentWebhook?.url || null;
     const webhookEnabled = currentWebhook?.webhook?.enabled ?? currentWebhook?.enabled ?? null;
 
     res.json({
-      instance:          inst.instance_name,
-      db_status:         inst.status,
-      db_phone:          inst.phone_number,
-      env_webhook_base:  webhookBase || '⚠️ NÃO CONFIGURADO',
-      env_ok:            envOk,
-      expected_url:      expectedUrl,
-      evolution_url:     configuredUrl,
-      url_match:         configuredUrl === expectedUrl,
-      webhook_enabled:   webhookEnabled,
-      connection_state:  connectionState,
-      webhook_error:     webhookError,
-      connection_error:  connectionError,
+      instance:           inst.instance_name,
+      db_status:          inst.status,
+      db_phone:           inst.phone_number,
+      env_webhook_base:   webhookBase || '⚠️ NÃO CONFIGURADO',
+      env_ok:             !!webhookBase,
+      expected_url:       expectedUrl,
+      evolution_url:      configuredUrl,
+      url_match:          configuredUrl && expectedUrl ? configuredUrl === expectedUrl : false,
+      webhook_enabled:    webhookEnabled,
+      webhook_find_path:  webhookFindPath,
+      webhook_find_error: webhookError,
+      webhook_set_test:   webhookSetResult,
+      connection_state:   connectionState,
+      connection_error:   connectionError,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });

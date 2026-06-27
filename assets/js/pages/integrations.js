@@ -373,15 +373,20 @@ window._waDiagnostic = async function(id) {
   try {
     const d = await apiFetch(`/api/whatsapp-instances/${id}/diagnostic`);
     const lines = [
-      `Instância: ${d.instance}`,
-      `Status no banco: ${d.db_status} | Telefone: ${d.db_phone || '(não salvo)'}`,
+      `── Instância ──────────────────────────`,
+      `Nome:   ${d.instance}`,
+      `Status: ${d.db_status}  |  Telefone: ${d.db_phone || '(não salvo)'}`,
       `Conexão Evolution API: ${d.connection_state || d.connection_error || 'desconhecido'}`,
       ``,
+      `── Webhook ────────────────────────────`,
       `WEBHOOK_BASE_URL: ${d.env_webhook_base}`,
       `URL esperada:     ${d.expected_url || '(não definida)'}`,
-      `URL configurada:  ${d.evolution_url || d.webhook_error || '(erro ao buscar)'}`,
+      `URL configurada:  ${d.evolution_url || '(não encontrada — ' + (d.webhook_find_error || '?') + ')'}`,
       `URLs batem: ${d.url_match ? '✅ Sim' : '❌ Não'}`,
-      `Webhook ativo: ${d.webhook_enabled === true ? '✅ Sim' : d.webhook_enabled === false ? '❌ Não' : '?'}`,
+      `Webhook ativo: ${d.webhook_enabled === true ? '✅ Sim' : d.webhook_enabled === false ? '❌ Não' : '(desconhecido)'}`,
+      ``,
+      `── Teste de configuração ───────────────`,
+      `Resultado: ${d.webhook_set_test || '(não testado)'}`,
     ];
     alert(lines.join('\n'));
   } catch (err) {
