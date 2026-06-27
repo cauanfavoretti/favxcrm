@@ -1920,6 +1920,115 @@ function waCleanPhone(raw) {
   return (raw || '').replace(/@.*$/, '').replace(/\D/g, '');
 }
 
+// Processa e salva uma mensagem WhatsApp recebida (webhook ou pull).
+// Retorna 'saved', 'duplicate' ou 'skipped'.
+async function processWaMsg(subaccount_id, instanceName, apiUrl, apiKey, data) {
+  const key      = data.key || {};
+  const jid      = key.remoteJid || '';
+  if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') return 'skipped';
+
+  const phone      = waCleanPhone(jid);
+  if (!phone) return 'skipped';
+
+  const fromMe     = !!key.fromMe;
+  const isAudioMsg = !!(data.message?.audioMessage || data.message?.pttMessage);
+  const content    = waExtractContent(data);
+  const pushName   = data.pushName || null;
+  const externalId = key.id || null;
+
+  const variants      = waPhoneVariants(phone);
+  const placeholders  = variants.map((_, i) => `$${i + 2}`).join(',');
+  const { rows: contacts } = await pool.query(
+    `SELECT id FROM contacts WHERE subaccount_id = $1
+     AND REGEXP_REPLACE(phone, '[^0-9]', '', 'g') = ANY(ARRAY[${placeholders}])
+     LIMIT 1`,
+    [subaccount_id, ...variants]
+  );
+
+  let contact_id;
+  if (contacts.length) {
+    contact_id = contacts[0].id;
+  } else {
+    const displayPhone = '+' + phone;
+    const contactName = (!fromMe && pushName) ? pushName : displayPhone;
+    const { rows: newContact } = await pool.query(
+      `INSERT INTO contacts (subaccount_id, name, phone) VALUES ($1, $2, $3) RETURNING id`,
+      [subaccount_id, contactName, displayPhone]
+    );
+    contact_id = newContact[0].id;
+  }
+
+  if (!fromMe && pushName) {
+    await pool.query(
+      `UPDATE contacts SET name = $1 WHERE id = $2 AND (name IS NULL OR name = phone OR name = $3)`,
+      [pushName, contact_id, '+' + phone]
+    );
+  }
+
+  const { rows: convs } = await pool.query(
+    `SELECT id FROM conversations WHERE subaccount_id = $1 AND contact_id = $2 AND channel = 'whatsapp' AND status = 'open' LIMIT 1`,
+    [subaccount_id, contact_id]
+  );
+  let conv_id;
+  if (convs.length) {
+    conv_id = convs[0].id;
+  } else {
+    const { rows: newConv } = await pool.query(
+      `INSERT INTO conversations (subaccount_id, contact_id, channel, status) VALUES ($1, $2, 'whatsapp', 'open') RETURNING id`,
+      [subaccount_id, contact_id]
+    );
+    conv_id = newConv[0].id;
+  }
+
+  if (externalId) {
+    const { rows: dup } = await pool.query(
+      `SELECT id FROM messages WHERE conversation_id = $1 AND external_id = $2 LIMIT 1`,
+      [conv_id, externalId]
+    );
+    if (dup.length) return 'duplicate';
+  }
+
+  let inboundFileData = null;
+  if (isAudioMsg && apiUrl && apiKey) {
+    try {
+      const msgBody  = { message: { key: data.key, message: data.message }, convertToMp4: false };
+      const attempts = [
+        ['/chat/getBase64FromMediaMessage',    msgBody],
+        ['/message/getBase64FromMediaMessage', msgBody],
+        ['/message/getBase64FromMediaMessage', data],
+        ['/message/downloadMedia',             data],
+      ];
+      let mediaResp;
+      for (const [path, body] of attempts) {
+        try {
+          mediaResp = await evoRequest('POST', apiUrl, apiKey, `${path}/${instanceName}`, body);
+          if (mediaResp?.base64) break;
+        } catch {}
+      }
+      const rawB64 = mediaResp?.base64 || mediaResp?.data || mediaResp?.mediaData;
+      if (rawB64) {
+        const cleanB64 = rawB64.includes(',') ? rawB64.split(',')[1] : rawB64;
+        const mime = (mediaResp.mimetype || 'audio/ogg; codecs=opus').split(';')[0].trim();
+        inboundFileData = `data:${mime};base64,${cleanB64}`;
+      }
+    } catch {}
+  }
+
+  const inboundMsgType = isAudioMsg ? 'audio' : 'text';
+  await Promise.all([
+    pool.query(
+      `INSERT INTO messages (conversation_id, direction, sender_type, content, external_id, message_type, file_data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [conv_id, fromMe ? 'outbound' : 'inbound', fromMe ? 'user' : 'contact', content, externalId, inboundMsgType, inboundFileData]
+    ),
+    pool.query(
+      `UPDATE conversations SET last_message_at = NOW(), unread_count = unread_count + ${fromMe ? 0 : 1} WHERE id = $1`,
+      [conv_id]
+    ),
+  ]);
+  return 'saved';
+}
+
 function waPhoneVariants(digits) {
   const v = new Set([digits]);
   if (digits.startsWith('55') && digits.length >= 12) v.add(digits.slice(2));
@@ -2005,176 +2114,17 @@ app.post('/api/webhook/evolution', async (req, res) => {
       return res.sendStatus(200);
     }
     const subaccount_id = cfgRows[0].subaccount_id;
-    console.log(`[evo-in] subconta="${subaccount_id}"`);
+    console.log(`[evo-in] subconta="${subaccount_id}" event="${eventRaw}" instance="${instance}" phone="${phone}"`);
 
-    const variants = waPhoneVariants(phone);
-    const placeholders = variants.map((_, i) => `$${i + 2}`).join(',');
-    const { rows: contacts } = await pool.query(
-      `SELECT id FROM contacts WHERE subaccount_id = $1
-       AND REGEXP_REPLACE(phone, '[^0-9]', '', 'g') = ANY(ARRAY[${placeholders}])
-       LIMIT 1`,
-      [subaccount_id, ...variants]
+    const { rows: instCreds } = await pool.query(
+      `SELECT api_url, api_key FROM whatsapp_instances WHERE instance_name = $1 LIMIT 1`,
+      [instance]
     );
+    const apiUrl = instCreds[0]?.api_url || null;
+    const apiKey = instCreds[0]?.api_key || null;
 
-    let contact_id;
-    if (contacts.length) {
-      contact_id = contacts[0].id;
-      console.log(`[evo-in] contato existente id="${contact_id}"`);
-    } else {
-      const displayPhone = '+' + phone;
-      const contactName = (!fromMe && pushName) ? pushName : displayPhone;
-      const { rows: newContact } = await pool.query(
-        `INSERT INTO contacts (subaccount_id, name, phone) VALUES ($1, $2, $3) RETURNING id`,
-        [subaccount_id, contactName, displayPhone]
-      );
-      contact_id = newContact[0].id;
-      console.log(`[evo-in] contato criado id="${contact_id}" phone="${displayPhone}"`);
-    }
-
-    if (!fromMe && pushName) {
-      await pool.query(
-        `UPDATE contacts SET name = $1 WHERE id = $2 AND (name IS NULL OR name = phone OR name = $3)`,
-        [pushName, contact_id, '+' + phone]
-      );
-    }
-
-    // Quando a mensagem é enviada por mim, busca o nome real do contato na Evolution API em background
-    if (fromMe) {
-      (async () => {
-        try {
-          const { rows: instCfg } = await pool.query(
-            `SELECT api_url, api_key FROM whatsapp_instances WHERE instance_name = $1 LIMIT 1`,
-            [instance]
-          );
-          if (!instCfg[0]) return;
-          const profileResp = await evoRequest('POST', instCfg[0].api_url, instCfg[0].api_key,
-            `/chat/fetchProfile/${instance}`,
-            { number: phone }
-          );
-          const profileName = profileResp?.name || profileResp?.pushName || null;
-          if (profileName) {
-            await pool.query(
-              `UPDATE contacts SET name = $1 WHERE id = $2 AND (name IS NULL OR name = phone OR name = $3)`,
-              [profileName, contact_id, '+' + phone]
-            );
-            console.log(`[webhook] nome do contato atualizado via fetchProfile: ${phone} → "${profileName}"`);
-          }
-        } catch (e) {
-          console.warn(`[webhook] fetchProfile ${phone}:`, e.message);
-        }
-      })();
-    }
-
-    const { rows: convs } = await pool.query(
-      `SELECT id FROM conversations WHERE subaccount_id = $1 AND contact_id = $2 AND channel = 'whatsapp' AND status = 'open' LIMIT 1`,
-      [subaccount_id, contact_id]
-    );
-    let conv_id;
-    if (convs.length) {
-      conv_id = convs[0].id;
-      console.log(`[evo-in] conversa existente id="${conv_id}"`);
-    } else {
-      const { rows: newConv } = await pool.query(
-        `INSERT INTO conversations (subaccount_id, contact_id, channel, status) VALUES ($1, $2, 'whatsapp', 'open') RETURNING id`,
-        [subaccount_id, contact_id]
-      );
-      conv_id = newConv[0].id;
-      console.log(`[evo-in] conversa criada id="${conv_id}"`);
-    }
-
-    if (externalId) {
-      const { rows: dup } = await pool.query(
-        `SELECT id FROM messages WHERE conversation_id = $1 AND external_id = $2 LIMIT 1`,
-        [conv_id, externalId]
-      );
-      if (dup.length) {
-        console.log(`[evo-in] DESCARTADO dedup extId="${externalId}" já existe em conv="${conv_id}"`);
-        return res.sendStatus(200);
-      }
-    }
-
-    // Para mensagens de áudio, tenta baixar a mídia via Evolution API
-    let inboundFileData = null;
-    if (isAudioMsg) {
-      try {
-        const { rows: instCreds } = await pool.query(
-          `SELECT api_url, api_key FROM whatsapp_instances WHERE instance_name = $1 LIMIT 1`,
-          [instance]
-        );
-        if (instCreds.length) {
-          const { api_url, api_key } = instCreds[0];
-          const msgBody  = { message: { key: data.key, message: data.message }, convertToMp4: false };
-          const attempts = [
-            ['/chat/getBase64FromMediaMessage',    msgBody],
-            ['/message/getBase64FromMediaMessage', msgBody],
-            ['/message/getBase64FromMediaMessage', data],
-            ['/message/downloadMedia',             data],
-          ];
-          let mediaResp;
-          for (const [path, body] of attempts) {
-            try {
-              mediaResp = await evoRequest('POST', api_url, api_key, `${path}/${instance}`, body);
-              if (mediaResp?.base64) { console.log('[webhook] media ok via', path); break; }
-            } catch (e) {
-              console.log('[webhook] media tentativa falhou:', path, e.message);
-            }
-          }
-          const rawB64 = mediaResp?.base64 || mediaResp?.data || mediaResp?.mediaData;
-          if (rawB64) {
-            const cleanB64 = rawB64.includes(',') ? rawB64.split(',')[1] : rawB64;
-            const mime = (mediaResp.mimetype || 'audio/ogg; codecs=opus').split(';')[0].trim();
-            inboundFileData = `data:${mime};base64,${cleanB64}`;
-            console.log('[webhook] áudio inbound armazenado, mime:', mime, 'b64 len:', cleanB64.length);
-          } else {
-            console.warn('[webhook] nenhum endpoint retornou base64 para áudio inbound');
-          }
-        }
-      } catch (e) {
-        console.warn('[webhook] downloadMedia erro:', e.message);
-      }
-    }
-
-    const inboundMsgType = isAudioMsg ? 'audio' : 'text';
-    const [,, ownerResult] = await Promise.all([
-      pool.query(
-        `INSERT INTO messages (conversation_id, direction, sender_type, content, external_id, message_type, file_data)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [conv_id, fromMe ? 'outbound' : 'inbound', fromMe ? 'user' : 'contact', content, externalId, inboundMsgType, inboundFileData]
-      ),
-      pool.query(
-        `UPDATE conversations SET last_message_at = NOW(), unread_count = unread_count + ${fromMe ? 0 : 1} WHERE id = $1`,
-        [conv_id]
-      ),
-      pool.query(
-        `SELECT u.name FROM conversations cv LEFT JOIN users u ON u.id = cv.assigned_to WHERE cv.id = $1`,
-        [conv_id]
-      ),
-    ]);
-    const ownerName = ownerResult.rows[0]?.name || null;
-    console.log(`[evo-in] mensagem SALVA conv="${conv_id}" fromMe=${fromMe} dir=${fromMe?'outbound':'inbound'}`);
-
-    // Dispara webhooks de agentes com evento message_activity
-    const msgTypeMap = {
-      conversation: 'texto', extendedTextMessage: 'texto',
-      imageMessage: 'imagem', videoMessage: 'video',
-      audioMessage: 'audio', pttMessage: 'audio',
-      documentMessage: 'documento', stickerMessage: 'figurinha',
-    };
-    const rawMsg = data.message || {};
-    const msgType = Object.keys(msgTypeMap).find(k => rawMsg[k]) || 'texto';
-
-    await fireAgentWebhooks(subaccount_id, 'message_activity', {
-      conversation_id:  conv_id,
-      contact_id:       contact_id,
-      contact_name:     pushName || phone,
-      phone_number:     '+' + phone,
-      instance:         instance,
-      message:          content,
-      from_me:          fromMe,
-      message_type:     msgTypeMap[msgType] || 'texto',
-      context:          'mensagem_publica',
-      assigned_contact: ownerName,
-    });
+    const status = await processWaMsg(subaccount_id, instance, apiUrl, apiKey, data);
+    console.log(`[evo-in] processWaMsg → ${status} extId="${data.key?.id}"`);
   } catch (err) {
     console.error(`[evo-in] ERRO ao processar event="${eventRaw}" instance="${body.instance}":`, err.message, err.stack);
   }
@@ -2471,6 +2421,86 @@ app.post('/api/whatsapp-instances/:id/sync-webhook', auth, requireAdmin, async (
     await evoSetWebhook(inst.api_url, inst.api_key, inst.instance_name);
     res.json({ ok: true, message: 'Webhook re-sincronizado com sucesso.' });
   } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Busca mensagens diretamente na Evolution API (pull) e importa as que faltam no CRM.
+// Útil quando o webhook não está configurado ou quando mensagens foram perdidas.
+app.post('/api/whatsapp-instances/:id/pull-messages', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const limit = Math.min(parseInt(req.body?.limit) || 100, 500);
+
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM whatsapp_instances WHERE id = $1 AND subaccount_id = $2',
+      [req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Instância não encontrada.' });
+    const inst = rows[0];
+
+    // 1. Busca todos os chats na Evolution API
+    let chats = [];
+    const chatAttempts = [
+      `/chat/findChats/${inst.instance_name}`,
+      `/instance/fetchChats/${inst.instance_name}`,
+    ];
+    for (const path of chatAttempts) {
+      try {
+        const resp = await evoRequest('GET', inst.api_url, inst.api_key, path);
+        chats = Array.isArray(resp) ? resp : (resp?.chats || resp?.data || []);
+        if (chats.length) break;
+      } catch {}
+    }
+    console.log(`[pull-messages] inst="${inst.instance_name}" chats encontrados: ${chats.length}`);
+
+    let saved = 0, duplicate = 0, skipped = 0, errors = 0;
+
+    // 2. Para cada chat individual, busca as mensagens recentes
+    for (const chat of chats) {
+      const jid = chat.id || chat.remoteJid;
+      if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') { skipped++; continue; }
+
+      let messages = [];
+      try {
+        // Tenta endpoint v2 (POST com body)
+        const resp = await evoRequest('POST', inst.api_url, inst.api_key,
+          `/chat/findMessages/${inst.instance_name}`,
+          { where: { key: { remoteJid: jid } }, limit }
+        );
+        messages = resp?.messages || (Array.isArray(resp) ? resp : []);
+      } catch {
+        try {
+          // Fallback v1 (GET com query)
+          const q = encodeURIComponent(JSON.stringify({ key: { remoteJid: jid } }));
+          const resp = await evoRequest('GET', inst.api_url, inst.api_key,
+            `/message/findMessages/${inst.instance_name}?where=${q}&page=1&offset=${limit}`
+          );
+          messages = resp?.messages || (Array.isArray(resp) ? resp : []);
+        } catch (e2) {
+          console.warn(`[pull-messages] findMessages falhou para ${jid}:`, e2.message);
+          errors++;
+          continue;
+        }
+      }
+
+      for (const msg of messages) {
+        try {
+          const status = await processWaMsg(subaccount_id, inst.instance_name, inst.api_url, inst.api_key, msg);
+          if (status === 'saved') saved++;
+          else if (status === 'duplicate') duplicate++;
+          else skipped++;
+        } catch (e) {
+          console.warn(`[pull-messages] processWaMsg erro:`, e.message);
+          errors++;
+        }
+      }
+    }
+
+    console.log(`[pull-messages] inst="${inst.instance_name}" saved=${saved} dup=${duplicate} skip=${skipped} err=${errors}`);
+    res.json({ ok: true, saved, duplicate, skipped, errors });
+  } catch (err) {
+    console.error('[pull-messages] ERRO:', err.message);
     res.status(500).json({ message: err.message });
   }
 });
