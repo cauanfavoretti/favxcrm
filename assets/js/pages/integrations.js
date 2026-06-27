@@ -91,6 +91,9 @@ function _waInstanceCard(inst, i) {
       <button class="btn btn-ghost btn-sm" title="Buscar mensagens da Evolution API (importa mensagens que não chegaram via webhook)" onclick="_waPullMessages('${inst.id}')">
         <i data-lucide="download" style="width:14px;height:14px"></i>
       </button>
+      <button class="btn btn-ghost btn-sm" title="Diagnóstico: verifica se webhook está configurado corretamente" onclick="_waDiagnostic('${inst.id}')">
+        <i data-lucide="stethoscope" style="width:14px;height:14px"></i>
+      </button>
       <button class="btn btn-ghost btn-sm" title="Re-sincronizar webhook" onclick="_waSyncWebhook('${inst.id}')">
         <i data-lucide="refresh-cw" style="width:14px;height:14px"></i>
       </button>
@@ -350,14 +353,41 @@ function _waOpenQrModal(id, instanceName, base64) {
 // ── Sync webhook ─────────────────────────────────────────────
 
 window._waSyncWebhook = async function(id) {
+  const btn = document.querySelector(`#waCard_${id} [onclick*="_waSyncWebhook"]`);
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
   try {
-    const btn = document.querySelector(`#waCard_${id} [onclick*="_waSyncWebhook"]`);
-    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
-    await apiFetch(`/api/whatsapp-instances/${id}/sync-webhook`, { method: 'POST' });
-    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
-    alert('Webhook re-sincronizado! Mensagens enviadas externamente (n8n, API) agora aparecerão no CRM.');
+    const result = await apiFetch(`/api/whatsapp-instances/${id}/sync-webhook`, { method: 'POST' });
+    alert(`Webhook configurado!\nURL: ${result.webhookUrl}\nInstância: ${result.instance}`);
   } catch (err) {
-    alert('Erro ao sincronizar: ' + err.message);
+    alert('Erro ao sincronizar webhook:\n' + err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+  }
+};
+
+// ── Diagnostic ───────────────────────────────────────────────
+
+window._waDiagnostic = async function(id) {
+  const btn = document.querySelector(`#waCard_${id} [onclick*="_waDiagnostic"]`);
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+  try {
+    const d = await apiFetch(`/api/whatsapp-instances/${id}/diagnostic`);
+    const lines = [
+      `Instância: ${d.instance}`,
+      `Status no banco: ${d.db_status} | Telefone: ${d.db_phone || '(não salvo)'}`,
+      `Conexão Evolution API: ${d.connection_state || d.connection_error || 'desconhecido'}`,
+      ``,
+      `WEBHOOK_BASE_URL: ${d.env_webhook_base}`,
+      `URL esperada:     ${d.expected_url || '(não definida)'}`,
+      `URL configurada:  ${d.evolution_url || d.webhook_error || '(erro ao buscar)'}`,
+      `URLs batem: ${d.url_match ? '✅ Sim' : '❌ Não'}`,
+      `Webhook ativo: ${d.webhook_enabled === true ? '✅ Sim' : d.webhook_enabled === false ? '❌ Não' : '?'}`,
+    ];
+    alert(lines.join('\n'));
+  } catch (err) {
+    alert('Erro no diagnóstico: ' + err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
   }
 };
 
