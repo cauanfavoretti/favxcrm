@@ -2317,6 +2317,29 @@ app.post('/api/ai-message', async (req, res) => {
 // INTEGRATIONS — WHATSAPP (Evolution API proxy)
 // ============================================================
 
+// Busca o número de telefone conectado na instância via Evolution API.
+// Retorna string limpa (apenas dígitos) ou null se não encontrar.
+async function evoFetchPhone(apiUrl, apiKey, instanceName) {
+  // Tenta connectionState primeiro (resposta mais rápida)
+  try {
+    const r = await evoRequest('GET', apiUrl, apiKey, `/instance/connectionState/${instanceName}`);
+    const raw = r?.instance?.owner || r?.instance?.number || r?.owner || r?.number || null;
+    if (raw) return raw.replace(/@.+/, '').replace(/\D/g, '');
+  } catch {}
+
+  // Fallback: fetchInstances (lista todas, acha pelo nome)
+  try {
+    const list = await evoRequest('GET', apiUrl, apiKey, `/instance/fetchInstances`);
+    const found = Array.isArray(list)
+      ? list.find(i => (i.instance?.instanceName || i.instanceName) === instanceName)
+      : list;
+    const raw = found?.instance?.owner || found?.instance?.number || found?.owner || found?.number || null;
+    if (raw) return raw.replace(/@.+/, '').replace(/\D/g, '');
+  } catch {}
+
+  return null;
+}
+
 async function evoSetWebhook(apiUrl, apiKey, instanceName) {
   const webhookBase = (process.env.WEBHOOK_BASE_URL || '').replace(/\/$/, '');
   if (!webhookBase) {
@@ -2578,6 +2601,23 @@ app.post('/api/whatsapp-instances/:id/sync-webhook', auth, requireAdmin, async (
       });
     }
     await evoSetWebhook(inst.api_url, inst.api_key, inst.instance_name);
+
+    // Aproveita e salva o telefone caso ainda não esteja no banco
+    if (!inst.phone_number) {
+      try {
+        const phone = await evoFetchPhone(inst.api_url, inst.api_key, inst.instance_name);
+        if (phone) {
+          await pool.query(
+            `UPDATE whatsapp_instances SET phone_number = $1 WHERE id = $2`,
+            ['+' + phone, inst.id]
+          );
+          console.log(`[sync-webhook] phone salvo: +${phone} instance="${inst.instance_name}"`);
+        }
+      } catch (e) {
+        console.warn(`[sync-webhook] erro ao buscar phone:`, e.message);
+      }
+    }
+
     res.json({ ok: true, webhookUrl: `${webhookBase}/api/webhook/evolution`, instance: inst.instance_name });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -2666,10 +2706,28 @@ app.get('/api/whatsapp-instances/:id/diagnostic', auth, requireAdmin, async (req
     const configuredUrl  = currentWebhook?.webhook?.url || currentWebhook?.url || null;
     const webhookEnabled = currentWebhook?.webhook?.enabled ?? currentWebhook?.enabled ?? null;
 
+    // Tenta salvar telefone se ainda não está no banco
+    let savedPhone = inst.phone_number;
+    if (!savedPhone) {
+      try {
+        const phone = await evoFetchPhone(inst.api_url, inst.api_key, inst.instance_name);
+        if (phone) {
+          await pool.query(
+            `UPDATE whatsapp_instances SET phone_number = $1 WHERE id = $2`,
+            ['+' + phone, inst.id]
+          );
+          savedPhone = '+' + phone;
+          console.log(`[diagnostic] phone salvo: +${phone} instance="${inst.instance_name}"`);
+        }
+      } catch (e) {
+        console.warn(`[diagnostic] erro ao buscar phone:`, e.message);
+      }
+    }
+
     res.json({
       instance:           inst.instance_name,
       db_status:          inst.status,
-      db_phone:           inst.phone_number,
+      db_phone:           savedPhone,
       env_webhook_base:   webhookBase || '⚠️ NÃO CONFIGURADO',
       env_ok:             !!webhookBase,
       expected_url:       expectedUrl,
