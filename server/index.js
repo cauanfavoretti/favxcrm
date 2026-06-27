@@ -1019,12 +1019,20 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
             const comma = file_data.indexOf(',');
             const b64   = comma !== -1 ? file_data.slice(comma + 1) : file_data;
             console.log('[evo audio] number:', number, 'b64 length:', b64.length);
-            // sendAudio com encoding:true faz a Evolution API transcodar webm→ogg/ptt automaticamente
             evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
               `/message/sendWhatsAppAudio/${cfg.evolution_instance_name}`,
               { number, audio: b64, encoding: true }
             );
             console.log('[evo audio] resp:', JSON.stringify(evoResp)?.slice(0, 300));
+          } else if (msgType === 'image' && file_data) {
+            const comma = file_data.indexOf(',');
+            const b64   = comma !== -1 ? file_data.slice(comma + 1) : file_data;
+            console.log('[evo image] number:', number, 'b64 length:', b64.length);
+            evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
+              `/message/sendMedia/${cfg.evolution_instance_name}`,
+              { number, mediatype: 'image', media: b64, caption: content || '' }
+            );
+            console.log('[evo image] resp:', JSON.stringify(evoResp)?.slice(0, 300));
           } else {
             evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
               `/message/sendText/${cfg.evolution_instance_name}`,
@@ -1988,8 +1996,10 @@ async function processWaMsg(subaccount_id, instanceName, apiUrl, apiKey, data) {
     if (dup.length) return 'duplicate';
   }
 
+  const isImageMsg = !!(data.message?.imageMessage);
+
   let inboundFileData = null;
-  if (isAudioMsg && apiUrl && apiKey) {
+  if ((isAudioMsg || isImageMsg) && apiUrl && apiKey) {
     try {
       const msgBody  = { message: { key: data.key, message: data.message }, convertToMp4: false };
       const attempts = [
@@ -2008,13 +2018,14 @@ async function processWaMsg(subaccount_id, instanceName, apiUrl, apiKey, data) {
       const rawB64 = mediaResp?.base64 || mediaResp?.data || mediaResp?.mediaData;
       if (rawB64) {
         const cleanB64 = rawB64.includes(',') ? rawB64.split(',')[1] : rawB64;
-        const mime = (mediaResp.mimetype || 'audio/ogg; codecs=opus').split(';')[0].trim();
+        const defaultMime = isImageMsg ? 'image/jpeg' : 'audio/ogg; codecs=opus';
+        const mime = (mediaResp?.mimetype || defaultMime).split(';')[0].trim();
         inboundFileData = `data:${mime};base64,${cleanB64}`;
       }
     } catch {}
   }
 
-  const inboundMsgType = isAudioMsg ? 'audio' : 'text';
+  const inboundMsgType = isAudioMsg ? 'audio' : isImageMsg ? 'image' : 'text';
   const [,, ownerResult] = await Promise.all([
     pool.query(
       `INSERT INTO messages (conversation_id, direction, sender_type, content, external_id, message_type, file_data)

@@ -235,13 +235,25 @@ function renderMessageHtml(m, contactName) {
   const isBot      = m.sender_type === 'bot' && !isInternal;
   const isInbound  = m.direction === 'inbound';
   const isAudio    = m.message_type === 'audio';
+  const isImage    = m.message_type === 'image' || m.message_type === 'imagem';
   const bubbleClass = isInternal ? ' internal' : isBot ? ' ai' : '';
-  const bubbleContent = isAudio
-    ? `<audio controls src="${m.file_data || ''}" style="width:240px;max-width:100%;outline:none;display:block"></audio>`
-    : (m.content || '');
-  const bubbleStyle = isAudio
-    ? (isInbound ? 'background:#dbeafe;padding:8px 12px' : 'background:#1d4ed8;padding:8px 12px')
-    : '';
+
+  let bubbleContent, bubbleStyle;
+  if (isAudio) {
+    bubbleContent = `<audio controls src="${m.file_data || ''}" style="width:240px;max-width:100%;outline:none;display:block"></audio>`;
+    bubbleStyle   = isInbound ? 'background:#dbeafe;padding:8px 12px' : 'background:#1d4ed8;padding:8px 12px';
+  } else if (isImage && m.file_data) {
+    bubbleContent = `<img src="${m.file_data}" alt="imagem" style="max-width:240px;max-height:320px;border-radius:8px;display:block;cursor:pointer" onclick="window.open(this.src,'_blank')">
+      ${m.content ? `<div style="font-size:13px;margin-top:4px">${m.content}</div>` : ''}`;
+    bubbleStyle   = 'padding:6px';
+  } else if (isImage) {
+    bubbleContent = `<span style="color:var(--color-text-3);font-size:13px">🖼️ Imagem${m.content ? ': ' + m.content : ''}</span>`;
+    bubbleStyle   = '';
+  } else {
+    bubbleContent = m.content || '';
+    bubbleStyle   = '';
+  }
+
   return `
     <div class="msg-row ${isInbound ? 'incoming' : 'outgoing'}" data-msg-id="${m.id}">
       ${isInbound ? `<div class="conv-avatar" style="width:28px;height:28px;font-size:11px">${(contactName||'?')[0].toUpperCase()}</div>` : ''}
@@ -318,8 +330,15 @@ async function loadAndRenderChat(convId, conv) {
     </div>
     <div class="chat-input-area" id="chatInputArea">
       <div id="mentionDropdown" class="mention-dropdown" style="display:none"></div>
+      <div id="imagePreviewArea" style="display:none;padding:6px 8px 0;position:relative">
+        <img id="imagePreviewThumb" src="" alt="" style="max-height:100px;max-width:180px;border-radius:6px;border:1px solid var(--color-border);display:block">
+        <button id="imagePreviewRemove" style="position:absolute;top:2px;left:2px;background:rgba(0,0,0,.55);border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0" title="Remover imagem">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <input type="file" id="imageFileInput" accept="image/*" style="display:none">
       <div style="display:flex;gap:4px;align-items:center">
-        <button class="btn btn-ghost btn-sm" style="padding:6px" title="Anexar"><i data-lucide="paperclip" style="width:16px;height:16px"></i></button>
+        <button class="btn btn-ghost btn-sm" id="attachImageBtn" style="padding:6px" title="Anexar imagem"><i data-lucide="paperclip" style="width:16px;height:16px"></i></button>
         <button id="internalToggle" class="internal-toggle-btn" title="Mensagem interna — não enviada ao contato">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           Interno
@@ -352,6 +371,89 @@ async function loadAndRenderChat(convId, conv) {
       : 'Digite uma mensagem...';
     chatInput?.focus();
   });
+
+  // ── Anexar imagem ─────────────────────────────────────────────
+  const attachImageBtn    = document.getElementById('attachImageBtn');
+  const imageFileInput    = document.getElementById('imageFileInput');
+  const imagePreviewArea  = document.getElementById('imagePreviewArea');
+  const imagePreviewThumb = document.getElementById('imagePreviewThumb');
+  const imagePreviewRemove = document.getElementById('imagePreviewRemove');
+  let _pendingImageData = null;
+
+  attachImageBtn?.addEventListener('click', () => imageFileInput?.click());
+
+  imageFileInput?.addEventListener('change', () => {
+    const file = imageFileInput.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { alert('Selecione um arquivo de imagem.'); return; }
+    if (file.size > 10 * 1024 * 1024) { alert('Imagem muito grande. Máximo 10 MB.'); return; }
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      _pendingImageData = reader.result;
+      imagePreviewThumb.src = _pendingImageData;
+      imagePreviewArea.style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+    imageFileInput.value = '';
+  });
+
+  imagePreviewRemove?.addEventListener('click', () => {
+    _pendingImageData = null;
+    imagePreviewArea.style.display = 'none';
+    imagePreviewThumb.src = '';
+  });
+
+  async function sendImage(fileData, caption) {
+    const tempId  = `temp-${Date.now()}`;
+    const timeStr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const container = document.getElementById('chatMessages');
+
+    // Preview otimista
+    if (container) {
+      const tempRow = document.createElement('div');
+      tempRow.className = 'msg-row outgoing';
+      tempRow.id = tempId;
+      tempRow.innerHTML = `
+        <div class="msg-content">
+          <div class="msg-bubble" style="padding:6px">
+            <img src="${fileData}" alt="imagem" style="max-width:240px;max-height:320px;border-radius:8px;display:block;cursor:pointer" onclick="window.open(this.src,'_blank')">
+            ${caption ? `<div style="font-size:13px;margin-top:4px">${caption}</div>` : ''}
+          </div>
+          <div class="msg-time">${timeStr}</div>
+        </div>`;
+      container.prepend(tempRow);
+      container.scrollTop = 0;
+    }
+
+    // Limpa preview
+    _pendingImageData = null;
+    imagePreviewArea.style.display = 'none';
+    imagePreviewThumb.src = '';
+
+    try {
+      const saved = await apiFetch(`/api/conversations/${convId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({
+          content: caption || '',
+          message_type: 'image',
+          file_data: fileData,
+          instance_id: activeInstanceId,
+          is_internal: _isInternalMode,
+        }),
+      });
+      const tempRow = document.getElementById(tempId);
+      if (tempRow && saved?.id) tempRow.dataset.msgId = saved.id;
+      if (saved?.sent_at) _lastMsgSentAt = saved.sent_at;
+    } catch (err) {
+      console.error('[send image]', err.message);
+      const tempRow = document.getElementById(tempId);
+      if (tempRow) {
+        tempRow.style.opacity = '0.6';
+        const timeEl = tempRow.querySelector('.msg-time');
+        if (timeEl) timeEl.textContent += ' · erro ao enviar';
+      }
+    }
+  }
 
   // @menção
   function closeMentionDropdown() {
@@ -515,6 +617,14 @@ async function loadAndRenderChat(convId, conv) {
   });
 
   async function sendMessage() {
+    // Se há imagem pendente, envia como imagem (caption = texto do input)
+    if (_pendingImageData) {
+      const caption = chatInput.value.trim();
+      chatInput.value = '';
+      chatInput.style.height = 'auto';
+      await sendImage(_pendingImageData, caption);
+      return;
+    }
     const content = chatInput.value.trim();
     if (!content) return;
     chatInput.value = '';
