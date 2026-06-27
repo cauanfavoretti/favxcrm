@@ -2258,6 +2258,56 @@ app.post('/api/webhook/evolution', async (req, res) => {
   res.sendStatus(200);
 });
 
+// Diagnóstico de roteamento de instância — mostra como o webhook mapeia uma instância para subconta
+app.get('/api/whatsapp-instances/:id/routing-check', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM whatsapp_instances WHERE id = $1 AND subaccount_id = $2',
+      [req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Instância não encontrada.' });
+    const inst = rows[0];
+
+    // Simula exatamente o que o webhook handler faz ao receber uma mensagem desta instância
+    const instanceName = inst.instance_name;
+
+    const { rows: byNewTable } = await pool.query(
+      `SELECT id, subaccount_id, instance_name FROM whatsapp_instances WHERE instance_name = $1 LIMIT 1`,
+      [instanceName]
+    );
+    const { rows: byLegacy } = await pool.query(
+      `SELECT subaccount_id, evolution_instance_name FROM subaccount_settings WHERE evolution_instance_name = $1 LIMIT 1`,
+      [instanceName]
+    );
+    const { rows: instCreds } = await pool.query(
+      `SELECT api_url IS NOT NULL AS has_api_url, api_key IS NOT NULL AS has_api_key
+       FROM whatsapp_instances WHERE instance_name = $1 LIMIT 1`,
+      [instanceName]
+    );
+
+    const foundSubaccountId = byNewTable[0]?.subaccount_id || byLegacy[0]?.subaccount_id || null;
+    const routeMatches      = foundSubaccountId === subaccount_id;
+
+    res.json({
+      instance_name:          instanceName,
+      current_subaccount_id:  subaccount_id,
+      found_via_new_table:    byNewTable[0] ? { id: byNewTable[0].id, subaccount_id: byNewTable[0].subaccount_id } : null,
+      found_via_legacy:       byLegacy[0]   ? { subaccount_id: byLegacy[0].subaccount_id } : null,
+      resolved_subaccount_id: foundSubaccountId,
+      routes_to_correct_sub:  routeMatches,
+      has_api_credentials:    instCreds[0] || { has_api_url: false, has_api_key: false },
+      conclusion: routeMatches
+        ? '✅ Mensagens desta instância serão roteadas para esta subconta corretamente.'
+        : foundSubaccountId
+          ? `⚠️ Instância roteia para subconta diferente: "${foundSubaccountId}" (não "${subaccount_id}")`
+          : '❌ Instância não encontrada no banco — mensagens serão descartadas pelo webhook.',
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // ============================================================
 // DIAGNÓSTICO — verifica e cria colunas de áudio se necessário
 // ============================================================

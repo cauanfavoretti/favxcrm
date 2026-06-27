@@ -91,6 +91,9 @@ function _waInstanceCard(inst, i) {
       <button class="btn btn-ghost btn-sm" title="Buscar mensagens da Evolution API (importa mensagens que não chegaram via webhook)" onclick="_waPullMessages('${inst.id}')">
         <i data-lucide="download" style="width:14px;height:14px"></i>
       </button>
+      <button class="btn btn-ghost btn-sm" title="Verificar roteamento: confirma que mensagens chegam nesta subconta" onclick="_waRoutingCheck('${inst.id}')">
+        <i data-lucide="route" style="width:14px;height:14px"></i>
+      </button>
       <button class="btn btn-ghost btn-sm" title="Diagnóstico: verifica se webhook está configurado corretamente" onclick="_waDiagnostic('${inst.id}')">
         <i data-lucide="stethoscope" style="width:14px;height:14px"></i>
       </button>
@@ -360,6 +363,36 @@ window._waSyncWebhook = async function(id) {
     alert(`Webhook configurado!\nURL: ${result.webhookUrl}\nInstância: ${result.instance}`);
   } catch (err) {
     alert('Erro ao sincronizar webhook:\n' + err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+  }
+};
+
+// ── Routing check ────────────────────────────────────────────
+
+window._waRoutingCheck = async function(id) {
+  const btn = document.querySelector(`#waCard_${id} [onclick*="_waRoutingCheck"]`);
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+  try {
+    const d = await apiFetch(`/api/whatsapp-instances/${id}/routing-check`);
+    const lines = [
+      `── Verificação de Roteamento ───────────`,
+      `Instância: ${d.instance_name}`,
+      ``,
+      `Encontrada via tabela nova: ${d.found_via_new_table ? '✅ subaccount=' + d.found_via_new_table.subaccount_id : '❌ não encontrada'}`,
+      `Encontrada via legacy:      ${d.found_via_legacy   ? '✅ subaccount=' + d.found_via_legacy.subaccount_id   : '— não encontrada'}`,
+      ``,
+      `Subconta atual:   ${d.current_subaccount_id}`,
+      `Subconta resolvida: ${d.resolved_subaccount_id || '(nenhuma)'}`,
+      `Rota correta: ${d.routes_to_correct_sub ? '✅ Sim' : '❌ Não'}`,
+      ``,
+      `Credenciais: API URL=${d.has_api_credentials?.has_api_url ? '✅' : '❌'}  API Key=${d.has_api_credentials?.has_api_key ? '✅' : '❌'}`,
+      ``,
+      d.conclusion,
+    ];
+    alert(lines.join('\n'));
+  } catch (err) {
+    alert('Erro na verificação: ' + err.message);
   } finally {
     if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
   }
