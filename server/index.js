@@ -2626,24 +2626,37 @@ app.get('/api/whatsapp-instances/:id/diagnostic', auth, requireAdmin, async (req
       }
     }
 
-    // Testa um set de webhook de forma não-destrutiva (dry-run: registra mas não falha o diagnóstico)
-    let webhookSetResult = null;
+    // Probe raw: testa combinações de método/path/body e devolve resposta bruta da Evolution API
+    const webhookProbe = [];
     if (expectedUrl) {
-      const testPayloads = [
-        { label: 'v2-nested', body: { webhook: { enabled: true, url: expectedUrl, webhookByEvents: false, webhookBase64: false, events: ['messages.upsert','connection.update'] } } },
-        { label: 'v1-flat',   body: { enabled: true, url: expectedUrl, webhookByEvents: false, webhookBase64: false, events: ['MESSAGES_UPSERT','CONNECTION_UPDATE'] } },
-        { label: 'minimal',   body: { enabled: true, url: expectedUrl } },
+      const base = inst.api_url.replace(/\/$/, '');
+      const apiKey = inst.api_key;
+      const testCases = [
+        { label: 'POST v2-nested',  method: 'POST', path: `/webhook/set/${inst.instance_name}`, body: { webhook: { enabled: true, url: expectedUrl, webhookByEvents: false, webhookBase64: false, events: ['MESSAGES_UPSERT','CONNECTION_UPDATE'] } } },
+        { label: 'POST v1-flat',    method: 'POST', path: `/webhook/set/${inst.instance_name}`, body: { enabled: true, url: expectedUrl, webhookByEvents: false, webhookBase64: false, events: ['MESSAGES_UPSERT','CONNECTION_UPDATE'] } },
+        { label: 'POST minimal',    method: 'POST', path: `/webhook/set/${inst.instance_name}`, body: { enabled: true, url: expectedUrl } },
+        { label: 'PUT v2-nested',   method: 'PUT',  path: `/webhook/set/${inst.instance_name}`, body: { webhook: { enabled: true, url: expectedUrl, webhookByEvents: false, webhookBase64: false, events: ['MESSAGES_UPSERT','CONNECTION_UPDATE'] } } },
+        { label: 'PUT v1-flat',     method: 'PUT',  path: `/webhook/set/${inst.instance_name}`, body: { enabled: true, url: expectedUrl, webhookByEvents: false, webhookBase64: false, events: ['MESSAGES_UPSERT','CONNECTION_UPDATE'] } },
+        { label: 'PUT minimal',     method: 'PUT',  path: `/webhook/set/${inst.instance_name}`, body: { enabled: true, url: expectedUrl } },
       ];
-      for (const { label, body } of testPayloads) {
+      for (const tc of testCases) {
         try {
-          await evoRequest('POST', inst.api_url, inst.api_key, `/webhook/set/${inst.instance_name}`, body);
-          webhookSetResult = `OK (${label})`;
-          break;
+          const r = await fetch(`${base}${tc.path}`, {
+            method: tc.method,
+            headers: { 'Content-Type': 'application/json', 'apikey': apiKey },
+            body: JSON.stringify(tc.body),
+          });
+          const txt = await r.text();
+          webhookProbe.push({ label: tc.label, status: r.status, body: txt.slice(0, 300) });
+          if (r.ok) break; // parar na primeira que funcionar
         } catch (e) {
-          webhookSetResult = `${label}: ${e.message}`;
+          webhookProbe.push({ label: tc.label, status: 'network-error', body: e.message });
         }
       }
     }
+    const webhookSetResult = webhookProbe.find(p => String(p.status).startsWith('2'))
+      ? `OK (${webhookProbe.find(p => String(p.status).startsWith('2')).label})`
+      : webhookProbe[0]?.body || 'não testado';
 
     const configuredUrl  = currentWebhook?.webhook?.url || currentWebhook?.url || null;
     const webhookEnabled = currentWebhook?.webhook?.enabled ?? currentWebhook?.enabled ?? null;
@@ -2661,6 +2674,7 @@ app.get('/api/whatsapp-instances/:id/diagnostic', auth, requireAdmin, async (req
       webhook_find_path:  webhookFindPath,
       webhook_find_error: webhookError,
       webhook_set_test:   webhookSetResult,
+      webhook_probe:      webhookProbe,
       connection_state:   connectionState,
       connection_error:   connectionError,
     });
