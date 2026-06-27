@@ -2324,31 +2324,44 @@ async function evoSetWebhook(apiUrl, apiKey, instanceName) {
   }
   const webhookUrl = `${webhookBase}/api/webhook/evolution`;
 
-  // Eventos em UPPER_SNAKE — formato confirmado como correto para esta versão da Evolution API
-  const events = ['MESSAGES_UPSERT', 'SEND_MESSAGE', 'MESSAGE_SENT', 'MESSAGES_SENT', 'CONNECTION_UPDATE'];
+  // Subsets de eventos em UPPER_SNAKE (confirmado pelo probe).
+  // MESSAGE_SENT e MESSAGES_SENT foram removidos pois causam Bad Request em algumas versões.
+  // Outbound via phone chega como MESSAGES_UPSERT com fromMe:true (não precisa de SEND_MESSAGE
+  // separado para o CRM funcionar).
+  const evtFull    = ['MESSAGES_UPSERT', 'SEND_MESSAGE', 'CONNECTION_UPDATE'];
+  const evtMinimal = ['MESSAGES_UPSERT', 'CONNECTION_UPDATE']; // confirmado pelo probe → 201
 
+  // Tenta POST (criação) e PUT (atualização) pois algumas versões usam PUT para instâncias
+  // que já possuem webhook configurado.
   const attempts = [
-    // ✅ CONFIRMADO: v2-nested + UPPER_SNAKE funciona (probe retornou 201)
-    { label: 'v2-nested-upper', path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events } } },
-    // Fallbacks em ordem de probabilidade
-    { label: 'v1-flat-upper',   path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events } },
-    { label: 'v2-nested-noevt', path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl } } },
-    { label: 'v1-flat-noevt',   path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl } },
-    { label: 'v2-instpath',     path: `/instance/webhook/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, events } } },
+    // ✅ POST minimal — confirmado funcionar pelo probe diagnóstico
+    { method: 'POST', label: 'POST v2-nested-minimal', path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: evtMinimal } } },
+    // PUT minimal — para atualizar webhook já existente
+    { method: 'PUT',  label: 'PUT v2-nested-minimal',  path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: evtMinimal } } },
+    // POST com SEND_MESSAGE incluso
+    { method: 'POST', label: 'POST v2-nested-full',    path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: evtFull } } },
+    // PUT com SEND_MESSAGE incluso
+    { method: 'PUT',  label: 'PUT v2-nested-full',     path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: evtFull } } },
+    // v1 flat como fallback
+    { method: 'POST', label: 'POST v1-flat-minimal',   path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: evtMinimal } },
+    { method: 'PUT',  label: 'PUT v1-flat-minimal',    path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: evtMinimal } },
+    // Sem eventos — aceita tudo
+    { method: 'POST', label: 'POST v2-noevents',       path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl } } },
+    { method: 'PUT',  label: 'PUT v2-noevents',        path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl } } },
   ];
 
-  let lastErr;
-  for (const { label, path, body } of attempts) {
+  const errors = [];
+  for (const { method, label, path, body } of attempts) {
     try {
-      await evoRequest('POST', apiUrl, apiKey, path, body);
-      console.log(`[evo-webhook] OK formato="${label}" instance="${instanceName}" url="${webhookUrl}"`);
+      await evoRequest(method, apiUrl, apiKey, path, body);
+      console.log(`[evo-webhook] OK método="${method}" formato="${label}" instance="${instanceName}" url="${webhookUrl}"`);
       return;
     } catch (e) {
-      console.warn(`[evo-webhook] formato="${label}" falhou: ${e.message}`);
-      lastErr = e;
+      console.warn(`[evo-webhook] "${label}" falhou: ${e.message}`);
+      errors.push(`${label}: ${e.message}`);
     }
   }
-  throw new Error(`Nenhum formato suportado pela Evolution API. Último erro: ${lastErr?.message}`);
+  throw new Error(`Nenhum formato suportado. Erros:\n${errors.join('\n')}`);
 }
 
 async function evoRequest(method, baseUrl, apiKey, path, body) {
