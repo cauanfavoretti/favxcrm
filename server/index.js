@@ -2324,25 +2324,17 @@ async function evoSetWebhook(apiUrl, apiKey, instanceName) {
   }
   const webhookUrl = `${webhookBase}/api/webhook/evolution`;
 
-  const eventsV2 = ['messages.upsert', 'send.message', 'message.sent', 'messages.sent', 'connection.update'];
-  const eventsV1 = ['MESSAGES_UPSERT', 'SEND_MESSAGE', 'MESSAGE_SENT', 'MESSAGES_SENT', 'CONNECTION_UPDATE'];
+  // Eventos em UPPER_SNAKE — formato confirmado como correto para esta versão da Evolution API
+  const events = ['MESSAGES_UPSERT', 'SEND_MESSAGE', 'MESSAGE_SENT', 'MESSAGES_SENT', 'CONNECTION_UPDATE'];
 
-  // Testa 7 combinações de formato/payload/path para máxima compatibilidade
   const attempts = [
-    // v2: body aninhado em "webhook" + eventos lower.dot (Evolution v2+)
-    { label: 'v2-nested-events',   path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: eventsV2 } } },
-    // v1: body plano + eventos UPPER_SNAKE (Evolution v1)
-    { label: 'v1-flat-events',     path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: eventsV1 } },
-    // Mínimo v2 nested sem eventos (usa todos os eventos do servidor)
-    { label: 'v2-nested-noevents', path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl } } },
-    // Mínimo v1 flat sem eventos
-    { label: 'v1-flat-noevents',   path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl } },
-    // v2 flat com eventos lower.dot (alguns forks)
-    { label: 'v2-flat-events',     path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events: eventsV2 } },
-    // Alguns forks usam /instance/webhook em vez de /webhook/set
-    { label: 'v1-instpath-noevents', path: `/instance/webhook/${instanceName}`, body: { enabled: true, url: webhookUrl } },
-    // Path alternativo com body nested
-    { label: 'v2-instpath-events', path: `/instance/webhook/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, events: eventsV2 } } },
+    // ✅ CONFIRMADO: v2-nested + UPPER_SNAKE funciona (probe retornou 201)
+    { label: 'v2-nested-upper', path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events } } },
+    // Fallbacks em ordem de probabilidade
+    { label: 'v1-flat-upper',   path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl, webhookByEvents: false, webhookBase64: false, events } },
+    { label: 'v2-nested-noevt', path: `/webhook/set/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl } } },
+    { label: 'v1-flat-noevt',   path: `/webhook/set/${instanceName}`, body: { enabled: true, url: webhookUrl } },
+    { label: 'v2-instpath',     path: `/instance/webhook/${instanceName}`, body: { webhook: { enabled: true, url: webhookUrl, events } } },
   ];
 
   let lastErr;
