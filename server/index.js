@@ -2295,6 +2295,44 @@ app.get('/api/whatsapp-instances', auth, async (req, res) => {
   }
 });
 
+// Importa uma instância Evolution API já existente (sem criar nova no servidor)
+app.post('/api/whatsapp-instances/import', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { api_url, api_key, instance_name } = req.body;
+  if (!api_url?.trim() || !api_key?.trim() || !instance_name?.trim())
+    return res.status(400).json({ message: 'URL, chave da API e nome da instância são obrigatórios.' });
+
+  try {
+    const { rows: existing } = await pool.query(
+      'SELECT id FROM whatsapp_instances WHERE instance_name = $1', [instance_name.trim()]
+    );
+    if (existing.length)
+      return res.status(409).json({ message: `Instância "${instance_name.trim()}" já está registrada no CRM.` });
+
+    const { rows } = await pool.query(
+      `INSERT INTO whatsapp_instances (subaccount_id, instance_name, api_url, api_key, api_provider, status)
+       VALUES ($1, $2, $3, $4, 'evolution', 'connecting') RETURNING id, instance_name, status`,
+      [subaccount_id, instance_name.trim(), api_url.trim(), api_key.trim()]
+    );
+
+    try { await evoSetWebhook(api_url.trim(), api_key.trim(), instance_name.trim()); }
+    catch (whErr) { console.warn('[evo webhook import]', whErr.message); }
+
+    let base64 = null, state = null;
+    try {
+      const qrData = await evoRequest('GET', api_url.trim(), api_key.trim(),
+        `/instance/connect/${instance_name.trim()}`);
+      base64 = qrData?.qrcode?.base64 || qrData?.base64 || null;
+      state  = qrData?.instance?.state || null;
+    } catch {}
+
+    console.log(`[evo import] instância "${instance_name.trim()}" importada para subconta="${subaccount_id}"`);
+    res.status(201).json({ ...rows[0], base64, state });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 app.post('/api/whatsapp-instances', auth, requireAdmin, async (req, res) => {
   const { subaccount_id } = req.user;
   const { api_url, api_key } = req.body;
@@ -2402,9 +2440,15 @@ app.delete('/api/whatsapp-instances/:id', auth, requireAdmin, async (req, res) =
 // Endpoint interno para forçar resync de todos os webhooks manualmente
 app.post('/api/admin/resync-webhooks', auth, requireAdmin, async (req, res) => {
   try {
-    const { rows } = await pool.query(`SELECT api_url, api_key, instance_name FROM whatsapp_instances`);
+    const { rows: newInstances } = await pool.query(`SELECT api_url, api_key, instance_name FROM whatsapp_instances`);
+    const { rows: legacyInstances } = await pool.query(
+      `SELECT evolution_api_url AS api_url, evolution_api_key AS api_key, evolution_instance_name AS instance_name
+       FROM subaccount_settings
+       WHERE evolution_api_url IS NOT NULL AND evolution_api_key IS NOT NULL AND evolution_instance_name IS NOT NULL`
+    );
+    const allInstances = [...newInstances, ...legacyInstances];
     const results = await Promise.allSettled(
-      rows.map(inst => evoSetWebhook(inst.api_url, inst.api_key, inst.instance_name)
+      allInstances.map(inst => evoSetWebhook(inst.api_url, inst.api_key, inst.instance_name)
         .then(() => ({ instance: inst.instance_name, ok: true }))
         .catch(e  => ({ instance: inst.instance_name, ok: false, error: e.message }))
       )
@@ -2700,8 +2744,18 @@ app.get('/api/integrations/whatsapp', auth, async (req, res) => {
 // incluindo instâncias conectadas antes deste deploy.
 async function resyncAllWebhooks() {
   try {
-    const { rows } = await pool.query(`SELECT api_url, api_key, instance_name FROM whatsapp_instances`);
-    await Promise.allSettled(rows.map(inst =>
+    const { rows: newInstances } = await pool.query(
+      `SELECT api_url, api_key, instance_name FROM whatsapp_instances`
+    );
+    // Inclui também instâncias configuradas via subaccount_settings (config legada)
+    const { rows: legacyInstances } = await pool.query(
+      `SELECT evolution_api_url AS api_url, evolution_api_key AS api_key, evolution_instance_name AS instance_name
+       FROM subaccount_settings
+       WHERE evolution_api_url IS NOT NULL AND evolution_api_key IS NOT NULL AND evolution_instance_name IS NOT NULL`
+    );
+    const allInstances = [...newInstances, ...legacyInstances];
+    console.log(`[webhook resync] sincronizando ${newInstances.length} instâncias principais + ${legacyInstances.length} legadas`);
+    await Promise.allSettled(allInstances.map(inst =>
       evoSetWebhook(inst.api_url, inst.api_key, inst.instance_name)
         .then(() => console.log(`[webhook resync] OK: ${inst.instance_name}`))
         .catch(e  => console.warn(`[webhook resync] ${inst.instance_name}:`, e.message))

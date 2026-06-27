@@ -122,7 +122,14 @@ function _openAddWaModal() {
       </div>
       <button id="waAddClose" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--color-text-3)"><i data-lucide="x" style="width:18px;height:18px"></i></button>
     </div>
-    <div style="padding:24px;display:flex;flex-direction:column;gap:14px">
+    <div style="padding:16px 24px 0;display:flex;gap:0;border-bottom:1px solid var(--color-border)">
+      <button id="waTabNew" style="padding:8px 16px;font-size:12px;font-weight:700;border:none;background:none;cursor:pointer;border-bottom:2px solid var(--color-accent);color:var(--color-accent)">Nova instância</button>
+      <button id="waTabImport" style="padding:8px 16px;font-size:12px;font-weight:700;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;color:var(--color-text-3)">Importar existente</button>
+    </div>
+    <div id="waTabBodyNew" style="padding:24px;display:flex;flex-direction:column;gap:14px">
+      <div style="font-size:12px;color:var(--color-text-3);background:var(--color-bg-2);border-radius:8px;padding:10px 12px">
+        Cria uma nova instância no servidor Evolution API e exibe o QR code para conectar.
+      </div>
       <div>
         <label style="font-size:11px;font-weight:700;color:var(--color-text-2);display:block;margin-bottom:6px;letter-spacing:.06em">URL DA EVOLUTION API <span style="color:var(--color-red)">*</span></label>
         <input id="waAddUrl" class="settings-input" style="width:100%" placeholder="https://evo.seuservidor.com" />
@@ -132,6 +139,24 @@ function _openAddWaModal() {
         <input id="waAddKey" class="settings-input" style="width:100%" type="password" placeholder="••••••••••••••••••" />
       </div>
       <div id="waAddErr" style="font-size:12px;color:var(--color-red);min-height:14px"></div>
+    </div>
+    <div id="waTabBodyImport" style="padding:24px;display:none;flex-direction:column;gap:14px">
+      <div style="font-size:12px;color:var(--color-text-3);background:var(--color-bg-2);border-radius:8px;padding:10px 12px">
+        Use esta opção se a instância já existe e está conectada no seu servidor Evolution API. O webhook será configurado automaticamente.
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--color-text-2);display:block;margin-bottom:6px;letter-spacing:.06em">URL DA EVOLUTION API <span style="color:var(--color-red)">*</span></label>
+        <input id="waImpUrl" class="settings-input" style="width:100%" placeholder="https://evo.seuservidor.com" />
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--color-text-2);display:block;margin-bottom:6px;letter-spacing:.06em">CHAVE DA API GLOBAL <span style="color:var(--color-red)">*</span></label>
+        <input id="waImpKey" class="settings-input" style="width:100%" type="password" placeholder="••••••••••••••••••" />
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--color-text-2);display:block;margin-bottom:6px;letter-spacing:.06em">NOME DA INSTÂNCIA <span style="color:var(--color-red)">*</span></label>
+        <input id="waImpName" class="settings-input" style="width:100%" placeholder="ex: maivor, minha-instancia-1" />
+      </div>
+      <div id="waImpErr" style="font-size:12px;color:var(--color-red);min-height:14px"></div>
     </div>
     <div style="padding:16px 24px;border-top:1px solid var(--color-border);display:flex;justify-content:flex-end;gap:8px">
       <button id="waAddCancel" class="btn btn-secondary btn-sm">Cancelar</button>
@@ -149,32 +174,86 @@ function _openAddWaModal() {
   modal.querySelector('#waAddCancel').addEventListener('click', () => overlay.remove());
   setTimeout(() => modal.querySelector('#waAddUrl')?.focus(), 40);
 
+  // Tab switching
+  let activeTab = 'new';
+  modal.querySelector('#waTabNew').addEventListener('click', () => {
+    activeTab = 'new';
+    modal.querySelector('#waTabNew').style.borderBottomColor = 'var(--color-accent)';
+    modal.querySelector('#waTabNew').style.color = 'var(--color-accent)';
+    modal.querySelector('#waTabImport').style.borderBottomColor = 'transparent';
+    modal.querySelector('#waTabImport').style.color = 'var(--color-text-3)';
+    modal.querySelector('#waTabBodyNew').style.display = 'flex';
+    modal.querySelector('#waTabBodyImport').style.display = 'none';
+    modal.querySelector('#waAddNext').innerHTML = `Próximo <i data-lucide="arrow-right" style="width:13px;height:13px"></i>`;
+    lucide.createIcons();
+  });
+  modal.querySelector('#waTabImport').addEventListener('click', () => {
+    activeTab = 'import';
+    modal.querySelector('#waTabImport').style.borderBottomColor = 'var(--color-accent)';
+    modal.querySelector('#waTabImport').style.color = 'var(--color-accent)';
+    modal.querySelector('#waTabNew').style.borderBottomColor = 'transparent';
+    modal.querySelector('#waTabNew').style.color = 'var(--color-text-3)';
+    modal.querySelector('#waTabBodyNew').style.display = 'none';
+    modal.querySelector('#waTabBodyImport').style.display = 'flex';
+    modal.querySelector('#waAddNext').innerHTML = `Importar <i data-lucide="download" style="width:13px;height:13px"></i>`;
+    lucide.createIcons();
+    setTimeout(() => modal.querySelector('#waImpUrl')?.focus(), 40);
+  });
+
   modal.querySelector('#waAddNext').addEventListener('click', async () => {
-    const api_url = modal.querySelector('#waAddUrl').value.trim();
-    const api_key = modal.querySelector('#waAddKey').value.trim();
-    const errEl   = modal.querySelector('#waAddErr');
-    if (!api_url) { errEl.textContent = 'URL é obrigatória.'; return; }
-    if (!api_key) { errEl.textContent = 'Chave é obrigatória.'; return; }
-    errEl.textContent = '';
-
     const btn = modal.querySelector('#waAddNext');
-    btn.disabled = true;
-    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation:spin .7s linear infinite"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg> Conectando...`;
+    const spinner = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation:spin .7s linear infinite"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>`;
 
-    try {
-      const result = await apiFetch('/api/whatsapp-instances', {
-        method: 'POST',
-        body: JSON.stringify({ api_url, api_key }),
-      });
-      overlay.remove();
-      _waOpenQrModal(result.id, result.instance_name, result.base64);
-      _waInstances.push(result);
-      _refreshWaList();
-    } catch (err) {
-      errEl.textContent = err.message;
-      btn.disabled = false;
-      btn.innerHTML = `Próximo <i data-lucide="arrow-right" style="width:13px;height:13px"></i>`;
-      lucide.createIcons();
+    if (activeTab === 'new') {
+      const api_url = modal.querySelector('#waAddUrl').value.trim();
+      const api_key = modal.querySelector('#waAddKey').value.trim();
+      const errEl   = modal.querySelector('#waAddErr');
+      if (!api_url) { errEl.textContent = 'URL é obrigatória.'; return; }
+      if (!api_key) { errEl.textContent = 'Chave é obrigatória.'; return; }
+      errEl.textContent = '';
+      btn.disabled = true;
+      btn.innerHTML = `${spinner} Conectando...`;
+      try {
+        const result = await apiFetch('/api/whatsapp-instances', {
+          method: 'POST',
+          body: JSON.stringify({ api_url, api_key }),
+        });
+        overlay.remove();
+        _waOpenQrModal(result.id, result.instance_name, result.base64);
+        _waInstances.push(result);
+        _refreshWaList();
+      } catch (err) {
+        errEl.textContent = err.message;
+        btn.disabled = false;
+        btn.innerHTML = `Próximo <i data-lucide="arrow-right" style="width:13px;height:13px"></i>`;
+        lucide.createIcons();
+      }
+    } else {
+      const api_url       = modal.querySelector('#waImpUrl').value.trim();
+      const api_key       = modal.querySelector('#waImpKey').value.trim();
+      const instance_name = modal.querySelector('#waImpName').value.trim();
+      const errEl         = modal.querySelector('#waImpErr');
+      if (!api_url)       { errEl.textContent = 'URL é obrigatória.'; return; }
+      if (!api_key)       { errEl.textContent = 'Chave é obrigatória.'; return; }
+      if (!instance_name) { errEl.textContent = 'Nome da instância é obrigatório.'; return; }
+      errEl.textContent = '';
+      btn.disabled = true;
+      btn.innerHTML = `${spinner} Importando...`;
+      try {
+        const result = await apiFetch('/api/whatsapp-instances/import', {
+          method: 'POST',
+          body: JSON.stringify({ api_url, api_key, instance_name }),
+        });
+        overlay.remove();
+        _waOpenQrModal(result.id, result.instance_name, result.base64);
+        _waInstances.push(result);
+        _refreshWaList();
+      } catch (err) {
+        errEl.textContent = err.message;
+        btn.disabled = false;
+        btn.innerHTML = `Importar <i data-lucide="download" style="width:13px;height:13px"></i>`;
+        lucide.createIcons();
+      }
     }
   });
 }
