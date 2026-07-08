@@ -61,6 +61,9 @@ async function navigateTo(page) {
   if (currentPage === 'conversations' && typeof window.unloadConversations === 'function') {
     window.unloadConversations();
   }
+  if (currentPage === 'agents' && typeof window.unloadOffice === 'function') {
+    window.unloadOffice();
+  }
 
   // Block admin-only pages for non-super_admin users
   if (ADMIN_ONLY_PAGES.has(page)) {

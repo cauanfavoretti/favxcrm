@@ -24,12 +24,25 @@ window.pageAgents = function (webhooks) {
   const whs = Array.isArray(webhooks) ? webhooks : [];
 
   return `
-  <div class="page-header" style="margin-bottom:24px">
+  <div class="page-header" style="margin-bottom:20px">
     <div>
       <h1 class="page-title">Agentes de IA</h1>
       <p class="page-subtitle">Gerencie a inteligência artificial da sua subconta</p>
     </div>
   </div>
+
+  <!-- ABAS -->
+  <div style="display:flex;gap:4px;margin-bottom:24px;border-bottom:1px solid var(--color-border);padding-bottom:0">
+    <button id="tabWebhooks" class="agents-tab active" style="padding:8px 18px;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--color-accent);border-bottom:2px solid var(--color-accent);margin-bottom:-1px">
+      Webhooks
+    </button>
+    <button id="tabOffice" class="agents-tab" style="padding:8px 18px;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--color-text-3);border-bottom:2px solid transparent;margin-bottom:-1px">
+      🏢 Escritório Virtual
+    </button>
+  </div>
+
+  <!-- PAINEL WEBHOOKS -->
+  <div id="panelWebhooks">
 
   <!-- STATUS CARD -->
   <div style="max-width:560px;margin-bottom:32px">
@@ -88,6 +101,26 @@ window.pageAgents = function (webhooks) {
         ${whs.map(wh => _webhookCard(wh)).join('')}
       </div>
     `}
+  </div>
+
+  </div><!-- /panelWebhooks -->
+
+  <!-- PAINEL ESCRITÓRIO -->
+  <div id="panelOffice" style="display:none">
+    <div style="display:flex;gap:16px;height:calc(100vh - 220px);min-height:400px">
+      <!-- Canvas -->
+      <div style="flex:1;position:relative;border-radius:12px;overflow:hidden;background:#2a2a2a;box-shadow:0 4px 24px rgba(0,0,0,.18)">
+        <canvas id="officeCanvas" style="display:block;width:100%;height:100%;image-rendering:pixelated"></canvas>
+        <div style="position:absolute;bottom:10px;left:50%;transform:translateX(-50%);
+          background:rgba(0,0,0,.55);color:#fff;font-size:11px;padding:4px 12px;border-radius:20px;
+          pointer-events:none;white-space:nowrap">
+          WASD / ↑↓←→ mover &nbsp;·&nbsp; E / clique interagir
+        </div>
+      </div>
+      <!-- Painel lateral -->
+      <div id="officePanel" style="display:none;width:280px;flex-shrink:0;background:var(--color-surface);
+        border:1px solid var(--color-border);border-radius:12px;padding:20px;overflow-y:auto"></div>
+    </div>
   </div>
   `;
 };
@@ -287,6 +320,32 @@ async function reloadAgentsPage() {
 }
 
 window.initAgents = function (webhooks) {
+  // ── Troca de abas ────────────────────────────────────
+  const tabWebhooks = document.getElementById('tabWebhooks');
+  const tabOffice   = document.getElementById('tabOffice');
+  const panelWH     = document.getElementById('panelWebhooks');
+  const panelOff    = document.getElementById('panelOffice');
+
+  function switchTab(tab) {
+    const isOffice = tab === 'office';
+    tabWebhooks.style.color       = isOffice ? 'var(--color-text-3)' : 'var(--color-accent)';
+    tabWebhooks.style.borderColor = isOffice ? 'transparent'          : 'var(--color-accent)';
+    tabOffice.style.color         = isOffice ? 'var(--color-accent)' : 'var(--color-text-3)';
+    tabOffice.style.borderColor   = isOffice ? 'var(--color-accent)' : 'transparent';
+    panelWH.style.display  = isOffice ? 'none' : '';
+    panelOff.style.display = isOffice ? '' : 'none';
+    if (isOffice) {
+      const u = decodeToken?.() || {};
+      const initials = ((u.name || u.email || 'EU').split(' ').map(p => p[0]).join('').slice(0, 2)).toUpperCase();
+      window.initOffice?.({ webhooks: Array.isArray(webhooks) ? webhooks : [], userInitials: initials });
+    } else {
+      window.unloadOffice?.();
+    }
+  }
+
+  tabWebhooks?.addEventListener('click', () => switchTab('webhooks'));
+  tabOffice?.addEventListener('click',   () => switchTab('office'));
+
   // AI toggle
   const btn = document.getElementById('btnToggleAi');
   if (btn) {
