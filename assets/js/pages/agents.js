@@ -60,9 +60,6 @@ window.pageAgents = function (webhooks) {
             <i data-lucide="settings-2" style="width:13px;height:13px"></i> Configurações avançadas
           </button>
         </span>
-        <button class="btn btn-primary btn-sm" id="btnNewWebhook" style="gap:6px">
-          <i data-lucide="plus" style="width:14px;height:14px"></i> Novo webhook
-        </button>
       </div>
     </div>
 
@@ -120,9 +117,6 @@ function _webhookCard(wh) {
           <span style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>
           ${wh.is_active ? 'Ativo' : 'Inativo'}
         </span>
-        <button class="btn btn-ghost btn-sm btn-edit-wh" data-id="${wh.id}" style="padding:5px 8px">
-          <i data-lucide="pencil" style="width:14px;height:14px"></i>
-        </button>
         <button class="btn btn-ghost btn-sm btn-delete-wh" data-id="${wh.id}" style="padding:5px 8px;color:var(--color-red)">
           <i data-lucide="trash-2" style="width:14px;height:14px"></i>
         </button>
@@ -260,6 +254,57 @@ function openWebhookModal(existing) {
   });
 }
 
+function openAdvancedModal(whs) {
+  const rows = whs.length === 0
+    ? `<div style="padding:24px;text-align:center;color:var(--color-text-3);font-size:13px">Nenhum webhook configurado ainda.</div>`
+    : whs.map(wh => `
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--color-border)">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600;color:var(--color-text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${wh.name}</div>
+          <div style="font-size:11px;color:var(--color-text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${wh.url}</div>
+        </div>
+        <span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;flex-shrink:0;
+          background:${wh.is_active ? 'var(--color-green-lite)' : 'var(--color-border-2)'};
+          color:${wh.is_active ? 'var(--color-green)' : 'var(--color-text-3)'}">
+          <span style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>
+          ${wh.is_active ? 'Ativo' : 'Inativo'}
+        </span>
+        <button class="btn btn-ghost btn-sm adv-edit-wh" data-id="${wh.id}" style="padding:5px 8px;flex-shrink:0">
+          <i data-lucide="pencil" style="width:14px;height:14px"></i>
+        </button>
+      </div>`).join('');
+
+  showAiModal(`
+    <div style="background:var(--color-surface);border-radius:16px;width:560px;max-width:100%;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 32px 64px rgba(0,0,0,.25);overflow:hidden">
+      <div style="padding:20px 24px;border-bottom:1px solid var(--color-border);display:flex;align-items:center;justify-content:space-between">
+        <div style="font-size:16px;font-weight:700;color:var(--color-text-1)">Configurações avançadas</div>
+        <button class="btn btn-ghost btn-sm" id="btnCloseAdv" style="padding:4px"><i data-lucide="x" style="width:16px;height:16px"></i></button>
+      </div>
+      <div style="padding:20px 24px;overflow-y:auto;flex:1">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <span style="font-size:13px;font-weight:600;color:var(--color-text-2)">Webhooks</span>
+          <button class="btn btn-primary btn-sm" id="btnAdvNewWebhook" style="gap:6px">
+            <i data-lucide="plus" style="width:13px;height:13px"></i> Novo webhook
+          </button>
+        </div>
+        <div>${rows}</div>
+      </div>
+    </div>
+  `);
+
+  document.getElementById('btnCloseAdv')?.addEventListener('click', closeAiModal);
+  document.getElementById('btnAdvNewWebhook')?.addEventListener('click', () => {
+    closeAiModal();
+    openWebhookModal(null);
+  });
+  document.querySelectorAll('.adv-edit-wh').forEach(b => {
+    b.addEventListener('click', () => {
+      const wh = whs.find(w => String(w.id) === String(b.dataset.id));
+      if (wh) { closeAiModal(); openWebhookModal(wh); }
+    });
+  });
+}
+
 function openDeactivateConfirm() {
   showAiModal(`
     <div style="background:var(--color-surface);border-radius:16px;width:420px;max-width:100%;padding:36px 32px 28px;display:flex;flex-direction:column;align-items:center;gap:0;box-shadow:0 32px 64px rgba(0,0,0,.25)">
@@ -327,7 +372,7 @@ window.initAgents = function (webhooks) {
     const wrapper = document.getElementById('btnAdvancedWrapper');
     if (wrapper) wrapper.style.display = '';
     document.getElementById('btnAdvanced')?.addEventListener('click', () => {
-      alert('Configurações avançadas — em desenvolvimento.');
+      openAdvancedModal(Array.isArray(webhooks) ? webhooks : []);
     });
   }
 
@@ -349,18 +394,7 @@ window.initAgents = function (webhooks) {
   document.getElementById('btnActivateAll')?.addEventListener('click',   () => toggleAll(true));
   document.getElementById('btnDeactivateAll')?.addEventListener('click', () => toggleAll(false));
 
-  // New webhook
-  document.getElementById('btnNewWebhook')?.addEventListener('click', () => openWebhookModal(null));
-
-  // Edit / Delete
-  document.querySelectorAll('.btn-edit-wh').forEach(b => {
-    b.addEventListener('click', () => {
-      const whs = Array.isArray(webhooks) ? webhooks : [];
-      const wh  = whs.find(w => w.id === b.dataset.id);
-      if (wh) openWebhookModal(wh);
-    });
-  });
-
+  // Delete
   document.querySelectorAll('.btn-delete-wh').forEach(b => {
     b.addEventListener('click', async () => {
       if (!confirm('Excluir este webhook?')) return;
