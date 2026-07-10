@@ -3264,27 +3264,25 @@ async function fireAgentWebhooks(subaccount_id, event, payload) {
     // antes de retornar — essencial em ambientes serverless onde o processo pode
     // ser pausado logo após enviar a resposta HTTP. Por isso é CRÍTICO que quem
     // chama fireAgentWebhooks sempre dê await nela.
-    const postOnce = (url) => {
-      const ac    = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 15000);
-      return fetch(url, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-        signal:  ac.signal,
-      }).finally(() => clearTimeout(timer));
-    };
-
+    //
+    // A função inteira (processWaMsg + isso) tem maxDuration=30s no vercel.json.
+    // Uma única tentativa de 20s deixa ~10s de folga para o resto do trabalho
+    // (queries, etc.) antes que a Vercel mate a execução — um retry aqui só
+    // aumentaria o risco de ser interrompido pela própria plataforma no meio.
     await Promise.allSettled(targets.map(async (wh) => {
+      const ac    = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 20000);
       try {
-        await postOnce(wh.url);
+        await fetch(wh.url, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          signal:  ac.signal,
+        });
       } catch (e) {
-        console.warn(`[agent-webhook fire] ${wh.url} (1ª tentativa falhou: ${e.message}), tentando de novo...`);
-        try {
-          await postOnce(wh.url);
-        } catch (e2) {
-          console.warn(`[agent-webhook fire] ${wh.url} (2ª tentativa falhou):`, e2.message);
-        }
+        console.warn(`[agent-webhook fire] ${wh.url}:`, e.message);
+      } finally {
+        clearTimeout(timer);
       }
     }));
   } catch (err) {
