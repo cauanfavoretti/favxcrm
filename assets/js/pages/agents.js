@@ -44,51 +44,26 @@ window.pageAgents = function (webhooks) {
   <!-- PAINEL WEBHOOKS -->
   <div id="panelWebhooks">
 
-  <!-- STATUS CARD -->
-  <div style="max-width:560px;margin-bottom:32px">
-    <div class="card" style="padding:28px 28px 24px;display:flex;flex-direction:column;gap:24px">
-      <div style="display:flex;align-items:center;gap:18px">
-        <div style="width:52px;height:52px;border-radius:14px;background:${active ? 'var(--color-black)' : 'var(--color-border-2)'};display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i data-lucide="cpu" style="width:24px;height:24px;color:${active ? '#fff' : 'var(--color-text-3)'}"></i>
-        </div>
-        <div style="flex:1">
-          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-3);margin-bottom:4px">Plano atual</div>
-          <div style="font-size:18px;font-weight:800;color:var(--color-text-1);line-height:1.2">IA ${active ? 'Ativa' : 'Inativa'}</div>
-        </div>
-        <span style="display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:99px;font-size:12px;font-weight:600;
-          background:${active ? 'var(--color-green-lite)' : 'var(--color-accent-lite)'};
-          color:${active ? 'var(--color-green)' : 'var(--color-text-3)'}">
-          <span style="width:6px;height:6px;border-radius:50%;background:${active ? 'var(--color-green)' : 'var(--color-text-3)'}"></span>
-          ${active ? 'Online' : 'Offline'}
-        </span>
-      </div>
-      <p style="font-size:13px;color:var(--color-text-3);line-height:1.6;border-top:1px solid var(--color-border);padding-top:20px">
-        Com a IA ativa, sua subconta conta com respostas automáticas, movimentação inteligente no funil,
-        qualificação de leads e muito mais — tudo executado de forma autônoma pelos agentes configurados internamente.
-      </p>
-      ${window.favxCan('manage_ai') ? `<div style="display:flex;justify-content:flex-end;border-top:1px solid var(--color-border);padding-top:20px">
-        ${active
-          ? `<button class="btn btn-sm" id="btnToggleAi" style="background:var(--color-red-lite);color:var(--color-red);border:1px solid var(--color-red);gap:6px;font-weight:600">
-               <i data-lucide="power" style="width:14px;height:14px"></i> Desativar IA
-             </button>`
-          : `<button class="btn btn-primary btn-sm" id="btnToggleAi" style="gap:6px">
-               <i data-lucide="power" style="width:14px;height:14px"></i> Ativar IA
-             </button>`
-        }
-      </div>` : ''}
-    </div>
-  </div>
-
   <!-- WEBHOOKS -->
   <div style="max-width:760px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-      <div>
-        <div style="font-size:16px;font-weight:700;color:var(--color-text-1)">Webhooks</div>
-        <div style="font-size:12px;color:var(--color-text-3);margin-top:2px">Notifique sistemas externos a cada evento selecionado</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div style="font-size:16px;font-weight:700;color:var(--color-text-1)">Plano de IA ativo</div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="btnActivateAll" style="gap:6px">
+          <i data-lucide="play" style="width:13px;height:13px"></i> Ativar
+        </button>
+        <button class="btn btn-sm" id="btnDeactivateAll" style="gap:6px;background:var(--color-red-lite);color:var(--color-red);border:1px solid var(--color-red)">
+          <i data-lucide="power-off" style="width:13px;height:13px"></i> Desativar
+        </button>
+        <span id="btnAdvancedWrapper" style="display:none">
+          <button class="btn btn-ghost btn-sm" id="btnAdvanced" style="gap:6px">
+            <i data-lucide="settings-2" style="width:13px;height:13px"></i> Configurações avançadas
+          </button>
+        </span>
+        <button class="btn btn-primary btn-sm" id="btnNewWebhook" style="gap:6px">
+          <i data-lucide="plus" style="width:14px;height:14px"></i> Novo webhook
+        </button>
       </div>
-      <button class="btn btn-primary btn-sm" id="btnNewWebhook" style="gap:6px">
-        <i data-lucide="plus" style="width:14px;height:14px"></i> Novo webhook
-      </button>
     </div>
 
     ${whs.length === 0 ? `
@@ -346,18 +321,33 @@ window.initAgents = function (webhooks) {
   tabWebhooks?.addEventListener('click', () => switchTab('webhooks'));
   tabOffice?.addEventListener('click',   () => switchTab('office'));
 
-  // AI toggle
-  const btn = document.getElementById('btnToggleAi');
-  if (btn) {
-    if (isAiActive()) {
-      btn.addEventListener('click', openDeactivateConfirm);
-    } else {
-      btn.addEventListener('click', () => {
-        localStorage.setItem('favx_ai_enabled', 'true');
-        reloadAgentsPage();
+  // Mostra "Configurações avançadas" apenas para admin@favx.com.br
+  const u = typeof decodeToken === 'function' ? decodeToken() : null;
+  if (u?.email === 'admin@favx.com.br') {
+    const wrapper = document.getElementById('btnAdvancedWrapper');
+    if (wrapper) wrapper.style.display = '';
+    document.getElementById('btnAdvanced')?.addEventListener('click', () => {
+      alert('Configurações avançadas — em desenvolvimento.');
+    });
+  }
+
+  // Ativar / Desativar todos os webhooks
+  async function toggleAll(isActive) {
+    const label = isActive ? 'ativar' : 'desativar';
+    if (!confirm(`Deseja ${label} todos os webhooks?`)) return;
+    try {
+      await apiFetch('/api/agent-webhooks/toggle-all', {
+        method: 'POST',
+        body: JSON.stringify({ is_active: isActive }),
       });
+      reloadAgentsPage();
+    } catch (err) {
+      alert('Erro: ' + err.message);
     }
   }
+
+  document.getElementById('btnActivateAll')?.addEventListener('click',   () => toggleAll(true));
+  document.getElementById('btnDeactivateAll')?.addEventListener('click', () => toggleAll(false));
 
   // New webhook
   document.getElementById('btnNewWebhook')?.addEventListener('click', () => openWebhookModal(null));

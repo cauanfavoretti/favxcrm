@@ -2947,6 +2947,22 @@ app.get('/api/agent-webhooks', auth, async (req, res) => {
   }
 });
 
+app.post('/api/agent-webhooks/toggle-all', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { is_active } = req.body;
+  if (typeof is_active !== 'boolean') return res.status(400).json({ message: 'is_active deve ser boolean.' });
+  try {
+    await pool.query(
+      `UPDATE agent_webhooks SET is_active = $1 WHERE subaccount_id = $2`,
+      [is_active, subaccount_id]
+    );
+    res.json({ ok: true, is_active });
+  } catch (err) {
+    console.error('[agent-webhooks toggle-all]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 app.post('/api/agent-webhooks', auth, requireAdmin, async (req, res) => {
   const { subaccount_id } = req.user;
   const { name, url, events } = req.body;
