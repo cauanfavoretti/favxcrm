@@ -1,4 +1,5 @@
 let contactsState = { page: 1, limit: 20, search: '', status: 'all', total: 0 };
+let _ncCfDefs = [];
 
 window.loadContacts = async function() {
   const { page, limit, search, status } = contactsState;
@@ -85,6 +86,7 @@ window.pageContacts = function(data) {
         </select>
       </div>
     </div>
+    <div id="ncCustomFieldsWrap" style="margin-top:14px"></div>
     <div style="display:flex;gap:8px;margin-top:14px">
       <button class="btn btn-primary btn-sm" id="btnSaveContact">Salvar</button>
       <button class="btn btn-secondary btn-sm" id="btnCancelContact">Cancelar</button>
@@ -233,8 +235,13 @@ window.initContacts = function() {
   });
 
   // Novo contato toggle
-  document.getElementById('btnNewContact')?.addEventListener('click', () => {
+  document.getElementById('btnNewContact')?.addEventListener('click', async () => {
     document.getElementById('newContactPanel').hidden = false;
+    const wrap = document.getElementById('ncCustomFieldsWrap');
+    if (wrap) {
+      _ncCfDefs = await fetchCustomFieldDefs('contact');
+      wrap.innerHTML = renderCustomFieldsSection(_ncCfDefs, {});
+    }
   });
   document.getElementById('btnCancelContact')?.addEventListener('click', () => {
     document.getElementById('newContactPanel').hidden = true;
@@ -256,7 +263,7 @@ window.initContacts = function() {
     try {
       await apiFetch('/api/contacts', {
         method: 'POST',
-        body: JSON.stringify({ name, phone, email, company, source, status }),
+        body: JSON.stringify({ name, phone, email, company, source, status, custom_fields: collectCustomFieldsValues(_ncCfDefs) }),
       });
       contactsState.page = 1;
       const data = await window.loadContacts();
@@ -514,6 +521,7 @@ async function openOppEditModal(opp, contact) {
   // Carrega pipelines para o formulário
   let pipelines = [];
   try { pipelines = await apiFetch('/api/pipelines') || []; } catch {}
+  const cfDefs = await fetchCustomFieldDefs('opportunity');
 
   const curPipelineId = opp.pipeline_id || '';
   let   curStageId    = opp.stage_id    || '';
@@ -607,6 +615,8 @@ async function openOppEditModal(opp, contact) {
               style="width:100%;padding:9px 12px;border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:13px;background:var(--color-surface);resize:vertical">${opp.lost_reason || ''}</textarea>
           </div>
 
+          ${renderCustomFieldsSection(cfDefs, opp.custom_fields || {})}
+
         </div>
 
         <div style="padding:14px 22px;border-top:1px solid var(--color-border);display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-shrink:0">
@@ -657,7 +667,7 @@ async function openOppEditModal(opp, contact) {
             value: parseFloat(value) || 0,
             status,
             lost_reason: status === 'lost' ? lost_reason : null,
-            custom_fields: source ? { source } : {},
+            custom_fields: { ...(source ? { source } : {}), ...collectCustomFieldsValues(cfDefs) },
           }),
         });
         overlay.remove();

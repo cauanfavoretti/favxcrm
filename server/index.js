@@ -352,6 +352,28 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
   }
 })();
 
+;(async function initCustomFieldTables() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS custom_field_definitions (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        subaccount_id UUID NOT NULL,
+        entity        VARCHAR(20) NOT NULL,
+        name          VARCHAR(60) NOT NULL,
+        label         VARCHAR(150) NOT NULL,
+        type          VARCHAR(20) NOT NULL DEFAULT 'text',
+        options       JSONB NOT NULL DEFAULT '[]',
+        required      BOOLEAN NOT NULL DEFAULT FALSE,
+        position      INTEGER NOT NULL DEFAULT 0,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(subaccount_id, entity, name)
+      )`);
+  } catch (err) {
+    console.error('[init] custom_field_definitions table:', err.message);
+  }
+})();
+
 async function executeWidgetQuery(pillar, config, subaccount_id) {
   const params = [subaccount_id];
   const wheres = [];
@@ -720,6 +742,134 @@ app.post('/api/dashboard-widgets/:id/data', auth, async (req, res) => {
 });
 
 // ============================================================
+// CUSTOM FIELD DEFINITIONS (contatos e oportunidades)
+// ============================================================
+
+const CF_ENTITIES = ['contact', 'opportunity'];
+const CF_TYPES     = ['text', 'number', 'date', 'select', 'textarea', 'checkbox'];
+
+function cfSlugify(label) {
+  return (label || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 50) || 'campo';
+}
+
+app.get('/api/custom-fields', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { entity } = req.query;
+  if (entity && !CF_ENTITIES.includes(entity))
+    return res.status(400).json({ message: 'Entidade inválida.' });
+  try {
+    const params = [subaccount_id];
+    let where = 'WHERE subaccount_id = $1';
+    if (entity) { params.push(entity); where += ` AND entity = $${params.length}`; }
+    const { rows } = await pool.query(
+      `SELECT id, entity, name, label, type, options, required, position
+       FROM custom_field_definitions ${where}
+       ORDER BY position ASC, created_at ASC`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[custom-fields GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.post('/api/custom-fields', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { entity, label, type, options, required } = req.body;
+
+  if (!CF_ENTITIES.includes(entity)) return res.status(400).json({ message: 'Entidade inválida.' });
+  if (!label?.trim()) return res.status(400).json({ message: 'Nome do campo é obrigatório.' });
+  const fieldType = CF_TYPES.includes(type) ? type : 'text';
+  const fieldOptions = fieldType === 'select'
+    ? (Array.isArray(options) ? options.filter(o => typeof o === 'string' && o.trim()).map(o => o.trim()) : [])
+    : [];
+  if (fieldType === 'select' && !fieldOptions.length)
+    return res.status(400).json({ message: 'Adicione ao menos uma opção para o campo de lista.' });
+
+  try {
+    const baseName = cfSlugify(label);
+    let name = baseName;
+    let attempt = 1;
+    // Garante unicidade do slug dentro da subconta/entidade
+    while (true) {
+      const { rows: dup } = await pool.query(
+        `SELECT id FROM custom_field_definitions WHERE subaccount_id=$1 AND entity=$2 AND name=$3`,
+        [subaccount_id, entity, name]
+      );
+      if (!dup.length) break;
+      attempt += 1;
+      name = `${baseName}_${attempt}`;
+    }
+
+    const { rows: pos } = await pool.query(
+      `SELECT COALESCE(MAX(position),0)+1 AS p FROM custom_field_definitions WHERE subaccount_id=$1 AND entity=$2`,
+      [subaccount_id, entity]
+    );
+
+    const { rows } = await pool.query(
+      `INSERT INTO custom_field_definitions (subaccount_id, entity, name, label, type, options, required, position)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [subaccount_id, entity, name, label.trim(), fieldType, JSON.stringify(fieldOptions), !!required, pos[0].p]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error('[custom-fields POST]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.put('/api/custom-fields/:id', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { label, type, options, required, position } = req.body;
+
+  if (!label?.trim()) return res.status(400).json({ message: 'Nome do campo é obrigatório.' });
+  const fieldType = CF_TYPES.includes(type) ? type : 'text';
+  const fieldOptions = fieldType === 'select'
+    ? (Array.isArray(options) ? options.filter(o => typeof o === 'string' && o.trim()).map(o => o.trim()) : [])
+    : [];
+  if (fieldType === 'select' && !fieldOptions.length)
+    return res.status(400).json({ message: 'Adicione ao menos uma opção para o campo de lista.' });
+
+  try {
+    const { rows } = await pool.query(
+      `UPDATE custom_field_definitions SET
+         label      = $1, type = $2, options = $3, required = $4,
+         position   = COALESCE($5, position),
+         updated_at = NOW()
+       WHERE id = $6 AND subaccount_id = $7 RETURNING *`,
+      [label.trim(), fieldType, JSON.stringify(fieldOptions), !!required,
+       position != null ? position : null, req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Campo não encontrado.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[custom-fields PUT]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.delete('/api/custom-fields/:id', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rowCount } = await pool.query(
+      `DELETE FROM custom_field_definitions WHERE id=$1 AND subaccount_id=$2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!rowCount) return res.status(404).json({ message: 'Campo não encontrado.' });
+    res.status(204).send();
+  } catch (err) {
+    console.error('[custom-fields DELETE]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// ============================================================
 // CONTACTS
 // ============================================================
 
@@ -763,14 +913,15 @@ app.get('/api/contacts', auth, async (req, res) => {
 
 app.post('/api/contacts', auth, async (req, res) => {
   const { subaccount_id } = req.user;
-  const { name, email, phone, company, source, status } = req.body;
+  const { name, email, phone, company, source, status, custom_fields } = req.body;
   if (!name) return res.status(400).json({ message: 'Nome é obrigatório.' });
 
   try {
     const { rows } = await pool.query(
-      `INSERT INTO contacts (subaccount_id, name, email, phone, company, source, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [subaccount_id, name, email || null, phone || null, company || null, source || 'manual', status || 'lead']
+      `INSERT INTO contacts (subaccount_id, name, email, phone, company, source, status, custom_fields)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [subaccount_id, name, email || null, phone || null, company || null, source || 'manual', status || 'lead',
+       JSON.stringify(custom_fields || {})]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -781,16 +932,19 @@ app.post('/api/contacts', auth, async (req, res) => {
 
 app.put('/api/contacts/:id', auth, async (req, res) => {
   const { subaccount_id } = req.user;
-  const { name, email, phone, company, source, status, notes } = req.body;
+  const { name, email, phone, company, source, status, notes, custom_fields } = req.body;
   try {
     const { rows } = await pool.query(
       `UPDATE contacts SET
-         name    = COALESCE($1, name),   email   = COALESCE($2, email),
-         phone   = COALESCE($3, phone),  company = COALESCE($4, company),
-         source  = COALESCE($5, source), status  = COALESCE($6, status),
-         notes   = COALESCE($7, notes)
-       WHERE id = $8 AND subaccount_id = $9 RETURNING *`,
-      [name, email, phone, company, source, status, notes, req.params.id, subaccount_id]
+         name          = COALESCE($1, name),   email   = COALESCE($2, email),
+         phone         = COALESCE($3, phone),  company = COALESCE($4, company),
+         source        = COALESCE($5, source), status  = COALESCE($6, status),
+         notes         = COALESCE($7, notes),
+         custom_fields = COALESCE($8, custom_fields)
+       WHERE id = $9 AND subaccount_id = $10 RETURNING *`,
+      [name, email, phone, company, source, status, notes,
+       custom_fields ? JSON.stringify(custom_fields) : null,
+       req.params.id, subaccount_id]
     );
     if (!rows.length) return res.status(404).json({ message: 'Contato não encontrado.' });
     res.json(rows[0]);

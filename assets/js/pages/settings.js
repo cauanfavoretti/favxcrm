@@ -27,6 +27,7 @@ function _stgNavHtml() {
   const tabs = [
     { id: 'perfil',       icon: 'user',        label: 'Perfil' },
     ...(canSettings ? [{ id: 'empresa', icon: 'building', label: 'Empresa' }] : []),
+    ...(canSettings ? [{ id: 'campos', icon: 'list-plus', label: 'Campos personalizados' }] : []),
     { id: 'notificacoes', icon: 'bell',         label: 'Notificações' },
     { id: 'seguranca',    icon: 'shield',       label: 'Segurança' },
     { id: 'faturamento',  icon: 'credit-card',  label: 'Faturamento' },
@@ -307,6 +308,264 @@ function _stgEmpresaHtml(d = {}) {
   </div>`;
 }
 
+// ── Campos personalizados ────────────────────────────────────
+
+let _stgCfEntity = 'contact';
+
+const _STG_CF_TYPE_LABEL = {
+  text: 'Texto', number: 'Número', date: 'Data',
+  select: 'Lista suspensa', textarea: 'Área de texto', checkbox: 'Caixa de seleção',
+};
+
+function _stgCamposHtml() {
+  return `
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="padding:18px 22px;border-bottom:1px solid var(--color-border);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:15px;font-weight:700;color:var(--color-text-1)">Campos personalizados</div>
+          <div style="font-size:12px;color:var(--color-text-3);margin-top:2px">Campos adicionais salvos por subconta em contatos e oportunidades</div>
+        </div>
+        <button class="btn btn-primary btn-sm" id="btnNewCustomField">
+          <i data-lucide="plus" style="width:14px;height:14px"></i> Novo campo
+        </button>
+      </div>
+      <div style="padding:14px 22px;border-bottom:1px solid var(--color-border);display:flex;gap:6px">
+        <button class="btn ${_stgCfEntity === 'contact' ? 'btn-primary' : 'btn-secondary'} btn-sm stg-cf-entity-btn" data-entity="contact">Contatos</button>
+        <button class="btn ${_stgCfEntity === 'opportunity' ? 'btn-primary' : 'btn-secondary'} btn-sm stg-cf-entity-btn" data-entity="opportunity">Oportunidades</button>
+      </div>
+      <div id="customFieldsTableWrap">
+        <div style="display:flex;align-items:center;justify-content:center;padding:48px;color:var(--color-text-3);gap:10px">
+          <div style="width:20px;height:20px;border:2px solid #e5e7eb;border-top-color:var(--color-accent);border-radius:50%;animation:spin .7s linear infinite"></div>
+          Carregando campos...
+        </div>
+      </div>
+    </div>`;
+}
+
+function _renderCustomFieldsTable(defs) {
+  const wrap = document.getElementById('customFieldsTableWrap');
+  if (!wrap) return;
+
+  if (!defs.length) {
+    wrap.innerHTML = `<div style="padding:48px;text-align:center;color:var(--color-text-3);font-size:13px">
+      <i data-lucide="list-plus" style="width:36px;height:36px;opacity:.2;display:block;margin:0 auto 12px"></i>
+      Nenhum campo personalizado configurado ainda.<br>
+      <span style="font-size:12px">Clique em "Novo campo" para adicionar o primeiro.</span>
+    </div>`;
+    lucide.createIcons();
+    return;
+  }
+
+  wrap.innerHTML = `
+    <div class="table-wrapper" style="border-radius:0;border:none">
+      <table>
+        <thead>
+          <tr>
+            <th>Nome</th>
+            <th>Tipo</th>
+            <th>Obrigatório</th>
+            <th style="width:80px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${defs.map(f => `
+          <tr>
+            <td style="font-size:13px;font-weight:600;color:var(--color-text-1)">${f.label}</td>
+            <td style="font-size:12px;color:var(--color-text-2)">${_STG_CF_TYPE_LABEL[f.type] || f.type}</td>
+            <td><span class="badge ${f.required ? 'badge-blue' : 'badge-gray'}">${f.required ? 'Sim' : 'Não'}</span></td>
+            <td>
+              <div style="display:flex;gap:4px;justify-content:flex-end">
+                <button class="btn btn-ghost btn-sm btn-edit-cf" title="Editar" data-field='${JSON.stringify(f)}' style="padding:5px">
+                  <i data-lucide="pencil" style="width:13px;height:13px"></i>
+                </button>
+                <button class="btn btn-ghost btn-sm btn-delete-cf" title="Excluir" data-id="${f.id}" data-label="${f.label}" style="padding:5px">
+                  <i data-lucide="trash-2" style="width:13px;height:13px;color:var(--color-red)"></i>
+                </button>
+              </div>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  lucide.createIcons();
+  _bindCustomFieldsTableEvents();
+}
+
+async function _loadCustomFields() {
+  try {
+    const defs = await apiFetch(`/api/custom-fields?entity=${_stgCfEntity}`);
+    _renderCustomFieldsTable(defs || []);
+  } catch (err) {
+    const wrap = document.getElementById('customFieldsTableWrap');
+    if (wrap) wrap.innerHTML = `<div style="padding:32px;text-align:center;color:var(--color-red);font-size:13px">${err.message}</div>`;
+  }
+}
+
+function _bindCustomFieldsTableEvents() {
+  document.querySelectorAll('.btn-edit-cf').forEach(btn => {
+    btn.addEventListener('click', () => _openCustomFieldModal(JSON.parse(btn.dataset.field)));
+  });
+  document.querySelectorAll('.btn-delete-cf').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm(`Excluir o campo "${btn.dataset.label}"?\nOs valores já salvos nos registros não serão apagados, mas o campo deixará de aparecer nos formulários.`)) return;
+      try {
+        await apiFetch(`/api/custom-fields/${btn.dataset.id}`, { method: 'DELETE' });
+        invalidateCustomFieldDefs(_stgCfEntity);
+        await _loadCustomFields();
+      } catch (err) { alert(err.message); }
+    });
+  });
+}
+
+function _stgCfOptionsRowsHtml(options) {
+  return (options && options.length ? options : ['']).map(o => `
+    <div style="display:flex;gap:6px;margin-bottom:6px" class="cf-option-row">
+      <input type="text" class="settings-input cf-option-input" value="${o}" placeholder="Opção" style="flex:1" />
+      <button type="button" class="btn btn-ghost btn-sm cf-option-remove" style="padding:5px">
+        <i data-lucide="x" style="width:13px;height:13px;color:var(--color-red)"></i>
+      </button>
+    </div>`).join('');
+}
+
+function _openCustomFieldModal(existing = null) {
+  document.getElementById('customFieldModal')?.remove();
+  const isEdit = !!existing;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'customFieldModal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px';
+
+  overlay.innerHTML = `
+    <div style="background:var(--color-surface);border-radius:14px;width:460px;max-width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 32px 64px rgba(0,0,0,.25);display:flex;flex-direction:column">
+      <div style="padding:18px 22px;border-bottom:1px solid var(--color-border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+        <div>
+          <div style="font-size:15px;font-weight:700">${isEdit ? 'Editar campo' : 'Novo campo personalizado'}</div>
+          <div style="font-size:12px;color:var(--color-text-3);margin-top:2px">${_stgCfEntity === 'contact' ? 'Contatos' : 'Oportunidades'}</div>
+        </div>
+        <button id="btnCloseCfModal" style="background:none;border:none;cursor:pointer;padding:4px;border-radius:6px;color:var(--color-text-3)">
+          <i data-lucide="x" style="width:18px;height:18px"></i>
+        </button>
+      </div>
+
+      <div style="padding:20px 22px;display:flex;flex-direction:column;gap:14px">
+
+        <div class="settings-field" style="margin:0">
+          <label class="settings-label">NOME DO CAMPO *</label>
+          <input id="cfLabel" class="settings-input" placeholder="Ex: Segmento do cliente" value="${existing?.label || ''}" />
+        </div>
+
+        <div class="settings-field" style="margin:0">
+          <label class="settings-label">TIPO *</label>
+          <select id="cfType" class="settings-input">
+            ${Object.entries(_STG_CF_TYPE_LABEL).map(([v, l]) => `<option value="${v}" ${existing?.type === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select>
+        </div>
+
+        <div id="cfOptionsWrap" ${existing?.type === 'select' ? '' : 'hidden'}>
+          <label class="settings-label">OPÇÕES DA LISTA *</label>
+          <div id="cfOptionsList">${_stgCfOptionsRowsHtml(existing?.options)}</div>
+          <button type="button" class="btn btn-secondary btn-sm" id="btnAddCfOption" style="margin-top:4px">
+            <i data-lucide="plus" style="width:12px;height:12px"></i> Adicionar opção
+          </button>
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;padding-top:4px">
+          <div>
+            <div style="font-size:13px;font-weight:600;color:var(--color-text-1)">Campo obrigatório</div>
+            <div style="font-size:12px;color:var(--color-text-3)">Exige preenchimento ao criar/editar</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="cfRequired" ${existing?.required ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <span id="cfError" style="font-size:12px;color:var(--color-red);display:block;min-height:16px"></span>
+      </div>
+
+      <div style="padding:14px 22px;border-top:1px solid var(--color-border);display:flex;justify-content:flex-end;gap:8px;flex-shrink:0">
+        <button id="btnCancelCf" class="btn btn-secondary btn-sm">Cancelar</button>
+        <button id="btnSubmitCf" class="btn btn-primary btn-sm">${isEdit ? 'Salvar alterações' : 'Criar campo'}</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+  lucide.createIcons();
+
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  overlay.querySelector('#btnCloseCfModal').addEventListener('click', close);
+  overlay.querySelector('#btnCancelCf').addEventListener('click', close);
+  overlay.querySelector('#cfLabel').focus();
+
+  const typeEl = overlay.querySelector('#cfType');
+  const optWrap = overlay.querySelector('#cfOptionsWrap');
+  typeEl.addEventListener('change', () => { optWrap.hidden = typeEl.value !== 'select'; });
+
+  function bindOptionRemove() {
+    overlay.querySelectorAll('.cf-option-remove').forEach(btn => {
+      btn.onclick = () => {
+        const rows = overlay.querySelectorAll('.cf-option-row');
+        if (rows.length > 1) btn.closest('.cf-option-row').remove();
+      };
+    });
+  }
+  bindOptionRemove();
+
+  overlay.querySelector('#btnAddCfOption').addEventListener('click', () => {
+    const list = overlay.querySelector('#cfOptionsList');
+    list.insertAdjacentHTML('beforeend', _stgCfOptionsRowsHtml(['']));
+    lucide.createIcons();
+    bindOptionRemove();
+  });
+
+  overlay.querySelector('#btnSubmitCf').addEventListener('click', async () => {
+    const label    = overlay.querySelector('#cfLabel').value.trim();
+    const type     = overlay.querySelector('#cfType').value;
+    const required = overlay.querySelector('#cfRequired').checked;
+    const options  = Array.from(overlay.querySelectorAll('.cf-option-input')).map(i => i.value.trim()).filter(Boolean);
+    const errEl    = overlay.querySelector('#cfError');
+    errEl.textContent = '';
+
+    if (!label) { errEl.textContent = 'Nome do campo é obrigatório.'; return; }
+    if (type === 'select' && !options.length) { errEl.textContent = 'Adicione ao menos uma opção.'; return; }
+
+    const btn = overlay.querySelector('#btnSubmitCf');
+    btn.disabled = true;
+    btn.textContent = 'Salvando...';
+
+    try {
+      const body = { label, type, required, options };
+      if (isEdit) {
+        await apiFetch(`/api/custom-fields/${existing.id}`, { method: 'PUT', body: JSON.stringify(body) });
+      } else {
+        body.entity = _stgCfEntity;
+        await apiFetch('/api/custom-fields', { method: 'POST', body: JSON.stringify(body) });
+      }
+      invalidateCustomFieldDefs(_stgCfEntity);
+      close();
+      await _loadCustomFields();
+    } catch (err) {
+      errEl.textContent = err.message;
+      btn.disabled = false;
+      btn.textContent = isEdit ? 'Salvar alterações' : 'Criar campo';
+    }
+  });
+}
+
+function _stgBindCampos() {
+  _loadCustomFields();
+  document.getElementById('btnNewCustomField')?.addEventListener('click', () => _openCustomFieldModal());
+  document.querySelectorAll('.stg-cf-entity-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _stgCfEntity = btn.dataset.entity;
+      document.getElementById('settingsContent').innerHTML = _stgCamposHtml();
+      lucide.createIcons();
+      _stgBindCampos();
+    });
+  });
+}
+
 function _stgContasHtml() {
   return `
     <div class="card" style="padding:0;overflow:hidden">
@@ -333,11 +592,12 @@ function _stgContasHtml() {
 window.pageSettings = function() {
   _stgUser = _stgDecode();
   if (!_stgIsAdmin() && _stgTab === 'contas') _stgTab = 'perfil';
-  if (!window.favxCan?.('manage_settings') && _stgTab === 'empresa') _stgTab = 'perfil';
+  if (!window.favxCan?.('manage_settings') && (_stgTab === 'empresa' || _stgTab === 'campos')) _stgTab = 'perfil';
 
   let initialContent;
   if (_stgTab === 'contas')  initialContent = _stgContasHtml();
   else if (_stgTab === 'empresa') initialContent = _stgEmpresaHtml({});
+  else if (_stgTab === 'campos') initialContent = _stgCamposHtml();
   else initialContent = _stgPerfilHtml(null);
 
   return `
@@ -620,6 +880,10 @@ window.initSettings = function() {
         content.innerHTML = _stgEmpresaHtml({});
         lucide.createIcons();
         _stgLoadAndBindEmpresa();
+      } else if (_stgTab === 'campos') {
+        content.innerHTML = _stgCamposHtml();
+        lucide.createIcons();
+        _stgBindCampos();
       } else {
         content.innerHTML = _stgPerfilHtml(null);
         lucide.createIcons();
@@ -633,6 +897,8 @@ window.initSettings = function() {
     _stgBindContas();
   } else if (_stgTab === 'empresa') {
     _stgLoadAndBindEmpresa();
+  } else if (_stgTab === 'campos') {
+    _stgBindCampos();
   } else {
     _stgLoadAndBindPerfil();
   }

@@ -138,11 +138,12 @@ async function openContactPicker(stageId) {
 
 // ── OPPORTUNITY FORM ─────────────────────────────────────────
 
-function openOppForm(contact, stageId, existingOpp) {
+async function openOppForm(contact, stageId, existingOpp) {
   const pipelines  = funnelsState.pipelines;
   const isEdit     = !!existingOpp;
   let curPipelineId = existingOpp?.pipeline_id || pipelines[funnelsState.activeIndex]?.id || pipelines[0]?.id || '';
   let curStageId    = existingOpp?.stage_id    || stageId || '';
+  const cfDefs = await fetchCustomFieldDefs('opportunity');
 
   function getStages(pid) {
     return pipelines.find(p => p.id === pid)?.stages || [];
@@ -228,13 +229,7 @@ function openOppForm(contact, stageId, existingOpp) {
             style="width:100%;padding:9px 12px;border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:13px;background:var(--color-surface);resize:vertical">${lostReason}</textarea>
         </div>
 
-        <div style="border-top:1px solid var(--color-border);padding-top:14px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-            <span style="font-size:11px;font-weight:700;color:var(--color-text-3);letter-spacing:.05em">CAMPOS PERSONALIZADOS</span>
-            <span style="font-size:11px;color:var(--color-text-3)">Configure em Configurações</span>
-          </div>
-          <p style="font-size:12px;color:var(--color-text-3);padding:10px 0">Nenhum campo personalizado configurado ainda.</p>
-        </div>
+        ${renderCustomFieldsSection(cfDefs, existingOpp?.custom_fields || {})}
 
       </div>
 
@@ -290,7 +285,7 @@ function openOppForm(contact, stageId, existingOpp) {
         value: parseFloat(value) || 0,
         status,
         lost_reason: status === 'lost' ? lost_reason : null,
-        custom_fields: source ? { source } : {},
+        custom_fields: { ...(source ? { source } : {}), ...collectCustomFieldsValues(cfDefs) },
       };
 
       const btn = document.getElementById('btnSubmitOpp');
