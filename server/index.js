@@ -1220,8 +1220,12 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
             console.warn('[evo send bg] erro:', e.message);
           }
 
-          // Dispara webhooks de agentes
-          fireAgentWebhooks(subaccount_id, 'message_activity', {
+          // Dispara webhooks de agentes. Está dentro da IIFE em background
+          // (a resposta HTTP já foi enviada acima), mas aguardar aqui ainda
+          // ajuda: garante que o fetch complete antes da promise da IIFE
+          // resolver, reduzindo a chance de a Vercel encerrar a execução
+          // com o envio do webhook pela metade.
+          await fireAgentWebhooks(subaccount_id, 'message_activity', {
             conversation_id:  req.params.id,
             contact_id:       convCopy.contact_id,
             contact_name:     convCopy.contact_name || convCopy.contact_phone,
@@ -2244,7 +2248,11 @@ async function processWaMsg(subaccount_id, instanceName, apiUrl, apiKey, data) {
   };
   const rawMsg  = data.message || {};
   const msgType = Object.keys(msgTypeMap).find(k => rawMsg[k]) || 'texto';
-  fireAgentWebhooks(subaccount_id, 'message_activity', {
+  // IMPORTANTE: aguardar (await) aqui é necessário — sem isso, a Vercel pode
+  // congelar/encerrar a função serverless assim que a resposta HTTP for
+  // enviada pelo chamador, cancelando esse fetch em segundo plano antes de
+  // ele completar (falha silenciosa e intermitente na entrega do webhook).
+  await fireAgentWebhooks(subaccount_id, 'message_activity', {
     conversation_id:  conv_id,
     contact_id,
     contact_name:     pushName || phone,
@@ -3254,17 +3262,30 @@ async function fireAgentWebhooks(subaccount_id, event, payload) {
 
     // Promise.allSettled garante que TODOS os fetch completam (ou atingem timeout)
     // antes de retornar — essencial em ambientes serverless onde o processo pode
-    // ser pausado logo após enviar a resposta HTTP.
-    await Promise.allSettled(targets.map(wh => {
+    // ser pausado logo após enviar a resposta HTTP. Por isso é CRÍTICO que quem
+    // chama fireAgentWebhooks sempre dê await nela.
+    const postOnce = (url) => {
       const ac    = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 5000);
-      return fetch(wh.url, {
+      const timer = setTimeout(() => ac.abort(), 15000);
+      return fetch(url, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
         signal:  ac.signal,
-      }).then(() => clearTimeout(timer))
-        .catch(e => { clearTimeout(timer); console.warn(`[agent-webhook fire] ${wh.url}:`, e.message); });
+      }).finally(() => clearTimeout(timer));
+    };
+
+    await Promise.allSettled(targets.map(async (wh) => {
+      try {
+        await postOnce(wh.url);
+      } catch (e) {
+        console.warn(`[agent-webhook fire] ${wh.url} (1ª tentativa falhou: ${e.message}), tentando de novo...`);
+        try {
+          await postOnce(wh.url);
+        } catch (e2) {
+          console.warn(`[agent-webhook fire] ${wh.url} (2ª tentativa falhou):`, e2.message);
+        }
+      }
     }));
   } catch (err) {
     console.error('[agent-webhook fire]', err.message);
