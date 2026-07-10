@@ -107,8 +107,7 @@ function _webhookCard(wh) {
       </div>
       <div style="flex:1;min-width:0">
         <div style="font-size:14px;font-weight:600;color:var(--color-text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${wh.name}</div>
-        <div style="font-size:12px;color:var(--color-text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px">${wh.url}</div>
-        <div style="font-size:11px;color:var(--color-text-3);margin-top:4px">Eventos: ${evLabels}</div>
+        <div style="font-size:11px;color:var(--color-text-3);margin-top:2px">Eventos: ${evLabels}</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
         <span style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:99px;font-size:11px;font-weight:600;
