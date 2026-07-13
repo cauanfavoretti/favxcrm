@@ -5,6 +5,87 @@ let _lastMsgSentAt   = null;
 let _convUsers       = [];
 let _isInternalMode  = false;
 let _pendingMentions = new Set();
+let _convData        = [];        // lista atual de conversas (fonte para os filtros)
+let _convFilter      = 'todas';   // todas | abertas | nao_lidas
+
+const _CONV_FILTERS = [
+  { id: 'todas',     label: 'Todas'     },
+  { id: 'abertas',   label: 'Abertas'   },
+  { id: 'nao_lidas', label: 'Não Lidas' },
+];
+
+function _convMatchesFilter(c) {
+  if (_convFilter === 'abertas')   return c.status === 'open';
+  if (_convFilter === 'nao_lidas') return (c.unread_count || 0) > 0;
+  return true;
+}
+
+// HTML de um item da lista de conversas
+function _convItemHtml(c) {
+  const waBadge = c.channel === 'whatsapp'
+    ? `<div style="position:absolute;bottom:-2px;right:-2px;width:16px;height:16px;border-radius:50%;background:#25D366;border:2px solid var(--color-surface);display:flex;align-items:center;justify-content:center"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" width="8" height="8" fill="#fff"><path d="M380.9 97.1C339 55.1 283.2 32 223.9 32c-122.4 0-222 99.6-222 222 0 39.1 10.2 77.3 29.6 111L0 480l117.7-30.9c32.4 17.7 68.9 27 106.1 27h.1c122.3 0 224.1-99.6 224.1-222 0-59.3-25.2-115-67.1-157zm-157 341.6c-33.2 0-65.7-8.9-94-25.7l-6.7-4-69.8 18.3L72 359.2l-4.4-7c-18.5-29.4-28.2-63.3-28.2-98.2 0-101.7 82.8-184.5 184.6-184.5 49.3 0 95.6 19.2 130.4 54.1 34.8 34.9 56.2 81.2 56.1 130.5 0 101.8-84.9 184.6-186.6 184.6zm101.2-138.2c-5.5-2.8-32.8-16.2-37.9-18-5.1-1.9-8.8-2.8-12.5 2.8-3.7 5.6-14.3 18-17.6 21.8-3.2 3.7-6.5 4.2-12 1.4-32.6-16.3-54-29.1-75.5-66-5.7-9.8 5.7-9.1 16.3-30.3 1.8-3.7.9-6.9-.5-9.7-1.4-2.8-12.5-30.1-17.1-41.2-4.5-10.8-9.1-9.3-12.5-9.5-3.2-.2-6.9-.2-10.6-.2-3.7 0-9.7 1.4-14.8 6.9-5.1 5.6-19.4 19-19.4 46.3 0 27.3 19.9 53.7 22.6 57.4 2.8 3.7 39.1 59.7 94.8 83.8 35.2 15.2 49 16.5 66.6 13.9 10.7-1.6 32.8-13.4 37.4-26.4 4.6-13 4.6-24.1 3.2-26.4-1.3-2.5-5-3.9-10.5-6.6z"/></svg></div>`
+    : '';
+  return `
+    <div class="conv-item ${c.id === activeConvId ? 'active' : ''} ${c.unread_count > 0 ? 'unread' : ''}" data-conv-id="${c.id}">
+      <div class="conv-avatar" style="position:relative">
+        ${(c.contact_name || '?')[0].toUpperCase()}
+        ${waBadge}
+      </div>
+      <div class="conv-info">
+        <div class="conv-name">${c.contact_name || 'Desconhecido'}</div>
+        <div class="conv-preview">${c.contact_phone || c.channel || '—'}</div>
+      </div>
+      <div class="conv-meta">
+        <div class="conv-time">${c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—'}</div>
+        ${c.unread_count > 0 ? `<div class="conv-unread-count">${c.unread_count}</div>` : ''}
+      </div>
+    </div>`;
+}
+
+// Re-renderiza a lista respeitando o filtro ativo (preserva o scroll)
+function _renderConvList() {
+  const list = document.getElementById('convList');
+  if (!list) return;
+  const scroll = list.scrollTop;
+  const filtered = _convData.filter(_convMatchesFilter);
+  const emptyMsg = {
+    todas:     'Nenhuma conversa ainda.',
+    abertas:   'Nenhuma conversa aberta.',
+    nao_lidas: 'Nenhuma conversa não lida.',
+  }[_convFilter];
+  list.innerHTML = filtered.length === 0
+    ? `<div style="padding:24px;text-align:center;color:var(--color-text-3);font-size:13px">${emptyMsg}</div>`
+    : filtered.map(_convItemHtml).join('');
+  list.scrollTop = scroll;
+  lucide.createIcons();
+  _bindConvItems();
+}
+
+function _bindConvItems() {
+  document.querySelectorAll('.conv-item').forEach(el => {
+    el.addEventListener('click', async () => {
+      document.querySelectorAll('.conv-item').forEach(e => e.classList.remove('active'));
+      el.classList.add('active');
+      activeConvId = el.dataset.convId;
+      const conv = _convData.find(c => c.id === activeConvId);
+      await loadAndRenderChat(activeConvId, conv);
+    });
+  });
+}
+
+// Marca uma conversa como lida no estado local e atualiza a UI
+function _convMarkReadLocal(convId) {
+  const c = _convData.find(x => x.id === convId);
+  if (c) c.unread_count = 0;
+  _renderConvList();
+  const btn = document.getElementById('convMarkReadBtn');
+  if (btn) btn.style.display = 'none';
+}
+
+// Assinatura leve para decidir se a lista precisa ser re-renderizada
+function _convSignature(list) {
+  return list.map(c => `${c.id}:${c.unread_count || 0}:${c.last_message_at || ''}:${c.status || ''}`).join('|');
+}
 
 function _convStopPolling() {
   clearInterval(_pollMsgInterval);
@@ -19,7 +100,9 @@ window.loadConversations = async function() {
 
 window.pageConversations = function(data) {
   const convs = Array.isArray(data) ? data : [];
+  _convData = convs;
   if (convs.length > 0 && !activeConvId) activeConvId = convs[0].id;
+  const filtered = convs.filter(_convMatchesFilter);
 
   return `
   <div class="page-header" style="margin-bottom:16px">
@@ -42,30 +125,12 @@ window.pageConversations = function(data) {
         </div>
       </div>
       <div class="conv-tabs">
-        <button class="conv-tab active">Todas</button>
-        <button class="conv-tab">Abertas</button>
+        ${_CONV_FILTERS.map(f => `<button class="conv-tab ${f.id === _convFilter ? 'active' : ''}" data-filter="${f.id}">${f.label}</button>`).join('')}
       </div>
       <div class="conv-list" id="convList">
-        ${convs.length === 0 ? `
-          <div style="padding:24px;text-align:center;color:var(--color-text-3);font-size:13px">
-            Nenhuma conversa ainda.
-          </div>
-        ` : convs.map(c => `
-        <div class="conv-item ${c.id === activeConvId ? 'active' : ''} ${c.unread_count > 0 ? 'unread' : ''}" data-conv-id="${c.id}">
-          <div class="conv-avatar" style="position:relative">
-            ${(c.contact_name || '?')[0].toUpperCase()}
-            ${c.channel === 'whatsapp' ? `<div style="position:absolute;bottom:-2px;right:-2px;width:16px;height:16px;border-radius:50%;background:#25D366;border:2px solid var(--color-surface);display:flex;align-items:center;justify-content:center"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" width="8" height="8" fill="#fff"><path d="M380.9 97.1C339 55.1 283.2 32 223.9 32c-122.4 0-222 99.6-222 222 0 39.1 10.2 77.3 29.6 111L0 480l117.7-30.9c32.4 17.7 68.9 27 106.1 27h.1c122.3 0 224.1-99.6 224.1-222 0-59.3-25.2-115-67.1-157zm-157 341.6c-33.2 0-65.7-8.9-94-25.7l-6.7-4-69.8 18.3L72 359.2l-4.4-7c-18.5-29.4-28.2-63.3-28.2-98.2 0-101.7 82.8-184.5 184.6-184.5 49.3 0 95.6 19.2 130.4 54.1 34.8 34.9 56.2 81.2 56.1 130.5 0 101.8-84.9 184.6-186.6 184.6zm101.2-138.2c-5.5-2.8-32.8-16.2-37.9-18-5.1-1.9-8.8-2.8-12.5 2.8-3.7 5.6-14.3 18-17.6 21.8-3.2 3.7-6.5 4.2-12 1.4-32.6-16.3-54-29.1-75.5-66-5.7-9.8 5.7-9.1 16.3-30.3 1.8-3.7.9-6.9-.5-9.7-1.4-2.8-12.5-30.1-17.1-41.2-4.5-10.8-9.1-9.3-12.5-9.5-3.2-.2-6.9-.2-10.6-.2-3.7 0-9.7 1.4-14.8 6.9-5.1 5.6-19.4 19-19.4 46.3 0 27.3 19.9 53.7 22.6 57.4 2.8 3.7 39.1 59.7 94.8 83.8 35.2 15.2 49 16.5 66.6 13.9 10.7-1.6 32.8-13.4 37.4-26.4 4.6-13 4.6-24.1 3.2-26.4-1.3-2.5-5-3.9-10.5-6.6z"/></svg></div>` : ''}
-          </div>
-          <div class="conv-info">
-            <div class="conv-name">${c.contact_name || 'Desconhecido'}</div>
-            <div class="conv-preview">${c.contact_phone || c.channel || '—'}</div>
-          </div>
-          <div class="conv-meta">
-            <div class="conv-time">${c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—'}</div>
-            ${c.unread_count > 0 ? `<div class="conv-unread-count">${c.unread_count}</div>` : ''}
-          </div>
-        </div>
-        `).join('')}
+        ${filtered.length === 0
+          ? `<div style="padding:24px;text-align:center;color:var(--color-text-3);font-size:13px">Nenhuma conversa ainda.</div>`
+          : filtered.map(_convItemHtml).join('')}
       </div>
     </div>
 
@@ -643,8 +708,9 @@ async function loadAndRenderChat(convId, conv) {
   // Track last message time for delta polling
   if (msgs.length) _lastMsgSentAt = msgs[msgs.length - 1].sent_at;
 
-  // Reset unread badge on open
-  apiFetch(`/api/conversations/${convId}/read`, { method: 'POST' }).catch(() => {});
+  // A conversa NÃO é marcada como lida ao abrir — apenas ao responder o
+  // contato ou clicar em "Marcar como lido".
+  const isUnread = ((_convData.find(c => c.id === convId)?.unread_count) ?? conv?.unread_count ?? 0) > 0;
 
   const instanceSwitcherHtml = insts.length > 1 ? `
     <div style="position:relative;display:inline-block" id="instSwitchWrap">
@@ -672,6 +738,9 @@ async function loadAndRenderChat(convId, conv) {
         <div class="chat-header-status">${conv?.contact_phone || conv?.channel || '—'}</div>
       </div>
       <div style="display:flex;gap:6px;margin-left:auto;align-items:center">
+        <button id="convMarkReadBtn" class="btn btn-secondary btn-sm" style="gap:5px;font-size:12px;${isUnread ? '' : 'display:none'}" title="Marcar conversa como lida">
+          <i data-lucide="check-check" style="width:14px;height:14px"></i> Marcar como lido
+        </button>
         ${instanceSwitcherHtml}
       </div>
     </div>
@@ -704,6 +773,14 @@ async function loadAndRenderChat(convId, conv) {
 
   lucide.createIcons();
   const chatMessages = document.getElementById('chatMessages');
+
+  // Botão "Marcar como lido"
+  document.getElementById('convMarkReadBtn')?.addEventListener('click', async () => {
+    try {
+      await apiFetch(`/api/conversations/${convId}/read`, { method: 'POST' });
+      _convMarkReadLocal(convId);
+    } catch (err) { console.error('[mark read]', err.message); }
+  });
 
   // Carrega o painel lateral (contato, leads, anotações, tarefas)
   renderInfoPanel(convId, conv);
@@ -796,6 +873,7 @@ async function loadAndRenderChat(convId, conv) {
       const tempRow = document.getElementById(tempId);
       if (tempRow && saved?.id) tempRow.dataset.msgId = saved.id;
       if (saved?.sent_at) _lastMsgSentAt = saved.sent_at;
+      if (!_isInternalMode) _convMarkReadLocal(convId);
     } catch (err) {
       console.error('[send image]', err.message);
       const tempRow = document.getElementById(tempId);
@@ -902,56 +980,14 @@ async function loadAndRenderChat(convId, conv) {
     } catch {}
   }, 1000);
 
-  // Poll sidebar conv list every 5s for new conversations from other contacts
+  // Poll sidebar conv list every 5s — atualiza dados e re-renderiza (com filtro)
   _pollListInterval = setInterval(async () => {
     try {
       const fresh = await apiFetch('/api/conversations');
       if (!Array.isArray(fresh)) return;
-      const list = document.getElementById('convList');
-      if (!list) return;
-      fresh.forEach(c => {
-        const item = list.querySelector(`.conv-item[data-conv-id="${c.id}"]`);
-        if (!item) {
-          // Nova conversa — adiciona ao topo da lista
-          const newItem = document.createElement('div');
-          newItem.className = `conv-item${c.unread_count > 0 ? ' unread' : ''}`;
-          newItem.dataset.convId = c.id;
-          newItem.innerHTML = `
-            <div class="conv-avatar" style="position:relative">
-              ${(c.contact_name || '?')[0].toUpperCase()}
-              ${c.channel === 'whatsapp' ? `<div style="position:absolute;bottom:-2px;right:-2px;width:16px;height:16px;border-radius:50%;background:#25D366;border:2px solid var(--color-surface);display:flex;align-items:center;justify-content:center"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" width="8" height="8" fill="#fff"><path d="M380.9 97.1C339 55.1 283.2 32 223.9 32c-122.4 0-222 99.6-222 222 0 39.1 10.2 77.3 29.6 111L0 480l117.7-30.9c32.4 17.7 68.9 27 106.1 27h.1c122.3 0 224.1-99.6 224.1-222 0-59.3-25.2-115-67.1-157zm-157 341.6c-33.2 0-65.7-8.9-94-25.7l-6.7-4-69.8 18.3L72 359.2l-4.4-7c-18.5-29.4-28.2-63.3-28.2-98.2 0-101.7 82.8-184.5 184.6-184.5 49.3 0 95.6 19.2 130.4 54.1 34.8 34.9 56.2 81.2 56.1 130.5 0 101.8-84.9 184.6-186.6 184.6zm101.2-138.2c-5.5-2.8-32.8-16.2-37.9-18-5.1-1.9-8.8-2.8-12.5 2.8-3.7 5.6-14.3 18-17.6 21.8-3.2 3.7-6.5 4.2-12 1.4-32.6-16.3-54-29.1-75.5-66-5.7-9.8 5.7-9.1 16.3-30.3 1.8-3.7.9-6.9-.5-9.7-1.4-2.8-12.5-30.1-17.1-41.2-4.5-10.8-9.1-9.3-12.5-9.5-3.2-.2-6.9-.2-10.6-.2-3.7 0-9.7 1.4-14.8 6.9-5.1 5.6-19.4 19-19.4 46.3 0 27.3 19.9 53.7 22.6 57.4 2.8 3.7 39.1 59.7 94.8 83.8 35.2 15.2 49 16.5 66.6 13.9 10.7-1.6 32.8-13.4 37.4-26.4 4.6-13 4.6-24.1 3.2-26.4-1.3-2.5-5-3.9-10.5-6.6z"/></svg></div>` : ''}
-            </div>
-            <div class="conv-info">
-              <div class="conv-name">${c.contact_name || 'Desconhecido'}</div>
-              <div class="conv-preview">${c.contact_phone || c.channel || '—'}</div>
-            </div>
-            <div class="conv-meta">
-              <div class="conv-time">${c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—'}</div>
-              ${c.unread_count > 0 ? `<div class="conv-unread-count">${c.unread_count}</div>` : ''}
-            </div>`;
-          list.prepend(newItem);
-          newItem.addEventListener('click', async () => {
-            document.querySelectorAll('.conv-item').forEach(e => e.classList.remove('active'));
-            newItem.classList.add('active');
-            activeConvId = c.id;
-            await loadAndRenderChat(c.id, c);
-          });
-          return;
-        }
-        const badge = item.querySelector('.conv-unread-count');
-        const timeEl = item.querySelector('.conv-time');
-        if (c.id !== activeConvId && c.unread_count > 0) {
-          item.classList.add('unread');
-          if (badge) badge.textContent = c.unread_count;
-          else {
-            const meta = item.querySelector('.conv-meta');
-            if (meta) meta.insertAdjacentHTML('beforeend', `<div class="conv-unread-count">${c.unread_count}</div>`);
-          }
-        }
-        if (timeEl && c.last_message_at) {
-          timeEl.textContent = new Date(c.last_message_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-        }
-      });
+      if (_convSignature(fresh) === _convSignature(_convData)) return; // nada mudou
+      _convData = fresh;
+      _renderConvList();
     } catch {}
   }, 5000);
 
@@ -1024,6 +1060,8 @@ async function loadAndRenderChat(convId, conv) {
         else tempRow.dataset.msgId = saved.id;
       }
       if (saved?.sent_at) _lastMsgSentAt = saved.sent_at;
+      // Responder o contato marca a conversa como lida (nota interna não)
+      if (!isInternal) _convMarkReadLocal(convId);
     } catch (err) {
       console.error('[send message]', err.message);
       document.getElementById(tempId)?.remove();
@@ -1140,6 +1178,7 @@ async function loadAndRenderChat(convId, conv) {
           const tempRow = document.getElementById(tempId);
           if (tempRow && saved?.id) tempRow.dataset.msgId = saved.id;
           if (saved?.sent_at) _lastMsgSentAt = saved.sent_at;
+          if (!_isInternalMode) _convMarkReadLocal(convId);
         } catch (err) {
           console.error('[audio send] erro:', err);
           const tempRow = document.getElementById(tempId);
@@ -1183,6 +1222,7 @@ window.unloadConversations = function() {
 
 window.initConversations = function(data) {
   const convs = Array.isArray(data) ? data : [];
+  _convData = convs;
 
   // Fecha dropdowns do painel ao clicar fora
   document.addEventListener('click', () => {
@@ -1192,15 +1232,16 @@ window.initConversations = function(data) {
     if (d2) d2.style.display = 'none';
   });
 
-  document.querySelectorAll('.conv-item').forEach(el => {
-    el.addEventListener('click', async () => {
-      document.querySelectorAll('.conv-item').forEach(e => e.classList.remove('active'));
-      el.classList.add('active');
-      activeConvId = el.dataset.convId;
-      const conv = convs.find(c => c.id === activeConvId);
-      await loadAndRenderChat(activeConvId, conv);
+  // Filtros (Todas | Abertas | Não Lidas)
+  document.querySelectorAll('.conv-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      _convFilter = tab.dataset.filter;
+      document.querySelectorAll('.conv-tab').forEach(t => t.classList.toggle('active', t.dataset.filter === _convFilter));
+      _renderConvList();
     });
   });
+
+  _bindConvItems();
 
   // Abertura via notificação de @menção
   const notifConvId = window.__openConversationId;

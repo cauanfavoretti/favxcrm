@@ -1137,7 +1137,12 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
     );
     const savedMsg = { ...rows[0], sender_name: senderRows[0]?.sender_name || null };
 
-    await pool.query('UPDATE conversations SET last_message_at = NOW() WHERE id = $1', [req.params.id]);
+    // Responder publicamente ao contato marca a conversa como lida.
+    // Notas internas não contam como resposta ao contato.
+    await pool.query(
+      `UPDATE conversations SET last_message_at = NOW()${is_internal ? '' : ', unread_count = 0'} WHERE id = $1`,
+      [req.params.id]
+    );
 
     // Mensagens internas não são enviadas ao contato
     if (is_internal) {
