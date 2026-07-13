@@ -875,7 +875,11 @@ async function loadAndRenderChat(convId, conv) {
       const container = document.getElementById('chatMessages');
       if (!container) return;
 
-      const wasAtBottom = container.scrollTop < 60;
+      // O container é column-reverse: no fundo scrollTop ≈ 0 e, ao rolar
+      // para cima, o valor se afasta de zero (negativo no Chrome, positivo
+      // no Firefox). Usa abs para detectar "está no fundo" em ambos.
+      const wasAtBottom = Math.abs(container.scrollTop) < 60;
+      let added = false;
       newMsgs.forEach(m => {
         if (container.querySelector(`[data-msg-id="${m.id}"]`)) return;
         if (m.direction === 'outbound') {
@@ -886,8 +890,11 @@ async function loadAndRenderChat(convId, conv) {
         tmp.innerHTML = renderMessageHtml(m, conv?.contact_name);
         const row = tmp.firstElementChild;
         container.prepend(row);
+        added = true;
       });
-      if (wasAtBottom) container.scrollTop = 0;
+      // Só rola para o fundo se realmente entrou mensagem nova E o usuário
+      // já estava no fundo — assim, rolar para ver o histórico não é interrompido.
+      if (added && wasAtBottom) container.scrollTop = 0;
 
       // Update sidebar unread for this conv
       const sideItem = document.querySelector(`.conv-item[data-conv-id="${convId}"] .conv-time`);
