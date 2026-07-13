@@ -80,6 +80,7 @@ function _convMarkReadLocal(convId) {
   _renderConvList();
   const btn = document.getElementById('convMarkReadBtn');
   if (btn) btn.style.display = 'none';
+  window.refreshConvNavBadge?.();
 }
 
 // Assinatura leve para decidir se a lista precisa ser re-renderizada
@@ -988,6 +989,7 @@ async function loadAndRenderChat(convId, conv) {
       if (_convSignature(fresh) === _convSignature(_convData)) return; // nada mudou
       _convData = fresh;
       _renderConvList();
+      window.refreshConvNavBadge?.();
     } catch {}
   }, 5000);
 

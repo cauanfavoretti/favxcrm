@@ -1035,6 +1035,22 @@ app.get('/api/conversations', auth, async (req, res) => {
   }
 });
 
+// Quantidade de conversas não lidas (para o badge do menu lateral)
+app.get('/api/conversations/unread-count', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM conversations
+       WHERE subaccount_id = $1 AND unread_count > 0`,
+      [subaccount_id]
+    );
+    res.json({ count: rows[0]?.count || 0 });
+  } catch (err) {
+    console.error('[conversations unread-count]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 app.post('/api/conversations', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   const { contact_id, channel } = req.body;

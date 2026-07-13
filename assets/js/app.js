@@ -310,6 +310,24 @@ function _updateNotifBadge(count) {
   }
 }
 
+// Atualiza o badge de "Conversas" no menu lateral com a quantidade real de
+// conversas não lidas.
+async function _updateConvNavBadge() {
+  const badge = document.getElementById('navBadgeConversas');
+  if (!badge) return;
+  try {
+    const res = await apiFetch('/api/conversations/unread-count');
+    const count = res?.count || 0;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : count;
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch {}
+}
+window.refreshConvNavBadge = _updateConvNavBadge;
+
 const _shieldSvgNotif = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;
 
 function _renderNotifList(notifs) {
@@ -393,6 +411,10 @@ function initNotifications() {
 
   _fetchNotifications();
   setInterval(_fetchNotifications, 15000);
+
+  // Badge de conversas não lidas no menu lateral
+  _updateConvNavBadge();
+  setInterval(_updateConvNavBadge, 15000);
 }
 
 // ---- Logout ----
