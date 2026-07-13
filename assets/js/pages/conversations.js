@@ -93,12 +93,69 @@ function renderEmptyChat() {
   `;
 }
 
-async function renderInfoPanel(convId) {
+// ── PAINEL LATERAL DIREITO (abas por ícone) ──────────────────
+
+let _convInfoTab = 'contato';
+
+const _CONV_INFO_TABS = [
+  { id: 'contato', icon: 'user',           title: 'Informações do contato' },
+  { id: 'leads',   icon: 'filter',         title: 'Leads' },
+  { id: 'notas',   icon: 'pencil',         title: 'Anotações' },
+  { id: 'tarefas', icon: 'calendar-check', title: 'Tarefas' },
+];
+
+const _CONV_OPP_STATUS = {
+  open: { label: 'Aberto',  cls: 'badge-blue'  },
+  won:  { label: 'Ganho',   cls: 'badge-black' },
+  lost: { label: 'Perdido', cls: 'badge-gray'  },
+};
+const _convFmtBRL = v => (parseFloat(v) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+function _convInfoSpinner() {
+  return `<div style="padding:24px;display:flex;align-items:center;justify-content:center"><div style="width:20px;height:20px;border:2px solid #e5e7eb;border-top-color:var(--color-accent);border-radius:50%;animation:spin 0.7s linear infinite"></div></div>`;
+}
+
+async function renderInfoPanel(convId, conv) {
   const panel = document.getElementById('convInfoPanel');
   if (!panel) return;
 
-  panel.innerHTML = `<div style="padding:20px;display:flex;align-items:center;justify-content:center"><div style="width:20px;height:20px;border:2px solid #e5e7eb;border-top-color:var(--color-accent);border-radius:50%;animation:spin 0.7s linear infinite"></div></div>`;
+  panel.innerHTML = `
+    <div class="conv-info-content" id="convInfoContent">${_convInfoSpinner()}</div>
+    <div class="conv-info-rail">
+      ${_CONV_INFO_TABS.map(t => `
+        <button class="conv-info-tab ${t.id === _convInfoTab ? 'active' : ''}" data-info-tab="${t.id}" title="${t.title}">
+          <i data-lucide="${t.icon}" style="width:18px;height:18px"></i>
+          ${t.id === 'tarefas' ? '<span class="conv-info-soon-dot"></span>' : ''}
+        </button>
+      `).join('')}
+    </div>
+  `;
+  lucide.createIcons();
 
+  panel.querySelectorAll('.conv-info-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _convInfoTab = btn.dataset.infoTab;
+      panel.querySelectorAll('.conv-info-tab').forEach(b => b.classList.toggle('active', b.dataset.infoTab === _convInfoTab));
+      _renderConvInfoContent(convId, conv);
+    });
+  });
+
+  await _renderConvInfoContent(convId, conv);
+}
+
+async function _renderConvInfoContent(convId, conv) {
+  const box = document.getElementById('convInfoContent');
+  if (!box) return;
+  box.innerHTML = _convInfoSpinner();
+  if (_convInfoTab === 'leads')   return _renderConvLeadsTab(box, conv);
+  if (_convInfoTab === 'notas')   return _renderConvNotesTab(box, conv);
+  if (_convInfoTab === 'tarefas') return _renderConvTasksTab(box);
+  return _renderConvContactTab(box, convId, conv);
+}
+
+// ── Aba: Informações do contato ──────────────────────────────
+
+async function _renderConvContactTab(box, convId, conv) {
   const [assignment, freshUsers] = await Promise.all([
     apiFetch(`/api/conversations/${convId}/assignment`).catch(() => ({ owner: null, followers: [] })),
     _convUsers.length ? Promise.resolve(_convUsers) : apiFetch('/api/conversations/members').catch(() => []),
@@ -110,8 +167,18 @@ async function renderInfoPanel(convId) {
   const followers = Array.isArray(assignment.followers) ? assignment.followers : [];
   const followerIds = new Set(followers.map(f => f.id));
   const nonFollowers = allUsers.filter(u => !followerIds.has(u.id) && u.id !== owner?.id);
+  const name  = conv?.contact_name  || 'Desconhecido';
+  const phone = conv?.contact_phone || '—';
 
-  panel.innerHTML = `
+  box.innerHTML = `
+    <div class="conv-info-section" style="text-align:center">
+      <div class="conv-avatar" style="width:56px;height:56px;font-size:20px;margin:0 auto 10px">${name[0].toUpperCase()}</div>
+      <div style="font-size:15px;font-weight:700;color:var(--color-text-1)">${name}</div>
+      <div style="font-size:12px;color:var(--color-text-3);margin-top:3px;display:flex;align-items:center;justify-content:center;gap:5px">
+        <i data-lucide="phone" style="width:12px;height:12px"></i> ${phone}
+      </div>
+    </div>
+
     <div class="conv-info-section">
       <div class="conv-info-section-title">Proprietário</div>
       <div style="position:relative">
@@ -179,7 +246,7 @@ async function renderInfoPanel(convId) {
     if (addFollowerDropdown) addFollowerDropdown.style.display = 'none';
   });
 
-  panel.querySelectorAll('.owner-opt').forEach(btn => {
+  box.querySelectorAll('.owner-opt').forEach(btn => {
     btn.addEventListener('click', async () => {
       const userId = btn.dataset.id || null;
       ownerDropdown.style.display = 'none';
@@ -188,7 +255,7 @@ async function renderInfoPanel(convId) {
           method: 'PUT',
           body: JSON.stringify({ user_id: userId }),
         });
-        await renderInfoPanel(convId);
+        await _renderConvInfoContent(convId, conv);
       } catch (err) { console.error('[assign owner]', err.message); }
     });
   });
@@ -199,7 +266,7 @@ async function renderInfoPanel(convId) {
     if (ownerDropdown) ownerDropdown.style.display = 'none';
   });
 
-  panel.querySelectorAll('.add-follower-opt').forEach(btn => {
+  box.querySelectorAll('.add-follower-opt').forEach(btn => {
     btn.addEventListener('click', async () => {
       const userId = btn.dataset.id;
       addFollowerDropdown.style.display = 'none';
@@ -208,12 +275,12 @@ async function renderInfoPanel(convId) {
           method: 'PUT',
           body: JSON.stringify({ user_ids: [...followers.map(f => f.id), userId] }),
         });
-        await renderInfoPanel(convId);
+        await _renderConvInfoContent(convId, conv);
       } catch (err) { console.error('[add follower]', err.message); }
     });
   });
 
-  panel.querySelectorAll('.remove-follower-btn').forEach(btn => {
+  box.querySelectorAll('.remove-follower-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const userId = btn.dataset.id;
       try {
@@ -221,10 +288,295 @@ async function renderInfoPanel(convId) {
           method: 'PUT',
           body: JSON.stringify({ user_ids: followers.filter(f => f.id !== userId).map(f => f.id) }),
         });
-        await renderInfoPanel(convId);
+        await _renderConvInfoContent(convId, conv);
       } catch (err) { console.error('[remove follower]', err.message); }
     });
   });
+}
+
+// ── Aba: Leads (oportunidades do contato) ────────────────────
+
+function _convOppCardHtml(opp) {
+  const st = _CONV_OPP_STATUS[opp.status] || _CONV_OPP_STATUS.open;
+  const oppData = JSON.stringify({
+    id: opp.id, title: opp.title, value: opp.value, status: opp.status,
+    lost_reason: opp.lost_reason || '', pipeline_id: opp.pipeline_id,
+    stage_id: opp.stage_id, custom_fields: opp.custom_fields || {},
+  });
+  return `
+    <div style="border:1px solid var(--color-border);border-radius:10px;padding:10px 12px;margin-bottom:8px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px;margin-bottom:6px">
+        <div style="font-size:13px;font-weight:700;color:var(--color-text-1);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${opp.title}</div>
+        <span class="badge ${st.cls}" style="flex-shrink:0">${st.label}</span>
+      </div>
+      <div style="font-size:11px;color:var(--color-text-3);margin-bottom:8px">${opp.pipeline_name || '—'} › ${opp.stage_name || '—'}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:14px;font-weight:700;color:var(--color-text-1)">${_convFmtBRL(opp.value)}</span>
+        <div style="display:flex;gap:4px">
+          <button class="btn btn-ghost btn-sm conv-opp-edit" data-opp='${oppData}' style="padding:4px 6px" title="Editar"><i data-lucide="pencil" style="width:13px;height:13px"></i></button>
+          <button class="btn btn-ghost btn-sm conv-opp-delete" data-id="${opp.id}" style="padding:4px 6px" title="Excluir"><i data-lucide="trash-2" style="width:13px;height:13px;color:var(--color-red)"></i></button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function _renderConvLeadsTab(box, conv) {
+  const contactId = conv?.contact_id;
+  let opps = [];
+  try { opps = await apiFetch(`/api/contacts/${contactId}/opportunities`) || []; } catch {}
+
+  box.innerHTML = `
+    <div class="conv-info-section">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div class="conv-info-section-title" style="margin-bottom:0">Oportunidades${opps.length ? ` (${opps.length})` : ''}</div>
+        <button id="convNewOppBtn" class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;height:auto;line-height:1.6">+ Nova</button>
+      </div>
+      <div id="convOppList">
+        ${opps.length === 0
+          ? `<div style="font-size:12px;color:var(--color-text-3);padding:4px 0">Nenhuma oportunidade vinculada ainda.</div>`
+          : opps.map(_convOppCardHtml).join('')}
+      </div>
+    </div>
+  `;
+  lucide.createIcons();
+
+  document.getElementById('convNewOppBtn')?.addEventListener('click', () => _convOpenOppModal(conv, null));
+
+  box.querySelectorAll('.conv-opp-edit').forEach(btn => {
+    btn.addEventListener('click', () => _convOpenOppModal(conv, JSON.parse(btn.dataset.opp)));
+  });
+
+  box.querySelectorAll('.conv-opp-delete').forEach(btn => {
+    btn.addEventListener('click', () => {
+      showConfirmModal({
+        title: 'Excluir oportunidade',
+        message: 'Tem certeza que deseja excluir esta oportunidade?',
+        onConfirm: async () => {
+          await apiFetch(`/api/opportunities/${btn.dataset.id}`, { method: 'DELETE' });
+          await _renderConvLeadsTab(box, conv);
+        },
+      });
+    });
+  });
+}
+
+async function _convOpenOppModal(conv, existingOpp) {
+  const isEdit    = !!existingOpp;
+  const contactId = conv?.contact_id;
+
+  let pipelines = [];
+  try { pipelines = await apiFetch('/api/pipelines') || []; } catch {}
+  const cfDefs = await fetchCustomFieldDefs('opportunity');
+
+  let curPipelineId = existingOpp?.pipeline_id || pipelines[0]?.id || '';
+  let curStageId    = existingOpp?.stage_id    || '';
+  const getStages = pid => pipelines.find(p => p.id === pid)?.stages || [];
+
+  document.getElementById('convOppModal')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'convOppModal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px';
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+
+  function render() {
+    const stages    = getStages(curPipelineId);
+    const curStatus = existingOpp?.status || 'open';
+
+    overlay.innerHTML = `
+      <div style="background:var(--color-surface);border-radius:14px;width:540px;max-width:100%;max-height:88vh;overflow:hidden;box-shadow:0 32px 64px rgba(0,0,0,.25);display:flex;flex-direction:column">
+        <div style="padding:18px 22px;border-bottom:1px solid var(--color-border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+          <div>
+            <div style="font-size:15px;font-weight:700">${isEdit ? 'Editar oportunidade' : 'Nova oportunidade'}</div>
+            <div style="font-size:12px;color:var(--color-text-3);margin-top:3px">${conv?.contact_name || 'Contato'}</div>
+          </div>
+          <button id="copp_close" style="background:none;border:none;cursor:pointer;padding:4px;border-radius:6px"><i data-lucide="x" style="width:18px;height:18px"></i></button>
+        </div>
+
+        <div style="padding:20px 22px;display:flex;flex-direction:column;gap:14px;overflow-y:auto;flex:1">
+          <div>
+            <label style="font-size:11px;font-weight:700;color:var(--color-text-3);letter-spacing:.05em;display:block;margin-bottom:6px">NOME DA OPORTUNIDADE *</label>
+            <input type="text" id="copp_title" value="${existingOpp?.title || ''}" placeholder="Ex: Proposta de serviço"
+              style="width:100%;padding:9px 12px;border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:13px;background:var(--color-surface)" />
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div>
+              <label style="font-size:11px;font-weight:700;color:var(--color-text-3);letter-spacing:.05em;display:block;margin-bottom:6px">FUNIL *</label>
+              <select id="copp_pipeline" style="width:100%;padding:9px 12px;border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:13px;background:var(--color-surface)">
+                ${pipelines.map(p => `<option value="${p.id}" ${p.id === curPipelineId ? 'selected' : ''}>${p.name}</option>`).join('') || '<option value="">Nenhum funil</option>'}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:700;color:var(--color-text-3);letter-spacing:.05em;display:block;margin-bottom:6px">ETAPA *</label>
+              <select id="copp_stage" style="width:100%;padding:9px 12px;border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:13px;background:var(--color-surface)">
+                ${stages.map(s => `<option value="${s.id}" ${s.id === curStageId ? 'selected' : ''}>${s.name}</option>`).join('') || '<option value="">Selecione um funil</option>'}
+              </select>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div>
+              <label style="font-size:11px;font-weight:700;color:var(--color-text-3);letter-spacing:.05em;display:block;margin-bottom:6px">VALOR (R$)</label>
+              <input type="number" id="copp_value" value="${existingOpp?.value || ''}" min="0" step="0.01"
+                style="width:100%;padding:9px 12px;border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:13px;background:var(--color-surface)" />
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:700;color:var(--color-text-3);letter-spacing:.05em;display:block;margin-bottom:6px">STATUS</label>
+              <select id="copp_status" style="width:100%;padding:9px 12px;border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:13px;background:var(--color-surface)">
+                <option value="open" ${curStatus === 'open' ? 'selected' : ''}>Aberto</option>
+                <option value="won"  ${curStatus === 'won'  ? 'selected' : ''}>Ganho</option>
+                <option value="lost" ${curStatus === 'lost' ? 'selected' : ''}>Perdido</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="copp_lostWrap" ${curStatus !== 'lost' ? 'style="display:none"' : ''}>
+            <label style="font-size:11px;font-weight:700;color:var(--color-text-3);letter-spacing:.05em;display:block;margin-bottom:6px">MOTIVO DE PERDA</label>
+            <textarea id="copp_lost_reason" rows="2"
+              style="width:100%;padding:9px 12px;border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:13px;background:var(--color-surface);resize:vertical">${existingOpp?.lost_reason || ''}</textarea>
+          </div>
+
+          ${renderCustomFieldsSection(cfDefs, existingOpp?.custom_fields || {})}
+        </div>
+
+        <div style="padding:14px 22px;border-top:1px solid var(--color-border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-shrink:0">
+          ${isEdit
+            ? `<button id="copp_delete" class="btn btn-ghost btn-sm" style="color:var(--color-red)"><i data-lucide="trash-2" style="width:13px;height:13px"></i> Excluir</button>`
+            : '<div></div>'}
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="copp_error" style="font-size:12px;color:var(--color-red)"></span>
+            <button class="btn btn-secondary btn-sm" id="copp_cancel">Cancelar</button>
+            <button class="btn btn-primary btn-sm" id="copp_save">${isEdit ? 'Salvar' : 'Criar'}</button>
+          </div>
+        </div>
+      </div>`;
+
+    lucide.createIcons();
+
+    overlay.querySelector('#copp_close').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('#copp_cancel').addEventListener('click', () => overlay.remove());
+
+    overlay.querySelector('#copp_pipeline')?.addEventListener('change', e => {
+      curPipelineId = e.target.value;
+      curStageId = '';
+      const sel = overlay.querySelector('#copp_stage');
+      const newStages = getStages(curPipelineId);
+      if (sel) sel.innerHTML = newStages.map(s => `<option value="${s.id}">${s.name}</option>`).join('') || '<option value="">—</option>';
+    });
+
+    overlay.querySelector('#copp_status')?.addEventListener('change', e => {
+      overlay.querySelector('#copp_lostWrap').style.display = e.target.value === 'lost' ? '' : 'none';
+    });
+
+    overlay.querySelector('#copp_delete')?.addEventListener('click', () => {
+      showConfirmModal({
+        title: 'Excluir oportunidade',
+        message: 'Tem certeza que deseja excluir esta oportunidade?',
+        onConfirm: async () => {
+          await apiFetch(`/api/opportunities/${existingOpp.id}`, { method: 'DELETE' });
+          overlay.remove();
+          await _renderConvInfoContent(null, conv);
+        },
+      });
+    });
+
+    overlay.querySelector('#copp_save').addEventListener('click', async () => {
+      const title       = overlay.querySelector('#copp_title').value.trim();
+      const pipeline_id = overlay.querySelector('#copp_pipeline').value;
+      const stage_id    = overlay.querySelector('#copp_stage').value;
+      const value       = overlay.querySelector('#copp_value').value;
+      const status      = overlay.querySelector('#copp_status').value;
+      const lost_reason = overlay.querySelector('#copp_lost_reason')?.value.trim() || null;
+      const errEl       = overlay.querySelector('#copp_error');
+
+      if (!title)       { errEl.textContent = 'Nome é obrigatório.'; return; }
+      if (!pipeline_id) { errEl.textContent = 'Selecione um funil.'; return; }
+      if (!stage_id)    { errEl.textContent = 'Selecione uma etapa.'; return; }
+      errEl.textContent = '';
+
+      const body = {
+        pipeline_id, stage_id, contact_id: contactId, title,
+        value: parseFloat(value) || 0, status,
+        lost_reason: status === 'lost' ? lost_reason : null,
+        custom_fields: collectCustomFieldsValues(cfDefs),
+      };
+
+      const btn = overlay.querySelector('#copp_save');
+      btn.disabled = true; btn.textContent = 'Salvando...';
+      try {
+        if (isEdit) {
+          await apiFetch(`/api/opportunities/${existingOpp.id}`, { method: 'PUT', body: JSON.stringify(body) });
+        } else {
+          await apiFetch('/api/opportunities', { method: 'POST', body: JSON.stringify(body) });
+        }
+        overlay.remove();
+        await _renderConvInfoContent(null, conv);
+      } catch (err) {
+        errEl.textContent = err.message;
+        btn.disabled = false; btn.textContent = isEdit ? 'Salvar' : 'Criar';
+      }
+    });
+  }
+
+  render();
+}
+
+// ── Aba: Anotações ───────────────────────────────────────────
+
+async function _renderConvNotesTab(box, conv) {
+  const contactId = conv?.contact_id;
+  let contact = null;
+  try { contact = await apiFetch(`/api/contacts/${contactId}`); } catch {}
+  const notes = contact?.notes || '';
+
+  box.innerHTML = `
+    <div class="conv-info-section">
+      <div class="conv-info-section-title">Anotações e lembretes</div>
+      <textarea id="convNotesInput" rows="12" placeholder="Adicione observações e lembretes sobre este contato..."
+        style="width:100%;padding:10px 12px;border:1px solid var(--color-border);border-radius:8px;font-size:13px;background:var(--color-surface);resize:vertical;line-height:1.6">${notes}</textarea>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+        <button id="convNotesSave" class="btn btn-primary btn-sm">Salvar</button>
+        <span id="convNotesMsg" style="font-size:12px"></span>
+      </div>
+    </div>
+  `;
+  lucide.createIcons();
+
+  document.getElementById('convNotesSave')?.addEventListener('click', async () => {
+    const val = document.getElementById('convNotesInput').value;
+    const msg = document.getElementById('convNotesMsg');
+    const btn = document.getElementById('convNotesSave');
+    btn.disabled = true; btn.textContent = 'Salvando...';
+    if (msg) msg.textContent = '';
+    try {
+      await apiFetch(`/api/contacts/${contactId}`, { method: 'PUT', body: JSON.stringify({ notes: val }) });
+      if (msg) { msg.style.color = 'var(--color-green)'; msg.textContent = 'Salvo!'; setTimeout(() => { if (msg) msg.textContent = ''; }, 2500); }
+    } catch (err) {
+      if (msg) { msg.style.color = 'var(--color-red)'; msg.textContent = err.message; }
+    } finally {
+      btn.disabled = false; btn.textContent = 'Salvar';
+    }
+  });
+}
+
+// ── Aba: Tarefas (em breve) ──────────────────────────────────
+
+function _renderConvTasksTab(box) {
+  box.innerHTML = `
+    <div class="conv-info-section">
+      <div class="conv-info-section-title">Tarefas</div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;padding:36px 12px;text-align:center">
+        <i data-lucide="calendar-check" style="width:36px;height:36px;color:var(--color-text-3);opacity:.4"></i>
+        <div style="position:relative;display:inline-block;padding:2px 4px">
+          <span style="font-size:15px;font-weight:800;letter-spacing:.12em;color:var(--color-text-2)">EM BREVE</span>
+          <span style="position:absolute;left:-2px;right:-2px;top:50%;height:2px;background:var(--color-red);transform:translateY(-50%)"></span>
+        </div>
+        <p style="font-size:12px;color:var(--color-text-3);line-height:1.6">Agenda de tarefas com checklist chegando em breve.</p>
+      </div>
+    </div>
+  `;
+  lucide.createIcons();
 }
 
 const _shieldSvg = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;
@@ -353,8 +705,8 @@ async function loadAndRenderChat(convId, conv) {
   lucide.createIcons();
   const chatMessages = document.getElementById('chatMessages');
 
-  // Carrega o painel de proprietário/seguidores
-  renderInfoPanel(convId);
+  // Carrega o painel lateral (contato, leads, anotações, tarefas)
+  renderInfoPanel(convId, conv);
 
   // Botão de mensagem interna
   const internalToggle  = document.getElementById('internalToggle');

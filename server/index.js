@@ -911,6 +911,23 @@ app.get('/api/contacts', auth, async (req, res) => {
   }
 });
 
+app.get('/api/contacts/:id', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, email, phone, company, position, source, status,
+              assigned_to, notes, custom_fields, created_at, updated_at
+       FROM contacts WHERE id = $1 AND subaccount_id = $2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Contato não encontrado.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[contacts GET one]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 app.post('/api/contacts', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   const { name, email, phone, company, source, status, custom_fields } = req.body;

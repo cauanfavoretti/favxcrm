@@ -1021,7 +1021,7 @@ tbody tr:hover { background: var(--color-surface-2); }
    ====================================== */
 .conversations-layout {
   display: grid;
-  grid-template-columns: 320px 1fr 240px;
+  grid-template-columns: 320px 1fr 312px;
   gap: 0;
   height: calc(100vh - var(--topbar-h) - 56px);
   border: 1px solid var(--color-border);
@@ -1428,9 +1428,55 @@ tbody tr:hover { background: var(--color-surface-2); }
 .conv-info-panel {
   border-left: 1px solid var(--color-border);
   display: flex;
-  flex-direction: column;
-  overflow-y: auto;
+  flex-direction: row;
+  overflow: hidden;
   background: var(--color-surface);
+}
+
+.conv-info-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.conv-info-rail {
+  width: 52px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 0;
+  gap: 4px;
+}
+
+.conv-info-tab {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  border: none;
+  background: none;
+  color: var(--color-text-3);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: background 0.15s, color 0.15s;
+}
+.conv-info-tab:hover { background: var(--color-bg-2); color: var(--color-text-1); }
+.conv-info-tab.active { background: var(--color-accent-lite); color: var(--color-accent); }
+.conv-info-tab .conv-info-soon-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-red);
 }
 
 .conv-info-section {
