@@ -619,10 +619,15 @@ async function openOppEditModal(opp, contact) {
 
         </div>
 
-        <div style="padding:14px 22px;border-top:1px solid var(--color-border);display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-shrink:0">
-          <span id="eopp_error" style="font-size:12px;color:var(--color-red);margin-right:auto"></span>
-          <button class="btn btn-secondary btn-sm" id="btnCancelEditOpp">Cancelar</button>
-          <button class="btn btn-primary btn-sm" id="btnSaveEditOpp">Salvar alterações</button>
+        <div style="padding:14px 22px;border-top:1px solid var(--color-border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-shrink:0">
+          <button class="btn btn-ghost btn-sm" id="btnDeleteEditOpp" style="color:var(--color-red)">
+            <i data-lucide="trash-2" style="width:13px;height:13px"></i> Excluir
+          </button>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="eopp_error" style="font-size:12px;color:var(--color-red)"></span>
+            <button class="btn btn-secondary btn-sm" id="btnCancelEditOpp">Cancelar</button>
+            <button class="btn btn-primary btn-sm" id="btnSaveEditOpp">Salvar alterações</button>
+          </div>
         </div>
 
       </div>`;
@@ -631,6 +636,18 @@ async function openOppEditModal(opp, contact) {
 
     document.getElementById('btnCloseEditOpp')?.addEventListener('click', () => overlay.remove());
     document.getElementById('btnCancelEditOpp')?.addEventListener('click', () => overlay.remove());
+
+    document.getElementById('btnDeleteEditOpp')?.addEventListener('click', () => {
+      showConfirmModal({
+        title: 'Excluir oportunidade',
+        message: 'Tem certeza que deseja excluir esta oportunidade?',
+        onConfirm: async () => {
+          await apiFetch(`/api/opportunities/${opp.id}`, { method: 'DELETE' });
+          overlay.remove();
+          await openOppPanel(contact.id, contact.name);
+        },
+      });
+    });
 
     document.getElementById('eopp_pipeline')?.addEventListener('change', e => {
       curStageId = '';

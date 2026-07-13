@@ -1611,6 +1611,21 @@ app.put('/api/opportunities/:id', auth, async (req, res) => {
   }
 });
 
+app.delete('/api/opportunities/:id', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rowCount } = await pool.query(
+      `DELETE FROM opportunities WHERE id = $1 AND subaccount_id = $2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!rowCount) return res.status(404).json({ message: 'Oportunidade não encontrada.' });
+    res.status(204).send();
+  } catch (err) {
+    console.error('[opportunities DELETE]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 app.put('/api/opportunities/:id/stage', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   const { stage_id } = req.body;
