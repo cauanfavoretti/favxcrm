@@ -5,34 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FAVX CRM — Entrar</title>
   <link rel="stylesheet" href="assets/css/auth.css" />
-  <style>
-    /* ── Intro overlay (ativado após login bem-sucedido) ── */
-    #intro-wrap{position:fixed;inset:0;z-index:9999;overflow:hidden;display:none;
-      background:radial-gradient(120% 120% at 50% 52%,#03040c 0%,#000004 60%,#000 100%)}
-    .i-light{position:absolute;left:50%;top:52%;width:140vmax;height:140vmax;
-      transform:translate(-50%,-50%) scale(var(--ls,.35));
-      background:radial-gradient(circle at 50% 50%,
-        rgba(110,150,255,calc(var(--li,0)*.55)) 0%,rgba(50,86,220,calc(var(--li,0)*.42)) 9%,
-        rgba(24,46,150,calc(var(--li,0)*.30)) 20%,rgba(12,24,90,calc(var(--li,0)*.16)) 34%,
-        rgba(6,12,48,0) 56%);filter:blur(8px);pointer-events:none}
-    .i-haze{position:absolute;left:50%;top:50%;width:90vmax;height:60vmax;
-      transform:translate(-50%,-50%);mix-blend-mode:screen;pointer-events:none;
-      background:radial-gradient(circle at 50% 45%,rgba(40,72,200,calc(var(--li,0)*.22)) 0%,rgba(14,28,100,0) 60%);
-      animation:i-drift 14s ease-in-out infinite alternate}
-    @keyframes i-drift{from{transform:translate(-52%,-50%) scale(1)}to{transform:translate(-48%,-52%) scale(1.08)}}
-    .i-logo{position:absolute;left:50%;top:50%;width:clamp(180px,28vw,440px);height:auto;
-      transform:translate(-50%,-50%) translateY(14px) scale(.965);
-      opacity:.04;filter:brightness(.12);
-      user-select:none;pointer-events:none;z-index:3;
-      will-change:opacity,filter,transform}
-    .i-bloom{position:absolute;left:50%;top:52%;width:60vmax;height:60vmax;border-radius:50%;
-      transform:translate(-50%,-50%) scale(.6);opacity:0;z-index:4;pointer-events:none;mix-blend-mode:screen;
-      background:radial-gradient(circle at 50% 50%,rgba(232,240,255,.95) 0%,rgba(150,180,255,.6) 22%,rgba(60,100,240,.25) 42%,rgba(20,40,140,0) 62%)}
-    .i-vignette{position:absolute;inset:0;pointer-events:none;
-      background:radial-gradient(110% 90% at 50% 50%,rgba(0,0,0,0) 42%,rgba(0,0,0,.72) 100%)}
-    .i-whiteout{position:absolute;inset:0;z-index:20;pointer-events:none;opacity:0;
-      background:radial-gradient(circle at 50% 50%,#fff 0%,#f5f8ff 64%,#eef3ff 100%)}
-  </style>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -220,16 +192,6 @@
     </div>
 
   </div><!-- .auth-layout -->
-
-  <!-- ── Intro overlay (ativado após login bem-sucedido) ── -->
-  <div id="intro-wrap">
-    <div class="i-light" id="i-light"></div>
-    <div class="i-haze"></div>
-    <img class="i-logo" src="assets/img/fx-logo.png" alt="FAVX" draggable="false" id="i-logo" />
-    <div class="i-bloom" id="i-bloom"></div>
-    <div class="i-vignette"></div>
-    <div class="i-whiteout" id="i-whiteout"></div>
-  </div>
 
   <script src="assets/js/config.js"></script>
   <script src="assets/js/auth.js"></script>
