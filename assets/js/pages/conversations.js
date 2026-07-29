@@ -7,6 +7,7 @@ let _isInternalMode  = false;
 let _pendingMentions = new Set();
 let _convData        = [];        // lista atual de conversas (fonte para os filtros)
 let _convFilter      = 'todas';   // todas | abertas | nao_lidas
+let _convMode        = 'conversas'; // conversas | modelos
 
 const _CONV_FILTERS = [
   { id: 'todas',     label: 'Todas'     },
@@ -125,16 +126,25 @@ window.pageConversations = function(data) {
 
   return `
   <div class="page-header" style="margin-bottom:16px">
-    <div>
+    <div style="display:flex;align-items:center;gap:16px">
       <h1 class="page-title">Conversas</h1>
-      <p class="page-subtitle">${convs.length} conversa${convs.length !== 1 ? 's' : ''}</p>
+      <div class="conv-mode-switch">
+        <button class="conv-mode-btn ${_convMode === 'conversas' ? 'active' : ''}" data-mode="conversas">
+          <i data-lucide="message-circle" style="width:14px;height:14px"></i> Conversas
+        </button>
+        <button class="conv-mode-btn ${_convMode === 'modelos' ? 'active' : ''}" data-mode="modelos">
+          <i data-lucide="file-text" style="width:14px;height:14px"></i> Modelos
+        </button>
+      </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
-      <button class="btn btn-primary btn-sm"><i data-lucide="edit" style="width:14px;height:14px"></i> Nova Conversa</button>
+      <button class="btn btn-primary btn-sm" id="btnNovaConversa" ${_convMode === 'modelos' ? 'style="display:none"' : ''}><i data-lucide="edit" style="width:14px;height:14px"></i> Nova Conversa</button>
     </div>
   </div>
 
-  <div class="conversations-layout">
+  <div id="templatesView" ${_convMode === 'modelos' ? '' : 'hidden'}></div>
+
+  <div class="conversations-layout" ${_convMode === 'modelos' ? 'hidden' : ''}>
     <!-- SIDEBAR -->
     <div class="conv-sidebar">
       <div class="conv-sidebar-header">
@@ -779,6 +789,7 @@ async function loadAndRenderChat(convId, conv) {
       <input type="file" id="imageFileInput" accept="image/*" style="display:none">
       <div style="display:flex;gap:4px;align-items:center">
         <button class="btn btn-ghost btn-sm" id="attachImageBtn" style="padding:6px" title="Anexar imagem"><i data-lucide="paperclip" style="width:16px;height:16px"></i></button>
+        <button class="btn btn-ghost btn-sm" id="insertTemplateBtn" style="padding:6px" title="Inserir modelo de mensagem"><i data-lucide="file-text" style="width:16px;height:16px"></i></button>
         <button id="internalToggle" class="internal-toggle-btn" title="Mensagem interna — não enviada ao contato">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           Interno
@@ -799,6 +810,23 @@ async function loadAndRenderChat(convId, conv) {
       await apiFetch(`/api/conversations/${convId}/read`, { method: 'POST' });
       _convMarkReadLocal(convId);
     } catch (err) { console.error('[mark read]', err.message); }
+  });
+
+  // Inserção rápida de modelo de mensagem
+  document.getElementById('insertTemplateBtn')?.addEventListener('click', () => {
+    openTemplatePicker(tpl => {
+      const input = document.getElementById('chatInput');
+      if (!input) return;
+      const header = tpl.header_content ? tpl.header_content + '\n\n' : '';
+      const text   = header + (tpl.body || '');
+      const start  = input.selectionStart ?? input.value.length;
+      const end    = input.selectionEnd ?? input.value.length;
+      input.value  = input.value.slice(0, start) + text + input.value.slice(end);
+      input.dispatchEvent(new Event('input'));
+      input.focus();
+      const caret = start + text.length;
+      input.setSelectionRange(caret, caret);
+    });
   });
 
   // Carrega o painel lateral (contato, leads, anotações, tarefas)
@@ -1251,6 +1279,26 @@ window.initConversations = function(data) {
     if (d1) d1.style.display = 'none';
     if (d2) d2.style.display = 'none';
   });
+
+  // Seletor de modo (Conversas | Modelos)
+  document.querySelectorAll('.conv-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _convMode = btn.dataset.mode;
+      document.querySelectorAll('.conv-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === _convMode));
+      const tplView = document.getElementById('templatesView');
+      const chatLayout = document.querySelector('.conversations-layout');
+      const btnNova = document.getElementById('btnNovaConversa');
+      const isModelos = _convMode === 'modelos';
+      if (tplView)    tplView.hidden = !isModelos;
+      if (chatLayout) chatLayout.hidden = isModelos;
+      if (btnNova)    btnNova.style.display = isModelos ? 'none' : '';
+      if (isModelos && tplView) renderTemplatesView(tplView);
+    });
+  });
+  if (_convMode === 'modelos') {
+    const tplView = document.getElementById('templatesView');
+    if (tplView) renderTemplatesView(tplView);
+  }
 
   // Filtros (Todas | Abertas | Não Lidas)
   document.querySelectorAll('.conv-tab').forEach(tab => {

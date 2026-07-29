@@ -374,6 +374,40 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
   }
 })();
 
+;(async function initTemplateTables() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS template_folders (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        subaccount_id UUID NOT NULL,
+        name          VARCHAR(120) NOT NULL,
+        position      INTEGER DEFAULT 0,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+      )`);
+    // Garante a tabela de modelos (compatível com o schema base) e as colunas
+    // usadas por esta feature. Se a tabela já existir, o CREATE é ignorado e
+    // as colunas são adicionadas de forma idempotente.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS message_templates (
+        id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        subaccount_id  UUID NOT NULL,
+        name           VARCHAR(150) NOT NULL,
+        header_content TEXT,
+        body           TEXT NOT NULL,
+        folder_id      UUID,
+        position       INTEGER DEFAULT 0,
+        created_at     TIMESTAMPTZ DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ DEFAULT NOW()
+      )`);
+    await pool.query(`ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS folder_id UUID`);
+    await pool.query(`ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE message_templates ADD COLUMN IF NOT EXISTS header_content TEXT`);
+  } catch (err) {
+    console.error('[init] template tables:', err.message);
+  }
+})();
+
 async function executeWidgetQuery(pillar, config, subaccount_id) {
   const params = [subaccount_id];
   const wheres = [];
@@ -865,6 +899,176 @@ app.delete('/api/custom-fields/:id', auth, requireAdmin, async (req, res) => {
     res.status(204).send();
   } catch (err) {
     console.error('[custom-fields DELETE]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// ============================================================
+// MODELOS DE MENSAGENS (pastas + modelos)
+// ============================================================
+
+app.get('/api/template-folders', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, position FROM template_folders
+       WHERE subaccount_id = $1 ORDER BY position ASC, created_at ASC`,
+      [subaccount_id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[template-folders GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.post('/api/template-folders', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { name } = req.body;
+  if (!name?.trim()) return res.status(400).json({ message: 'Nome da pasta é obrigatório.' });
+  try {
+    const { rows: pos } = await pool.query(
+      `SELECT COALESCE(MAX(position),0)+1 AS p FROM template_folders WHERE subaccount_id=$1`,
+      [subaccount_id]
+    );
+    const { rows } = await pool.query(
+      `INSERT INTO template_folders (subaccount_id, name, position) VALUES ($1,$2,$3) RETURNING id, name, position`,
+      [subaccount_id, name.trim(), pos[0].p]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error('[template-folders POST]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.put('/api/template-folders/:id', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { name } = req.body;
+  if (!name?.trim()) return res.status(400).json({ message: 'Nome da pasta é obrigatório.' });
+  try {
+    const { rows } = await pool.query(
+      `UPDATE template_folders SET name=$1, updated_at=NOW()
+       WHERE id=$2 AND subaccount_id=$3 RETURNING id, name, position`,
+      [name.trim(), req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Pasta não encontrada.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[template-folders PUT]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.delete('/api/template-folders/:id', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rowCount } = await pool.query(
+      `DELETE FROM template_folders WHERE id=$1 AND subaccount_id=$2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!rowCount) return res.status(404).json({ message: 'Pasta não encontrada.' });
+    // Modelos da pasta não são apagados — ficam sem pasta ("Sem pasta")
+    await pool.query(
+      `UPDATE message_templates SET folder_id=NULL WHERE folder_id=$1 AND subaccount_id=$2`,
+      [req.params.id, subaccount_id]
+    );
+    res.status(204).send();
+  } catch (err) {
+    console.error('[template-folders DELETE]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.get('/api/message-templates', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, header_content, body, folder_id, position
+       FROM message_templates
+       WHERE subaccount_id = $1 ORDER BY position ASC, created_at ASC`,
+      [subaccount_id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[message-templates GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.post('/api/message-templates', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { name, header_content, body, folder_id } = req.body;
+  if (!name?.trim()) return res.status(400).json({ message: 'Nome do modelo é obrigatório.' });
+  if (!body?.trim()) return res.status(400).json({ message: 'Corpo da mensagem é obrigatório.' });
+  try {
+    // Valida a pasta (se informada) — deve pertencer à subconta
+    let folder = null;
+    if (folder_id) {
+      const { rows: f } = await pool.query(
+        `SELECT id FROM template_folders WHERE id=$1 AND subaccount_id=$2`,
+        [folder_id, subaccount_id]
+      );
+      if (!f.length) return res.status(400).json({ message: 'Pasta inválida.' });
+      folder = folder_id;
+    }
+    const { rows: pos } = await pool.query(
+      `SELECT COALESCE(MAX(position),0)+1 AS p FROM message_templates WHERE subaccount_id=$1`,
+      [subaccount_id]
+    );
+    const { rows } = await pool.query(
+      `INSERT INTO message_templates (subaccount_id, name, header_content, body, folder_id, position)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name, header_content, body, folder_id, position`,
+      [subaccount_id, name.trim(), header_content?.trim() || null, body.trim(), folder, pos[0].p]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error('[message-templates POST]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.put('/api/message-templates/:id', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { name, header_content, body, folder_id } = req.body;
+  if (!name?.trim()) return res.status(400).json({ message: 'Nome do modelo é obrigatório.' });
+  if (!body?.trim()) return res.status(400).json({ message: 'Corpo da mensagem é obrigatório.' });
+  try {
+    let folder = null;
+    if (folder_id) {
+      const { rows: f } = await pool.query(
+        `SELECT id FROM template_folders WHERE id=$1 AND subaccount_id=$2`,
+        [folder_id, subaccount_id]
+      );
+      if (!f.length) return res.status(400).json({ message: 'Pasta inválida.' });
+      folder = folder_id;
+    }
+    const { rows } = await pool.query(
+      `UPDATE message_templates SET
+         name=$1, header_content=$2, body=$3, folder_id=$4, updated_at=NOW()
+       WHERE id=$5 AND subaccount_id=$6
+       RETURNING id, name, header_content, body, folder_id, position`,
+      [name.trim(), header_content?.trim() || null, body.trim(), folder, req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Modelo não encontrado.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[message-templates PUT]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.delete('/api/message-templates/:id', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rowCount } = await pool.query(
+      `DELETE FROM message_templates WHERE id=$1 AND subaccount_id=$2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!rowCount) return res.status(404).json({ message: 'Modelo não encontrado.' });
+    res.status(204).send();
+  } catch (err) {
+    console.error('[message-templates DELETE]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
   }
 });
