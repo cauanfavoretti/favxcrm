@@ -1555,6 +1555,29 @@ tbody tr:hover { background: var(--color-surface-2); }
 /* ======================================
    FUNNELS PAGE
    ====================================== */
+/* Filtro de status do funil (Abertos | Ganhos | Perdidos) */
+.funnel-status-filter {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--color-bg-2);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 3px;
+}
+.funnel-status-btn {
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-3);
+  transition: background var(--transition), color var(--transition);
+}
+.funnel-status-btn:hover:not(.active) { color: var(--color-text-1); }
+.funnel-status-btn.active { background: var(--color-surface); color: var(--color-text-1); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+
 .funnel-pipeline {
   display: flex;
   gap: 12px;

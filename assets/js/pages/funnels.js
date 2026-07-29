@@ -9,10 +9,21 @@ const STAGE_COLORS = [
 ];
 
 let funnelsState = {
-  pipelines:   [],
-  activeIndex: 0,
-  mode:        'view',
-  newStages:   [],
+  pipelines:    [],
+  activeIndex:  0,
+  mode:         'view',
+  newStages:    [],
+  statusFilter: 'open',   // open | won | lost
+};
+
+const FUNNEL_STATUS_FILTERS = [
+  { id: 'open', label: 'Abertos' },
+  { id: 'won',  label: 'Ganhos'  },
+  { id: 'lost', label: 'Perdidos' },
+];
+const FUNNEL_STATUS_BADGE = {
+  won:  { label: 'Ganho',   cls: 'badge-black' },
+  lost: { label: 'Perdido', cls: 'badge-gray'  },
 };
 
 const funnelOppsMap = {};
@@ -22,7 +33,7 @@ const fmtBRL = v => (parseFloat(v) || 0).toLocaleString('pt-BR', { style: 'curre
 // ── API ──────────────────────────────────────────────────────
 
 window.loadFunnels = async function () {
-  const data = await apiFetch('/api/pipelines');
+  const data = await apiFetch(`/api/pipelines?status=${funnelsState.statusFilter}`);
   if (Array.isArray(data)) {
     funnelsState.pipelines = data;
     if (window.__openOppInFunnel) {
@@ -447,6 +458,9 @@ function renderKanban(pipelines) {
   // Popula o mapa de oportunidades para edição
   active.stages.forEach(st => st.opportunities.forEach(o => { funnelOppsMap[o.id] = o; }));
 
+  const isOpenView  = funnelsState.statusFilter === 'open';
+  const statusBadge = FUNNEL_STATUS_BADGE[funnelsState.statusFilter];
+
   return `
   <div class="page-header">
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
@@ -459,6 +473,9 @@ function renderKanban(pipelines) {
                  background-repeat:no-repeat;background-position:right 10px center">
           ${pipelines.map((p, i) => `<option value="${i}" ${i === funnelsState.activeIndex ? 'selected' : ''}>${p.name}</option>`).join('')}
         </select>
+      </div>
+      <div class="funnel-status-filter">
+        ${FUNNEL_STATUS_FILTERS.map(f => `<button class="funnel-status-btn ${f.id === funnelsState.statusFilter ? 'active' : ''}" data-status="${f.id}">${f.label}</button>`).join('')}
       </div>
     </div>
     <div style="display:flex;gap:8px">
@@ -509,10 +526,10 @@ function renderKanban(pipelines) {
         ${stage.opportunities.length === 0
           ? `<div class="funnel-empty-drop" data-stage-id="${stage.id}">Nenhuma oportunidade</div>`
           : stage.opportunities.map(opp => `
-            <div class="funnel-card" draggable="true" data-opp-id="${opp.id}" data-stage-id="${stage.id}" style="position:relative">
+            <div class="funnel-card" draggable="${isOpenView}" data-opp-id="${opp.id}" data-stage-id="${stage.id}" style="position:relative">
               <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px;margin-bottom:6px">
                 <div style="display:flex;align-items:center;gap:6px;min-width:0">
-                  <i class="funnel-drag-handle" data-lucide="grip-vertical" style="width:12px;height:12px;flex-shrink:0"></i>
+                  ${isOpenView ? `<i class="funnel-drag-handle" data-lucide="grip-vertical" style="width:12px;height:12px;flex-shrink:0"></i>` : ''}
                   <div style="width:28px;height:28px;border-radius:50%;background:var(--color-bg-2);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">
                     ${opp.contact_name[0].toUpperCase()}
                   </div>
@@ -526,16 +543,19 @@ function renderKanban(pipelines) {
                 </button>
               </div>
               <div style="font-size:11px;color:var(--color-text-3);margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${opp.title}</div>
-              <div class="funnel-card-value">${fmtBRL(parseFloat(opp.value) || 0)}</div>
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+                <div class="funnel-card-value">${fmtBRL(parseFloat(opp.value) || 0)}</div>
+                ${statusBadge ? `<span class="badge ${statusBadge.cls}" style="flex-shrink:0">${statusBadge.label}</span>` : ''}
+              </div>
             </div>
           `).join('')}
-        <button class="btn-add-opp" data-stage="${stage.id}"
+        ${isOpenView ? `<button class="btn-add-opp" data-stage="${stage.id}"
           style="width:100%;margin-top:6px;padding:9px;border:1.5px dashed var(--color-border);border-radius:var(--radius-md);
                  font-size:12px;color:var(--color-text-3);background:none;cursor:pointer;transition:all var(--transition)"
           onmouseover="this.style.borderColor='#000';this.style.color='#000'"
           onmouseout="this.style.borderColor='';this.style.color=''">
           + Adicionar oportunidade
-        </button>
+        </button>` : ''}
       </div>
     </div>
     `).join('')}
@@ -986,6 +1006,15 @@ window.initFunnels = function (data) {
     funnelsState.activeIndex = parseInt(e.target.value);
     const content = document.getElementById('pageContent');
     if (content) { content.innerHTML = window.pageFunnels(funnelsState.pipelines); lucide.createIcons(); window.initFunnels(funnelsState.pipelines); }
+  });
+
+  // Filtro de status (Abertos | Ganhos | Perdidos)
+  document.querySelectorAll('.funnel-status-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (btn.dataset.status === funnelsState.statusFilter) return;
+      funnelsState.statusFilter = btn.dataset.status;
+      await reloadFunnelsPage();
+    });
   });
 
   document.getElementById('btnNewFunnel')?.addEventListener('click', () => {

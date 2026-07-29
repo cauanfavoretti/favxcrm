@@ -1598,6 +1598,10 @@ app.put('/api/conversations/:id/followers', auth, async (req, res) => {
 
 app.get('/api/pipelines', auth, async (req, res) => {
   const { subaccount_id } = req.user;
+  // Filtra as oportunidades exibidas no funil por status (padrão: abertas).
+  // Permite visualizar as ganhas/perdidas, que antes ficavam invisíveis no
+  // kanban embora contassem no dashboard.
+  const statusFilter = ['open', 'won', 'lost'].includes(req.query.status) ? req.query.status : 'open';
   try {
     const { rows: pipelines } = await pool.query(
       'SELECT * FROM pipelines WHERE subaccount_id = $1 ORDER BY created_at ASC',
@@ -1615,13 +1619,13 @@ app.get('/api/pipelines', auth, async (req, res) => {
                     o.custom_fields, o.stage_id, o.pipeline_id, o.contact_id,
                     c.name AS contact_name, c.phone AS contact_phone, o.created_at
              FROM opportunities o JOIN contacts c ON c.id = o.contact_id
-             WHERE o.stage_id = $1 AND o.status = 'open' ORDER BY o.created_at DESC`,
-            [stage.id]
+             WHERE o.stage_id = $1 AND o.status = $2 ORDER BY o.created_at DESC`,
+            [stage.id, statusFilter]
           ),
           pool.query(
             `SELECT COUNT(*), COALESCE(SUM(value), 0) AS total
-             FROM opportunities WHERE stage_id = $1 AND status = 'open'`,
-            [stage.id]
+             FROM opportunities WHERE stage_id = $1 AND status = $2`,
+            [stage.id, statusFilter]
           ),
         ]);
         stage.opportunities = opps.rows;
