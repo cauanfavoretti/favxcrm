@@ -95,6 +95,24 @@ function _convStopPolling() {
   _pollListInterval = null;
 }
 
+// Lightbox para visualizar imagens do chat em tamanho ampliado.
+// Usa overlay interno (window.open com data: URI é bloqueado pelo Chrome).
+function openImageLightbox(src) {
+  document.getElementById('imgLightbox')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'imgLightbox';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:5000;display:flex;align-items:center;justify-content:center;padding:24px;cursor:zoom-out';
+  overlay.innerHTML = `
+    <img src="${src}" alt="imagem" style="max-width:95vw;max-height:92vh;border-radius:8px;box-shadow:0 12px 48px rgba(0,0,0,.5)">
+    <button aria-label="Fechar" style="position:absolute;top:18px;right:22px;background:rgba(255,255,255,.12);border:none;color:#fff;width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:20px;line-height:1;display:flex;align-items:center;justify-content:center">×</button>
+  `;
+  overlay.addEventListener('click', () => overlay.remove());
+  document.body.appendChild(overlay);
+  const onKey = e => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); } };
+  document.addEventListener('keydown', onKey);
+}
+window.openImageLightbox = openImageLightbox;
+
 window.loadConversations = async function() {
   return await apiFetch('/api/conversations');
 };
@@ -661,7 +679,7 @@ function renderMessageHtml(m, contactName) {
     bubbleContent = `<audio controls src="${m.file_data || ''}" style="width:240px;max-width:100%;outline:none;display:block"></audio>`;
     bubbleStyle   = isInbound ? 'background:#dbeafe;padding:8px 12px' : 'background:#1d4ed8;padding:8px 12px';
   } else if (isImage && m.file_data) {
-    bubbleContent = `<img src="${m.file_data}" alt="imagem" style="max-width:240px;max-height:320px;border-radius:8px;display:block;cursor:pointer" onclick="window.open(this.src,'_blank')">
+    bubbleContent = `<img src="${m.file_data}" alt="imagem" style="max-width:240px;max-height:320px;border-radius:8px;display:block;cursor:pointer" onclick="openImageLightbox(this.src)">
       ${m.content ? `<div style="font-size:13px;margin-top:4px">${m.content}</div>` : ''}`;
     bubbleStyle   = 'padding:6px';
   } else if (isImage) {
@@ -846,7 +864,7 @@ async function loadAndRenderChat(convId, conv) {
       tempRow.innerHTML = `
         <div class="msg-content">
           <div class="msg-bubble" style="padding:6px">
-            <img src="${fileData}" alt="imagem" style="max-width:240px;max-height:320px;border-radius:8px;display:block;cursor:pointer" onclick="window.open(this.src,'_blank')">
+            <img src="${fileData}" alt="imagem" style="max-width:240px;max-height:320px;border-radius:8px;display:block;cursor:pointer" onclick="openImageLightbox(this.src)">
             ${caption ? `<div style="font-size:13px;margin-top:4px">${caption}</div>` : ''}
           </div>
           <div class="msg-time">${timeStr}</div>

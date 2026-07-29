@@ -1098,16 +1098,13 @@ app.get('/api/conversations/:id/messages', auth, async (req, res) => {
     let sinceClause = '';
     if (since) { params.push(since); sinceClause = ` AND sent_at > $${params.length}`; }
 
-    // Para o poll (?since=...) omite file_data para evitar respostas de centenas de KB
-    // por mensagem de áudio/imagem. A carga inicial busca tudo.
-    const fileDataCol = since
-      ? `CASE WHEN m.message_type IN ('audio','image') THEN NULL ELSE m.file_data END AS file_data`
-      : 'm.file_data';
-
+    // Inclui file_data também no poll (?since=): como só retorna mensagens
+    // mais novas que a última vista, cada mídia trafega uma única vez e as
+    // imagens/áudios recebidos aparecem em tempo real no chat.
     const { rows } = await pool.query(
       `SELECT m.id, m.conversation_id, m.direction, m.sender_type, m.sender_id,
               m.content, m.is_internal, m.message_type, m.external_id, m.sent_at,
-              ${fileDataCol},
+              m.file_data,
               u.name AS sender_name
        FROM messages m
        LEFT JOIN users u ON u.id = m.sender_id AND m.sender_type = 'user'
