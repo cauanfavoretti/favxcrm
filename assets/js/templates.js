@@ -324,5 +324,11 @@ async function openTemplatePicker(onPick) {
   search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => renderPicker(search.value), 150); });
 }
 
+// Lista de modelos (com nome da pasta) — usada pelo comando "/m" do chat
+window.getMessageTemplates = async function () {
+  await _tplLoad();
+  return _tplTemplates.map(t => ({ ...t, folder_name: _tplFolders.find(f => f.id === t.folder_id)?.name || null }));
+};
+
 window.renderTemplatesView = renderTemplatesView;
 window.openTemplatePicker  = openTemplatePicker;

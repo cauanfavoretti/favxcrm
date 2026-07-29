@@ -1,9 +1,11 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="pt-BR" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FAVX CRM</title>
+  <!-- Aplica o tema salvo antes do CSS para evitar flash de tema errado -->
+  <script>try{document.documentElement.setAttribute('data-theme',localStorage.getItem('favx_theme')||'dark')}catch(e){}</script>
   <link rel="stylesheet" href="assets/css/style.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

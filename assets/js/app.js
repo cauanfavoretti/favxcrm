@@ -216,11 +216,11 @@ async function initSubaccountSwitcher() {
 
 // ---- Theme toggle ----
 (function initTheme() {
-  const saved = localStorage.getItem('favx_theme') || 'light';
+  const saved = localStorage.getItem('favx_theme') || 'dark';
   applyTheme(saved, false);
 
   document.getElementById('themeToggleBtn')?.addEventListener('click', () => {
-    const current = document.documentElement.getAttribute('data-theme') || 'light';
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
     applyTheme(current === 'dark' ? 'light' : 'dark', true);
   });
 })();

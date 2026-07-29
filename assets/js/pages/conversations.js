@@ -8,6 +8,15 @@ let _pendingMentions = new Set();
 let _convData        = [];        // lista atual de conversas (fonte para os filtros)
 let _convFilter      = 'todas';   // todas | abertas | nao_lidas
 let _convMode        = 'conversas'; // conversas | modelos
+let _slashTplList    = null;        // cache de modelos p/ o comando "/m"
+let _slashTplPromise = null;
+let _slashItems      = [];          // itens visíveis no menu de comandos (p/ navegação)
+let _slashActive     = -1;          // índice destacado no menu de comandos
+
+// Comandos disponíveis ao digitar "/" no chat
+const CHAT_SLASH_COMMANDS = [
+  { trigger: 'm', name: 'Modelos', icon: 'file-text', desc: 'Inserir um modelo salvo — /m (nome)' },
+];
 
 const _CONV_FILTERS = [
   { id: 'todas',     label: 'Todas'     },
@@ -717,6 +726,7 @@ async function loadAndRenderChat(convId, conv) {
   _lastMsgSentAt  = null;
   _isInternalMode  = false;
   _pendingMentions = new Set();
+  _slashTplList = null; _slashTplPromise = null; // recarrega modelos a cada conversa
 
   const chatArea = document.getElementById('chatArea');
   if (!chatArea) return;
@@ -780,6 +790,7 @@ async function loadAndRenderChat(convId, conv) {
     </div>
     <div class="chat-input-area" id="chatInputArea">
       <div id="mentionDropdown" class="mention-dropdown" style="display:none"></div>
+      <div id="slashDropdown" class="mention-dropdown" style="display:none"></div>
       <div id="imagePreviewArea" style="display:none;padding:6px 8px 0;position:relative">
         <img id="imagePreviewThumb" src="" alt="" style="max-height:100px;max-width:180px;border-radius:6px;border:1px solid var(--color-border);display:block">
         <button id="imagePreviewRemove" style="position:absolute;top:2px;left:2px;background:rgba(0,0,0,.55);border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0" title="Remover imagem">
@@ -836,6 +847,7 @@ async function loadAndRenderChat(convId, conv) {
   const internalToggle  = document.getElementById('internalToggle');
   const chatInputArea   = document.getElementById('chatInputArea');
   const mentionDropdown = document.getElementById('mentionDropdown');
+  const slashDropdown   = document.getElementById('slashDropdown');
 
   internalToggle?.addEventListener('click', () => {
     _isInternalMode = !_isInternalMode;
@@ -970,6 +982,138 @@ async function loadAndRenderChat(convId, conv) {
     });
   }
 
+  // ── COMANDOS "/" ────────────────────────────────────────────
+  function closeSlashDropdown() {
+    if (slashDropdown) slashDropdown.style.display = 'none';
+    _slashItems = [];
+    _slashActive = -1;
+  }
+  function slashOpen() {
+    return slashDropdown && slashDropdown.style.display !== 'none';
+  }
+
+  async function _ensureSlashTpl() {
+    if (_slashTplList) return _slashTplList;
+    if (!_slashTplPromise) {
+      _slashTplPromise = (async () => {
+        try { return (typeof getMessageTemplates === 'function') ? await getMessageTemplates() : []; }
+        catch { return []; }
+      })();
+    }
+    _slashTplList = await _slashTplPromise;
+    return _slashTplList;
+  }
+
+  function handleSlashInput(textarea) {
+    const val = textarea.value;
+    if (!val.startsWith('/')) { closeSlashDropdown(); return; }
+    const afterSlash = val.slice(1);
+
+    // Modo modelos: "/m (nome)" ou "/modelos (nome)" — precisa de espaço após o comando
+    const tplMatch = afterSlash.match(/^(?:m|modelos)\s+(.*)$/is) || (/^(?:m|modelos)\s$/i.test(afterSlash) ? [null, ''] : null);
+    if (tplMatch) { _slashShowTemplates(textarea, tplMatch[1] || ''); return; }
+
+    // Menu de comandos: apenas caracteres de palavra após "/"
+    if (/^\w*$/.test(afterSlash)) { _slashShowCommands(textarea, afterSlash.toLowerCase()); return; }
+
+    closeSlashDropdown();
+  }
+
+  function _slashRenderHighlight() {
+    slashDropdown.querySelectorAll('.mention-opt').forEach((el, i) =>
+      el.classList.toggle('slash-active', i === _slashActive));
+  }
+
+  function _slashShowCommands(textarea, partial) {
+    const cmds = CHAT_SLASH_COMMANDS.filter(c =>
+      !partial || c.trigger.startsWith(partial) || c.name.toLowerCase().startsWith(partial));
+    if (!cmds.length) { closeSlashDropdown(); return; }
+    slashDropdown.innerHTML = `
+      <div style="padding:5px 10px;font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--color-text-3);text-transform:uppercase">Comandos</div>
+      ${cmds.map(c => `
+        <button class="mention-opt slash-opt" data-cmd="${c.trigger}">
+          <div class="assign-mini-avatar"><i data-lucide="${c.icon}" style="width:13px;height:13px"></i></div>
+          <div style="display:flex;flex-direction:column;gap:1px;min-width:0">
+            <span style="font-weight:600">${c.name} <span style="color:var(--color-text-3);font-weight:500">/${c.trigger}</span></span>
+            <span style="font-size:11px;color:var(--color-text-3)">${c.desc}</span>
+          </div>
+        </button>`).join('')}`;
+    slashDropdown.style.display = 'block';
+    lucide.createIcons();
+    _slashItems = cmds.map(c => ({ type: 'cmd', trigger: c.trigger }));
+    _slashActive = 0;
+    _slashRenderHighlight();
+    slashDropdown.querySelectorAll('.slash-opt').forEach(btn =>
+      btn.addEventListener('mousedown', e => { e.preventDefault(); _slashPickCommand(textarea, btn.dataset.cmd); }));
+  }
+
+  async function _slashShowTemplates(textarea, query) {
+    const all = await _ensureSlashTpl();
+    // Reavalia a query atual (o valor pode ter mudado durante o await)
+    const cur = textarea.value.match(/^\/(?:m|modelos)\s+(.*)$/is);
+    const q = ((cur ? cur[1] : query) || '').trim().toLowerCase();
+    const items = all.filter(t => !q || t.name.toLowerCase().includes(q) || (t.body || '').toLowerCase().includes(q));
+    if (!all.length) {
+      slashDropdown.innerHTML = `<div style="padding:12px;font-size:12px;color:var(--color-text-3);text-align:center">Nenhum modelo cadastrado. Crie na aba "Modelos".</div>`;
+      slashDropdown.style.display = 'block';
+      _slashItems = []; _slashActive = -1;
+      return;
+    }
+    if (!items.length) {
+      slashDropdown.innerHTML = `<div style="padding:12px;font-size:12px;color:var(--color-text-3);text-align:center">Nenhum modelo encontrado.</div>`;
+      slashDropdown.style.display = 'block';
+      _slashItems = []; _slashActive = -1;
+      return;
+    }
+    slashDropdown.innerHTML = `
+      <div style="padding:5px 10px;font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--color-text-3);text-transform:uppercase">Modelos</div>
+      ${items.map(t => `
+        <button class="mention-opt slash-opt" data-id="${t.id}">
+          <div class="assign-mini-avatar"><i data-lucide="file-text" style="width:13px;height:13px"></i></div>
+          <div style="display:flex;flex-direction:column;gap:1px;min-width:0">
+            <span style="font-weight:600">${(t.name || '').replace(/</g,'&lt;')}${t.folder_name ? ` <span style="font-size:10px;color:var(--color-text-3);font-weight:500">· ${(t.folder_name||'').replace(/</g,'&lt;')}</span>` : ''}</span>
+            <span style="font-size:11px;color:var(--color-text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px">${((t.body||'').slice(0,80)).replace(/</g,'&lt;')}</span>
+          </div>
+        </button>`).join('')}`;
+    slashDropdown.style.display = 'block';
+    lucide.createIcons();
+    _slashItems = items.map(t => ({ type: 'tpl', id: t.id }));
+    _slashActive = 0;
+    _slashRenderHighlight();
+    slashDropdown.querySelectorAll('.slash-opt').forEach(btn =>
+      btn.addEventListener('mousedown', e => {
+        e.preventDefault();
+        _slashInsertTemplate(textarea, all.find(t => t.id === btn.dataset.id));
+      }));
+  }
+
+  function _slashPickCommand(textarea, trigger) {
+    if (trigger === 'm') {
+      textarea.value = '/m ';
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      textarea.dispatchEvent(new Event('input')); // entra no modo modelos
+    }
+  }
+
+  function _slashInsertTemplate(textarea, tpl) {
+    if (!tpl) { closeSlashDropdown(); return; }
+    const header = tpl.header_content ? tpl.header_content + '\n\n' : '';
+    textarea.value = header + (tpl.body || '');
+    closeSlashDropdown();
+    textarea.dispatchEvent(new Event('input'));
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }
+
+  function _slashActivate() {
+    const item = _slashItems[_slashActive];
+    const textarea = document.getElementById('chatInput');
+    if (!item || !textarea) return;
+    if (item.type === 'cmd') _slashPickCommand(textarea, item.trigger);
+    else if (item.type === 'tpl') _slashInsertTemplate(textarea, (_slashTplList || []).find(t => t.id === item.id));
+  }
+
   // Instance switcher logic
   const instBtn = document.getElementById('instSwitchBtn');
   const instDropdown = document.getElementById('instDropdown');
@@ -1046,13 +1190,34 @@ async function loadAndRenderChat(convId, conv) {
   chatInput?.addEventListener('input', () => {
     chatInput.style.height = 'auto';
     chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
-    if (_isInternalMode) handleMentionInput(chatInput);
-    else closeMentionDropdown();
+    // Comandos "/" têm prioridade quando a mensagem começa com "/"
+    if (chatInput.value.startsWith('/')) {
+      closeMentionDropdown();
+      handleSlashInput(chatInput);
+    } else {
+      closeSlashDropdown();
+      if (_isInternalMode) handleMentionInput(chatInput);
+      else closeMentionDropdown();
+    }
   });
 
+  chatInput?.addEventListener('blur', () => setTimeout(closeSlashDropdown, 120));
+
   chatInput?.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { closeMentionDropdown(); return; }
+    // Navegação/seleção no menu de comandos "/"
+    if (slashOpen() && _slashItems.length) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); _slashActive = (_slashActive + 1) % _slashItems.length; _slashRenderHighlight(); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); _slashActive = (_slashActive - 1 + _slashItems.length) % _slashItems.length; _slashRenderHighlight(); return; }
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _slashActivate(); return; }
+      if (e.key === 'Tab')       { e.preventDefault(); _slashActivate(); return; }
+    }
+    if (e.key === 'Escape') {
+      if (slashOpen()) { closeSlashDropdown(); return; }
+      closeMentionDropdown();
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
+      if (slashOpen()) { e.preventDefault(); return; }
       if (mentionDropdown && mentionDropdown.style.display !== 'none') { e.preventDefault(); return; }
       e.preventDefault();
       sendMessage();
