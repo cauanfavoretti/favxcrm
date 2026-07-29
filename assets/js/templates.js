@@ -59,13 +59,24 @@ function _tplRenderList(container) {
   const loose = byFolder(null);
   const isEmpty = _tplTemplates.length === 0 && _tplFolders.length === 0;
 
-  let looseSection = '';
+  // Estado totalmente vazio (sem modelos e sem pastas)
   if (isEmpty) {
-    looseSection = `<div style="text-align:center;color:var(--color-text-3);font-size:13px;padding:48px 0"><i data-lucide="file-text" style="width:36px;height:36px;opacity:.2;display:block;margin:0 auto 12px"></i>Nenhum modelo ainda. Crie uma pasta ou um modelo para começar.</div>`;
-  } else if (loose.length) {
+    container.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;min-height:60vh;text-align:center;color:var(--color-text-3)">
+        <i data-lucide="file-text" style="width:48px;height:48px;opacity:.25"></i>
+        <div style="font-size:15px;font-weight:600;color:var(--color-text-2)">Você ainda não tem modelos</div>
+        <button class="btn btn-primary btn-sm" id="tplEmptyCreate"><i data-lucide="plus" style="width:14px;height:14px"></i> Criar modelo</button>
+      </div>`;
+    lucide.createIcons();
+    document.getElementById('tplEmptyCreate')?.addEventListener('click', () => _tplOpenTemplateModal(null, container));
+    return;
+  }
+
+  let looseSection = '';
+  if (loose.length) {
     looseSection = `
       ${_tplFolders.length ? `<div style="font-size:11px;font-weight:700;color:var(--color-text-3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">Sem pasta</div>` : ''}
-      <div style="display:flex;flex-direction:column;gap:10px">${loose.map(_tplCardHtml).join('')}</div>`;
+      <div class="tpl-grid">${loose.map(_tplCardHtml).join('')}</div>`;
   }
 
   const folderBlocks = _tplFolders.map(f => {
@@ -79,24 +90,22 @@ function _tplRenderList(container) {
           <button class="btn btn-ghost btn-sm tpl-folder-rename" data-id="${f.id}" data-name="${_tplEsc(f.name)}" style="padding:4px" title="Renomear pasta"><i data-lucide="pencil" style="width:13px;height:13px"></i></button>
           <button class="btn btn-ghost btn-sm tpl-folder-del" data-id="${f.id}" data-name="${_tplEsc(f.name)}" style="padding:4px" title="Excluir pasta"><i data-lucide="trash-2" style="width:13px;height:13px;color:var(--color-red)"></i></button>
         </div>
-        <div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px">
-          ${items.length ? items.map(_tplCardHtml).join('') : `<div style="font-size:12px;color:var(--color-text-3)">Nenhum modelo nesta pasta.</div>`}
+        <div style="padding:12px 14px">
+          ${items.length ? `<div class="tpl-grid">${items.map(_tplCardHtml).join('')}</div>` : `<div style="font-size:12px;color:var(--color-text-3)">Nenhum modelo nesta pasta.</div>`}
         </div>
       </div>`;
   }).join('');
 
   container.innerHTML = `
-    <div style="max-width:820px;margin:0 auto">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
-        <button class="btn btn-secondary btn-sm" id="tplNewFolder"><i data-lucide="folder-plus" style="width:14px;height:14px"></i> Pasta</button>
-        <button class="btn btn-primary btn-sm" id="tplNewTemplate"><i data-lucide="plus" style="width:14px;height:14px"></i> Modelo</button>
-        <span style="font-size:12px;color:var(--color-text-3);margin-left:auto">${_tplTemplates.length} modelo${_tplTemplates.length !== 1 ? 's' : ''} · ${_tplFolders.length} pasta${_tplFolders.length !== 1 ? 's' : ''}</span>
-      </div>
-
-      ${folderBlocks}
-
-      <div style="margin-top:4px">${looseSection}</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+      <button class="btn btn-secondary btn-sm" id="tplNewFolder"><i data-lucide="folder-plus" style="width:14px;height:14px"></i> Pasta</button>
+      <button class="btn btn-primary btn-sm" id="tplNewTemplate"><i data-lucide="plus" style="width:14px;height:14px"></i> Modelo</button>
+      <span style="font-size:12px;color:var(--color-text-3);margin-left:auto">${_tplTemplates.length} modelo${_tplTemplates.length !== 1 ? 's' : ''} · ${_tplFolders.length} pasta${_tplFolders.length !== 1 ? 's' : ''}</span>
     </div>
+
+    ${folderBlocks}
+
+    <div style="margin-top:4px">${looseSection}</div>
   `;
   lucide.createIcons();
   _tplBindList(container);

@@ -1095,7 +1095,8 @@ tbody tr:hover { background: var(--color-surface-2); }
 .conv-mode-btn:hover:not(.active) { color: var(--color-text-1); }
 .conv-mode-btn.active { background: var(--color-surface); color: var(--color-text-1); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
 
-#templatesView { overflow-y: auto; height: calc(100vh - var(--topbar-h) - 56px); padding: 4px 4px 32px; }
+#templatesView { overflow-y: auto; height: calc(100vh - var(--topbar-h) - 56px); padding: 4px 2px 32px; }
+.tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
 /* display:grid do layout sobrepõe o atributo [hidden] — força o ocultamento */
 .conversations-layout[hidden] { display: none !important; }
 

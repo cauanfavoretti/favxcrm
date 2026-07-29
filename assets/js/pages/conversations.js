@@ -127,7 +127,7 @@ window.pageConversations = function(data) {
   return `
   <div class="page-header" style="margin-bottom:16px">
     <div style="display:flex;align-items:center;gap:16px">
-      <h1 class="page-title">Conversas</h1>
+      <h1 class="page-title" id="convPageTitle">${_convMode === 'modelos' ? 'Modelos' : 'Conversas'}</h1>
       <div class="conv-mode-switch">
         <button class="conv-mode-btn ${_convMode === 'conversas' ? 'active' : ''}" data-mode="conversas">
           <i data-lucide="message-circle" style="width:14px;height:14px"></i> Conversas
@@ -1288,10 +1288,12 @@ window.initConversations = function(data) {
       const tplView = document.getElementById('templatesView');
       const chatLayout = document.querySelector('.conversations-layout');
       const btnNova = document.getElementById('btnNovaConversa');
+      const title = document.getElementById('convPageTitle');
       const isModelos = _convMode === 'modelos';
       if (tplView)    tplView.hidden = !isModelos;
       if (chatLayout) chatLayout.hidden = isModelos;
       if (btnNova)    btnNova.style.display = isModelos ? 'none' : '';
+      if (title)      title.textContent = isModelos ? 'Modelos' : 'Conversas';
       if (isModelos && tplView) renderTemplatesView(tplView);
     });
   });
