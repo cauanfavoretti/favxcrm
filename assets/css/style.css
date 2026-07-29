@@ -6,13 +6,17 @@
 
 :root {
   /* ── Backgrounds ─────────────────────────── */
-  --color-bg:         #eef2f8;
+  --color-bg:         #eaf0f9;
   --color-surface:    #ffffff;
   --color-surface-2:  #f3f7fc;
   --color-bg-2:       #e6edf7;
 
+  /* Vidro claro — containers translúcidos sobre os halos de luz */
+  --glass:            rgba(255, 255, 255, 0.74);
+  --glass-2:          rgba(255, 255, 255, 0.58);
+
   /* ── Borders ─────────────────────────────── */
-  --color-border:     #d2dce9;
+  --color-border:     #d7e1ee;
   --color-border-2:   #b8ccdf;
 
   /* ── Text ────────────────────────────────── */
@@ -46,6 +50,12 @@
   --gradient-sheen:   linear-gradient(180deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,0) 60%);
   --shadow-accent:    0 4px 14px rgba(37,99,235,0.28);
 
+  /* ── Glow (claro: halos suaves e azulados) ── */
+  --glow-blue:        0 0 18px rgba(37, 99, 235, 0.30);
+  --glow-purple:      0 0 18px rgba(139, 92, 246, 0.28);
+  --glow-orange:      0 0 18px rgba(249, 115, 22, 0.28);
+  --glow-soft:        0 1px 2px rgba(13,27,42,.04), 0 8px 28px rgba(37,99,235,.10);
+
   /* ── Functional colours ──────────────────── */
   --color-green:      #10b981;
   --color-green-lite: #d1fae5;
@@ -75,12 +85,16 @@
    ====================================== */
 [data-theme="dark"] {
   /* ── Backgrounds (deep space navy) ───────── */
+  /* Superfícies SÓLIDAS — modais, dropdowns e painéis criados via JS
+     dependem destas variáveis; mantê-las opacas garante legibilidade. */
   --color-bg:         #05070e;
-  --color-surface:    rgba(18, 26, 44, 0.42);
-  --color-surface-2:  rgba(24, 33, 53, 0.46);
-  --color-bg-2:       rgba(31, 42, 66, 0.46);
+  --color-surface:    #111a2b;
+  --color-surface-2:  #0d1523;
+  --color-bg-2:       #1b2438;
 
-  /* Sólidos — para dropdowns/modais sobre o glass */
+  /* Vidro — aplicado explicitamente nos containers translúcidos */
+  --glass:            rgba(18, 26, 44, 0.42);
+  --glass-2:          rgba(12, 18, 32, 0.42);
   --color-solid:      #0c111d;
   --color-solid-2:    #131b2d;
 
@@ -160,6 +174,72 @@
   pointer-events: none;
 }
 
+/* ══════════════════════════════════════════
+   TEMA CLARO — mesma linguagem (halos + vidro + glow)
+   ══════════════════════════════════════════ */
+
+/* Halos de luz suaves sobre a base clara */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(44vw 38vw at 84%  0%,  rgba(59, 130, 246, 0.26) 0%, transparent 66%),
+    radial-gradient(32vw 42vw at 100% 46%, rgba(249, 115, 22, 0.15) 0%, transparent 64%),
+    radial-gradient(36vw 36vw at 92% 90%,  rgba(139, 92, 246, 0.16) 0%, transparent 66%),
+    radial-gradient(44vw 38vw at 0%  98%,  rgba(56, 189, 248, 0.14) 0%, transparent 64%);
+  pointer-events: none;
+}
+
+/* Containers translúcidos */
+.card,
+.stat-card,
+.conversations-layout,
+.table-wrapper,
+.settings-sidebar,
+.agent-card {
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.conv-sidebar, .chat-area, .conv-info-panel { background: transparent; }
+.funnel-column {
+  background: var(--glass-2);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.topbar { background: rgba(255,255,255,.62); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+
+/* Reflexo de luz na borda superior + sombra suave */
+.card, .stat-card { position: relative; box-shadow: var(--glow-soft); }
+.card::after, .stat-card::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent 6%, rgba(255,255,255,.9) 50%, transparent 94%);
+  pointer-events: none;
+}
+.stat-card:hover { box-shadow: 0 1px 2px rgba(13,27,42,.05), 0 12px 34px rgba(37,99,235,.16); }
+
+/* Glow discreto nos ícones de indicadores */
+.stat-icon.black  { box-shadow: var(--glow-blue); }
+.stat-icon.blue   { box-shadow: var(--glow-blue); }
+.stat-icon.purple { box-shadow: var(--glow-purple); }
+.stat-icon.orange { box-shadow: var(--glow-orange); }
+
+/* Foco com anel azul */
+input:focus, textarea:focus, .settings-input:focus, .search-wrapper:focus-within {
+  border-color: rgba(37,99,235,.45);
+  box-shadow: 0 0 0 3px rgba(37,99,235,.12);
+  outline: none;
+}
+
+/* Conversas: item ativo com realce */
+.conv-item.active { box-shadow: inset 2px 0 0 var(--color-accent); }
+
 /* ── GLASS: superfícies translúcidas com desfoque (tema escuro) ── */
 [data-theme="dark"] .sidebar {
   background: linear-gradient(185deg, rgba(14,21,37,.72) 0%, rgba(10,15,26,.80) 100%);
@@ -170,17 +250,20 @@
 }
 [data-theme="dark"] .topbar { border-bottom: 1px solid var(--color-border); background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
 
+/* Containers translúcidos (o resto — modais/dropdowns — segue sólido) */
 [data-theme="dark"] .card,
 [data-theme="dark"] .stat-card,
-[data-theme="dark"] .conv-sidebar,
-[data-theme="dark"] .chat-area,
-[data-theme="dark"] .conv-info-panel,
-[data-theme="dark"] .funnel-column,
+[data-theme="dark"] .conversations-layout,
 [data-theme="dark"] .table-wrapper,
-[data-theme="dark"] .settings-sidebar {
+[data-theme="dark"] .settings-sidebar,
+[data-theme="dark"] .agent-card {
+  background: var(--glass);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
+[data-theme="dark"] .conv-sidebar,
+[data-theme="dark"] .chat-area,
+[data-theme="dark"] .conv-info-panel { background: transparent; }
 
 /* Brilho de borda superior nos cards — reflexo de luz */
 [data-theme="dark"] .card,
@@ -288,7 +371,7 @@
 
 /* ── Funil: colunas e cards com glass + glow ── */
 [data-theme="dark"] .funnel-column {
-  background: rgba(12, 18, 32, 0.42);
+  background: var(--glass-2);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
 }
