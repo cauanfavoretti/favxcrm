@@ -3218,10 +3218,18 @@ tbody tr:hover { background: var(--color-surface-2); }
 .auto-edges .auto-edge-del text { fill: var(--ab-text-3); font-size: 11px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
 .auto-edges .auto-edge-del:hover text { fill: #fff; }
 
+/* ── Nós do canvas ─────────────────────────────────────────────
+   Três formas: padrão (quadrado, ícone + nome), If/Else (losango —
+   "duas pontas", uma por condição) e Timer (círculo com relógio). */
 .auto-node {
   position: absolute;
-  width: 222px;
-  border-radius: 13px;
+  width: 108px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 8px 10px;
+  border-radius: 16px;
   border: 1.5px solid var(--ab-border-2);
   background: linear-gradient(180deg, var(--ab-surface-2) 0%, var(--ab-surface) 100%);
   box-shadow: 0 6px 20px rgba(0,0,0,.35);
@@ -3235,45 +3243,76 @@ tbody tr:hover { background: var(--color-surface-2); }
 .auto-node.auto-node-trigger { border-color: rgba(168,85,247,.55); box-shadow: 0 0 22px rgba(168,85,247,.14), 0 6px 20px rgba(0,0,0,.35); }
 .auto-node.auto-node-trigger.auto-node-selected { border-color: var(--ab-purple); box-shadow: 0 0 0 3px var(--ab-purple-glow), 0 8px 28px rgba(0,0,0,.4); }
 
-.auto-node-head {
+/* Badge com o ícone — quadrado por padrão */
+.auto-node-badge {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 10px;
-  border-bottom: 1px solid var(--ab-border);
+  justify-content: center;
+  color: #fff;
+  flex-shrink: 0;
+  position: relative;
 }
-.auto-node-title {
-  font-size: 12px;
-  font-weight: 700;
+.auto-node-badge::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255,255,255,.22) 0%, rgba(255,255,255,0) 60%);
+  pointer-events: none;
+}
+
+/* If/Else — losango ("bracket" com duas pontas, uma por condição) */
+.auto-node.auto-node-if { background: none; border: none; box-shadow: none; padding-top: 4px; }
+.auto-node.auto-node-if:hover .auto-node-badge,
+.auto-node.auto-node-if.auto-node-selected .auto-node-badge { outline: 2px solid var(--ab-red); outline-offset: 3px; }
+.auto-node.auto-node-if .auto-node-badge {
+  border-radius: 11px;
+  transform: rotate(45deg);
+}
+.auto-node.auto-node-if .auto-node-badge i { transform: rotate(-45deg); }
+
+/* Timer — círculo com relógio */
+.auto-node.auto-node-timer { background: none; border: none; box-shadow: none; padding-top: 4px; }
+.auto-node.auto-node-timer:hover .auto-node-badge,
+.auto-node.auto-node-timer.auto-node-selected .auto-node-badge { outline: 2px solid var(--ab-orange); outline-offset: 3px; }
+.auto-node.auto-node-timer .auto-node-badge { border-radius: 50%; }
+
+.auto-node-name {
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
   color: var(--ab-text-1);
-  flex: 1;
-  min-width: 0;
+  line-height: 1.3;
+  max-width: 100%;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
+
 .auto-node-del {
-  background: none;
-  border: none;
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  background: var(--ab-surface-2);
+  border: 1.5px solid var(--ab-border-2);
+  border-radius: 50%;
   cursor: pointer;
   color: var(--ab-text-3);
-  padding: 3px;
-  border-radius: 5px;
-  flex-shrink: 0;
   display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity .12s, background .12s, color .12s;
+  z-index: 6;
 }
-.auto-node-del:hover { background: rgba(239,68,68,.15); color: var(--ab-red); }
-
-.auto-node-body {
-  padding: 8px 10px 10px;
-  font-size: 11px;
-  color: var(--ab-text-3);
-  line-height: 1.4;
-  min-height: 16px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.auto-node.auto-node-if { padding-bottom: 26px; }
+.auto-node:hover .auto-node-del { opacity: 1; }
+.auto-node-del:hover { background: rgba(239,68,68,.18); color: var(--ab-red); border-color: var(--ab-red); }
 
 .auto-port {
   position: absolute;
@@ -3291,16 +3330,20 @@ tbody tr:hover { background: var(--color-surface-2); }
 .auto-port-out { right: -7px; top: 50%; transform: translateY(-50%); }
 .auto-port-out.auto-port-true  { top: 38%; border-color: var(--ab-blue); }
 .auto-port-out.auto-port-false { top: 78%; border-color: var(--ab-red); }
-.auto-port-label {
-  position: absolute;
-  font-size: 9px;
-  font-weight: 700;
-  color: var(--ab-text-3);
-  right: 16px;
-  pointer-events: none;
+
+/* No If/Else, os dois outputs viram pontas triangulares — reforça a
+   leitura de "bracket com duas pontas" pedida no design. */
+.auto-node-if .auto-port-out {
+  width: 15px;
+  height: 15px;
+  border: none;
+  border-radius: 0;
+  background: var(--ab-blue);
+  clip-path: polygon(0% 15%, 70% 50%, 0% 85%);
 }
-.auto-port-label.auto-port-label-true  { top: 34%; color: var(--ab-blue); }
-.auto-port-label.auto-port-label-false { top: 74%; color: var(--ab-red); }
+.auto-node-if .auto-port-out.auto-port-false { background: var(--ab-red); }
+.auto-node-if .auto-port-out:hover { background: #fff; transform: translateY(-50%) scale(1.3); box-shadow: 0 0 10px var(--ab-blue-glow); }
+
 
 .auto-config-panel {
   position: absolute;

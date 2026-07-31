@@ -550,36 +550,36 @@ function _autoRenderNodes() {
     const def = node.isTrigger ? AUTO_TRIGGER_DEFS[node.triggerType] : AUTO_NODE_DEFS[node.type];
     const color = node.isTrigger ? AUTO_TRIGGER_COLOR : def.color;
     const glow  = node.isTrigger ? AUTO_TRIGGER_GLOW  : def.glow;
+    // Formas: padrão (quadrado), If/Else (losango) e Timer (círculo) —
+    // só ações têm forma especial; gatilhos são sempre quadrados.
+    const shape = !node.isTrigger && node.type === 'if_else' ? 'if'
+                : !node.isTrigger && node.type === 'timer'   ? 'timer'
+                : null;
     const el = document.createElement('div');
-    el.className = 'auto-node' + (node.isTrigger ? ' auto-node-trigger' : '') + (node.type === 'if_else' ? ' auto-node-if' : '') + (_autoSelectedNode === node.id ? ' auto-node-selected' : '');
+    el.className = 'auto-node' + (node.isTrigger ? ' auto-node-trigger' : '') + (shape ? ` auto-node-${shape}` : '') + (_autoSelectedNode === node.id ? ' auto-node-selected' : '');
     el.style.left = node.position.x + 'px';
     el.style.top = node.position.y + 'px';
     el.dataset.nodeId = node.id;
 
     const title = node.label?.trim() || (node.isTrigger ? (def?.label || node.triggerType) : def.label);
+    el.title = _autoNodeSummary(node);
     el.innerHTML = `
-      <div class="auto-node-head">
-        <div class="auto-node-icon" style="background:${color};box-shadow:0 0 12px ${glow}"><i data-lucide="${def?.icon || 'circle'}" style="width:13px;height:13px"></i></div>
-        <div class="auto-node-title">${_autoEsc(title)}</div>
-        ${node.isTrigger ? '' : `<button class="auto-node-del" data-del="${node.id}" title="Remover"><i data-lucide="x" style="width:13px;height:13px"></i></button>`}
-      </div>
-      <div class="auto-node-body">${_autoEsc(_autoNodeSummary(node))}</div>
+      ${node.isTrigger ? '' : `<button class="auto-node-del" data-del="${node.id}" title="Remover"><i data-lucide="x" style="width:11px;height:11px"></i></button>`}
+      <div class="auto-node-badge" style="background:${color};box-shadow:0 0 12px ${glow}"><i data-lucide="${def?.icon || 'circle'}" style="width:18px;height:18px"></i></div>
+      <div class="auto-node-name">${_autoEsc(title)}</div>
       ${!node.isTrigger ? `<div class="auto-port auto-port-in" data-port-in="${node.id}"></div>` : ''}
       ${node.type === 'if_else' ? `
-        <div class="auto-port auto-port-out auto-port-true" data-port-out="${node.id}" data-handle="true"></div>
-        <div class="auto-port-label auto-port-label-true">SIM</div>
-        <div class="auto-port auto-port-out auto-port-false" data-port-out="${node.id}" data-handle="false"></div>
-        <div class="auto-port-label auto-port-label-false">NÃO</div>
+        <div class="auto-port auto-port-out auto-port-true" data-port-out="${node.id}" data-handle="true" title="SIM"></div>
+        <div class="auto-port auto-port-out auto-port-false" data-port-out="${node.id}" data-handle="false" title="NÃO"></div>
       ` : `<div class="auto-port auto-port-out" data-port-out="${node.id}" data-handle="default"></div>`}
     `;
     canvas.appendChild(el);
     _autoNodeEls[node.id] = el;
 
-    el.querySelector('.auto-node-head').addEventListener('mousedown', e => {
-      if (e.target.closest('.auto-node-del')) return;
+    el.addEventListener('mousedown', e => {
+      if (e.target.closest('.auto-node-del') || e.target.closest('.auto-port')) return;
       _autoStartNodeDrag(e, node.id);
     });
-    el.querySelector('.auto-node-body').addEventListener('mousedown', e => e.stopPropagation());
     el.addEventListener('click', e => {
       if (e.target.closest('.auto-port') || e.target.closest('.auto-node-del')) return;
       _autoSelectNode(node.id);
