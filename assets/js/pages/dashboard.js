@@ -486,6 +486,7 @@ function _renderWidgetCard(widget, data) {
       </div>` : ''}
     </div>
     <div class="widget-card-body" id="widget-body-${id}">${body}</div>
+    ${window.favxCan('edit_dashboard') ? `<div class="widget-resize-handle" data-widget-id="${id}" title="Arraste para redimensionar"></div>` : ''}
   </div>`;
 }
 
@@ -620,6 +621,72 @@ function _bindWidgetGridEvents(dashId, pipelines) {
       } catch(e) { alert(e.message); }
     });
   });
+
+  document.querySelectorAll('.widget-resize-handle').forEach(handle => {
+    handle.addEventListener('mousedown', e => _startWidgetResize(e, handle.dataset.widgetId));
+  });
+}
+
+// ── Redimensionar widget arrastando o mouse ─────────────────────
+// A largura persistida continua sendo o enum third/half/full (o mesmo
+// aceito pelo PUT /api/dashboard-widgets/:id) — durante o arrasto o card
+// segue o mouse livremente em px; ao soltar, "encaixa" no tamanho válido
+// mais próximo e salva.
+let _widgetResize = null;
+
+function _widgetSnapWidth(fraction) {
+  if (fraction < 0.42) return 'third';
+  if (fraction < 0.75) return 'half';
+  return 'full';
+}
+
+function _startWidgetResize(e, widgetId) {
+  e.preventDefault();
+  e.stopPropagation();
+  const card = document.getElementById(`widget-${widgetId}`);
+  const grid = card?.closest('.widget-grid');
+  if (!card || !grid) return;
+  _widgetResize = {
+    widgetId, card,
+    startX: e.clientX,
+    startWidth: card.getBoundingClientRect().width,
+    gridWidth: grid.getBoundingClientRect().width,
+  };
+  card.classList.add('widget-resizing');
+  document.addEventListener('mousemove', _onWidgetResizeMove);
+  document.addEventListener('mouseup', _onWidgetResizeEnd);
+}
+
+function _onWidgetResizeMove(e) {
+  if (!_widgetResize) return;
+  const { card, startX, startWidth, gridWidth } = _widgetResize;
+  const deltaX = e.clientX - startX;
+  const newPx  = Math.max(200, Math.min(gridWidth, startWidth + deltaX));
+  card.style.flex = `0 0 ${newPx}px`;
+}
+
+async function _onWidgetResizeEnd() {
+  document.removeEventListener('mousemove', _onWidgetResizeMove);
+  document.removeEventListener('mouseup', _onWidgetResizeEnd);
+  if (!_widgetResize) return;
+  const { widgetId, card, gridWidth } = _widgetResize;
+  _widgetResize = null;
+  card.classList.remove('widget-resizing');
+
+  const fraction = card.getBoundingClientRect().width / gridWidth;
+  const newWidth = _widgetSnapWidth(fraction);
+
+  card.style.flex = '';
+  card.classList.remove('widget-w-third', 'widget-w-half', 'widget-w-full');
+  card.classList.add(_WIDTH_CLASS[newWidth]);
+  // Garante que o gráfico (se houver) se redesenhe no novo tamanho do card.
+  _chartInstances[`chart-${widgetId}`]?.resize();
+
+  try {
+    await apiFetch(`/api/dashboard-widgets/${widgetId}`, { method: 'PUT', body: JSON.stringify({ width: newWidth }) });
+  } catch (err) {
+    console.error('[widget resize]', err.message);
+  }
 }
 
 function _rebuildTabBar(pipelines) {
