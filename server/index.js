@@ -475,7 +475,12 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
   }
 })();
 
-async function executeWidgetQuery(pillar, config, subaccount_id) {
+// Monta o WHERE (e os params) de um widget a partir das condições
+// configuradas. Compartilhado entre a consulta agregada
+// (executeWidgetQuery) e a listagem de registros do drill-down
+// (fetchWidgetRecords) — assim a lista exibida ao clicar no widget é
+// exatamente o conjunto de registros que o número do widget mede.
+function buildWidgetFilters(pillar, config, subaccount_id) {
   const params = [subaccount_id];
   const wheres = [];
   function addParam(v) { params.push(v); return `$${params.length}`; }
@@ -514,8 +519,7 @@ async function executeWidgetQuery(pillar, config, subaccount_id) {
     }
   }
 
-  const { metric = 'count', conditions = [], group_by, sort = 'desc', limit = 50 } = config;
-  const safeLimit = Math.min(Math.max(1, parseInt(limit) || 50), 100);
+  const { conditions = [] } = config;
 
   if (pillar === 'contacts') {
     wheres.push(`subaccount_id = $1`);
@@ -537,28 +541,7 @@ async function executeWidgetQuery(pillar, config, subaccount_id) {
       }
       return clauses;
     }));
-    const where     = `WHERE ${wheres.join(' AND ')}`;
-    const metricSql = 'COUNT(*)';
-    const GB_MAP = {
-      source:     `COALESCE(NULLIF(source,''),'__none__')`,
-      date_day:   `TO_CHAR(created_at,'YYYY-MM-DD')`,
-      date_week:  `TO_CHAR(date_trunc('week',created_at),'YYYY-MM-DD')`,
-      date_month: `TO_CHAR(date_trunc('month',created_at),'YYYY-MM')`,
-    };
-    if (group_by && GB_MAP[group_by]) {
-      const { rows } = await pool.query(
-        `SELECT ${GB_MAP[group_by]} AS label, ${metricSql} AS value FROM contacts ${where}
-         GROUP BY 1 ORDER BY value ${sort === 'asc' ? 'ASC' : 'DESC'} LIMIT ${safeLimit}`,
-        params
-      );
-      return { type: 'series', rows: rows.map(r => ({ label: r.label, value: +r.value })) };
-    } else {
-      const { rows } = await pool.query(`SELECT ${metricSql} AS value FROM contacts ${where}`, params);
-      return { type: 'scalar', value: +rows[0]?.value || 0 };
-    }
-  }
-
-  if (pillar === 'funnels') {
+  } else if (pillar === 'funnels') {
     wheres.push(`o.subaccount_id = $1`);
     const UUID_RE     = /^[0-9a-f-]{36}$/i;
     const VALID_ST    = new Set(['open', 'won', 'lost']);
@@ -590,6 +573,61 @@ async function executeWidgetQuery(pillar, config, subaccount_id) {
       }
       return clauses;
     }));
+  } else if (pillar === 'conversations') {
+    wheres.push(`subaccount_id = $1`);
+    const VALID_ST  = new Set(['open', 'closed', 'resolved']);
+    const DATE_COLS = { created_at: 'created_at', updated_at: 'updated_at', last_message_at: 'last_message_at' };
+    pushGroups(groupConds(conditions).map(group => {
+      const clauses = [];
+      for (const c of group) {
+        if (c.field === 'status') {
+          if (c.operator === 'eq' && VALID_ST.has(c.value)) {
+            clauses.push(`status = ${addParam(c.value)}`);
+          } else if (c.operator === 'in' && Array.isArray(c.value)) {
+            const valid = c.value.filter(v => VALID_ST.has(v));
+            if (valid.length) clauses.push(`status IN (${valid.map(addParam).join(',')})`);
+          }
+        } else if (DATE_COLS[c.field]) {
+          const w = buildDateWhere(DATE_COLS[c.field], c.operator);
+          if (w) clauses.push(w);
+        }
+      }
+      return clauses;
+    }));
+  } else {
+    throw new Error(`Unknown pillar: ${pillar}`);
+  }
+
+  return { where: `WHERE ${wheres.join(' AND ')}`, params };
+}
+
+async function executeWidgetQuery(pillar, config, subaccount_id) {
+  const { where, params } = buildWidgetFilters(pillar, config, subaccount_id);
+  const { metric = 'count', group_by, sort = 'desc', limit = 50 } = config;
+  const safeLimit = Math.min(Math.max(1, parseInt(limit) || 50), 100);
+
+  if (pillar === 'contacts') {
+    const metricSql = 'COUNT(*)';
+    const GB_MAP = {
+      source:     `COALESCE(NULLIF(source,''),'__none__')`,
+      date_day:   `TO_CHAR(created_at,'YYYY-MM-DD')`,
+      date_week:  `TO_CHAR(date_trunc('week',created_at),'YYYY-MM-DD')`,
+      date_month: `TO_CHAR(date_trunc('month',created_at),'YYYY-MM')`,
+    };
+    if (group_by && GB_MAP[group_by]) {
+      const { rows } = await pool.query(
+        `SELECT ${GB_MAP[group_by]} AS label, ${metricSql} AS value FROM contacts ${where}
+         GROUP BY 1 ORDER BY value ${sort === 'asc' ? 'ASC' : 'DESC'} LIMIT ${safeLimit}`,
+        params
+      );
+      return { type: 'series', rows: rows.map(r => ({ label: r.label, value: +r.value })) };
+    } else {
+      const { rows } = await pool.query(`SELECT ${metricSql} AS value FROM contacts ${where}`, params);
+      return { type: 'scalar', value: +rows[0]?.value || 0 };
+    }
+  }
+
+  if (pillar === 'funnels') {
     const METRIC_SQL = {
       count:     'COUNT(o.id)',
       sum_value: 'COALESCE(SUM(o.value),0)',
@@ -597,7 +635,6 @@ async function executeWidgetQuery(pillar, config, subaccount_id) {
     };
     const metricSql = METRIC_SQL[metric] || 'COUNT(o.id)';
     const joins     = `LEFT JOIN pipeline_stages ps ON ps.id = o.stage_id LEFT JOIN pipelines p ON p.id = o.pipeline_id`;
-    const where     = `WHERE ${wheres.join(' AND ')}`;
     const GB_MAP = {
       pipeline:   `COALESCE(p.name,'—')`,
       stage:      `COALESCE(ps.name,'—')`,
@@ -621,27 +658,6 @@ async function executeWidgetQuery(pillar, config, subaccount_id) {
   }
 
   if (pillar === 'conversations') {
-    wheres.push(`subaccount_id = $1`);
-    const VALID_ST  = new Set(['open', 'closed', 'resolved']);
-    const DATE_COLS = { created_at: 'created_at', updated_at: 'updated_at', last_message_at: 'last_message_at' };
-    pushGroups(groupConds(conditions).map(group => {
-      const clauses = [];
-      for (const c of group) {
-        if (c.field === 'status') {
-          if (c.operator === 'eq' && VALID_ST.has(c.value)) {
-            clauses.push(`status = ${addParam(c.value)}`);
-          } else if (c.operator === 'in' && Array.isArray(c.value)) {
-            const valid = c.value.filter(v => VALID_ST.has(v));
-            if (valid.length) clauses.push(`status IN (${valid.map(addParam).join(',')})`);
-          }
-        } else if (DATE_COLS[c.field]) {
-          const w = buildDateWhere(DATE_COLS[c.field], c.operator);
-          if (w) clauses.push(w);
-        }
-      }
-      return clauses;
-    }));
-    const where = `WHERE ${wheres.join(' AND ')}`;
     const GB_MAP = {
       status:     'status',
       date_day:   `TO_CHAR(created_at,'YYYY-MM-DD')`,
@@ -658,6 +674,54 @@ async function executeWidgetQuery(pillar, config, subaccount_id) {
       const { rows } = await pool.query(`SELECT COUNT(*) AS value FROM conversations ${where}`, params);
       return { type: 'scalar', value: +rows[0]?.value || 0 };
     }
+  }
+
+  throw new Error(`Unknown pillar: ${pillar}`);
+}
+
+// Lista os registros que compõem o número do widget (drill-down ao clicar).
+// Usa exatamente o mesmo WHERE da consulta agregada, então a lista sempre
+// bate com o valor exibido.
+async function fetchWidgetRecords(pillar, config, subaccount_id, limit) {
+  const { where, params } = buildWidgetFilters(pillar, config, subaccount_id);
+  const safeLimit = Math.min(Math.max(1, parseInt(limit) || 200), 500);
+
+  if (pillar === 'contacts') {
+    const { rows } = await pool.query(
+      `SELECT id, name, email, phone, company, source, status, created_at
+       FROM contacts ${where} ORDER BY created_at DESC LIMIT ${safeLimit}`,
+      params
+    );
+    return rows;
+  }
+
+  if (pillar === 'funnels') {
+    const { rows } = await pool.query(
+      `SELECT o.id, o.title, o.value, o.currency, o.status, o.created_at,
+              c.name AS contact_name, p.name AS pipeline_name, ps.name AS stage_name
+       FROM opportunities o
+       LEFT JOIN pipeline_stages ps ON ps.id = o.stage_id
+       LEFT JOIN pipelines p        ON p.id  = o.pipeline_id
+       LEFT JOIN contacts c         ON c.id  = o.contact_id
+       ${where} ORDER BY o.created_at DESC LIMIT ${safeLimit}`,
+      params
+    );
+    return rows;
+  }
+
+  if (pillar === 'conversations') {
+    // O WHERE de conversas usa colunas sem prefixo de tabela; aplicá-lo numa
+    // subconsulta evita ambiguidade com as colunas de mesmo nome de contacts
+    // (subaccount_id, status, created_at) trazidas pelo JOIN.
+    const { rows } = await pool.query(
+      `SELECT cv.id, cv.status, cv.channel, cv.unread_count,
+              cv.last_message_at, cv.created_at, c.name AS contact_name
+       FROM (SELECT * FROM conversations ${where}) cv
+       LEFT JOIN contacts c ON c.id = cv.contact_id
+       ORDER BY COALESCE(cv.last_message_at, cv.created_at) DESC LIMIT ${safeLimit}`,
+      params
+    );
+    return rows;
   }
 
   throw new Error(`Unknown pillar: ${pillar}`);
@@ -848,6 +912,25 @@ app.post('/api/dashboard-widgets/:id/data', auth, async (req, res) => {
   } catch (err) {
     console.error('[widget/data]', err.message);
     res.status(500).json({ message: 'Erro ao executar query do widget.' });
+  }
+});
+
+// Drill-down: lista os registros por trás do número do widget.
+app.post('/api/dashboard-widgets/:id/records', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows: ws } = await pool.query(
+      `SELECT dw.pillar, dw.config, dw.title FROM dashboard_widgets dw
+       JOIN custom_dashboards cd ON cd.id = dw.dashboard_id
+       WHERE dw.id=$1 AND cd.subaccount_id=$2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!ws.length) return res.status(404).json({ message: 'Widget não encontrado.' });
+    const records = await fetchWidgetRecords(ws[0].pillar, ws[0].config, subaccount_id, req.body?.limit);
+    res.json({ pillar: ws[0].pillar, title: ws[0].title, records });
+  } catch (err) {
+    console.error('[widget/records]', err.message);
+    res.status(500).json({ message: 'Erro ao listar registros do widget.' });
   }
 });
 

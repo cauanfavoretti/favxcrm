@@ -24,6 +24,18 @@ function _metricLabel(metric, pillar) {
   const base = { contacts:'contatos', funnels:'oportunidades', conversations:'conversas' };
   return base[pillar] || 'total';
 }
+// Escapa dados vindos do banco antes de injetar via innerHTML — nomes de
+// contatos/oportunidades são texto livre e podem conter < > & ".
+function _esc(v) {
+  if (v === null || v === undefined) return '';
+  return String(v).replace(/[&<>"']/g, ch =>
+    ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
+}
+function _fmtDate(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  return isNaN(d) ? '—' : d.toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric' });
+}
 
 // ── Config global do Funil de Venda ─────────────────────────
 function _getSalesCfg() {
@@ -516,7 +528,7 @@ function _renderWidgetCard(widget, data, layout) {
         <button class="widget-delete-btn" data-widget-id="${id}" title="Excluir"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button>
       </div>` : ''}
     </div>
-    <div class="widget-card-body" id="widget-body-${id}">${body}</div>
+    <div class="widget-card-body" id="widget-body-${id}" title="Clique para ver os dados">${body}</div>
     ${canEdit ? `<div class="widget-resize-handle" data-widget-id="${id}" title="Arraste para redimensionar (largura e altura)"></div>` : ''}
   </div>`;
 }
@@ -666,6 +678,16 @@ function _bindWidgetGridEvents(dashId, pipelines) {
       _startWidgetDrag(e, header.closest('.widget-card').dataset.widgetId);
     });
   });
+
+  // Clicar no corpo do widget abre a lista dos registros medidos.
+  document.querySelectorAll('.widget-card-body').forEach(body => {
+    const card = body.closest('.widget-card');
+    if (!card?.dataset.widgetId) return;
+    body.addEventListener('click', () => {
+      const title = card.querySelector('.widget-card-title')?.textContent;
+      _openWidgetRecordsModal(card.dataset.widgetId, title);
+    });
+  });
 }
 
 // Garante que o canvas cresça verticalmente quando um widget é movido ou
@@ -724,6 +746,98 @@ async function _autoArrangeWidgets() {
     })));
   } catch (err) {
     console.error('[widget auto-arrange]', err.message);
+  }
+}
+
+// ── Drill-down: ver os registros por trás do número do widget ──
+// Colunas exibidas por pilar. O backend devolve os registros já filtrados
+// exatamente pelas mesmas condições que geram o valor do widget.
+const _RECORD_COLUMNS = {
+  contacts: [
+    { key:'name',       label:'Nome',    render: r => _esc(r.name) || '—' },
+    { key:'phone',      label:'Telefone',render: r => _esc(r.phone) || '—' },
+    { key:'email',      label:'E-mail',  render: r => _esc(r.email) || '—' },
+    { key:'source',     label:'Origem',  render: r => _esc(_srcLabel(r.source)) },
+    { key:'created_at', label:'Criado',  render: r => _fmtDate(r.created_at) },
+  ],
+  funnels: [
+    { key:'title',        label:'Oportunidade', render: r => _esc(r.title) || '—' },
+    { key:'contact_name', label:'Contato',      render: r => _esc(r.contact_name) || '—' },
+    { key:'pipeline_name',label:'Funil',        render: r => _esc(r.pipeline_name) || '—' },
+    { key:'stage_name',   label:'Etapa',        render: r => _esc(r.stage_name) || '—' },
+    { key:'status',       label:'Status',       render: r => _recordBadge(r.status, {
+        open:['badge-blue','Aberta'], won:['badge-green','Ganha'], lost:['badge-red','Perdida'] }) },
+    { key:'value',        label:'Valor',        render: r => _brl(+r.value), align:'right' },
+  ],
+  conversations: [
+    { key:'contact_name',    label:'Contato', render: r => _esc(r.contact_name) || '—' },
+    { key:'channel',         label:'Canal',   render: r => _esc(r.channel) || '—' },
+    { key:'status',          label:'Status',  render: r => _recordBadge(r.status, {
+        open:['badge-blue','Aberta'], closed:['badge-gray','Fechada'], resolved:['badge-green','Resolvida'] }) },
+    { key:'last_message_at', label:'Última msg', render: r => _fmtDate(r.last_message_at) },
+    { key:'created_at',      label:'Criada',  render: r => _fmtDate(r.created_at) },
+  ],
+};
+
+function _recordBadge(value, map) {
+  const [cls, label] = map[value] || ['badge-gray', value || '—'];
+  return `<span class="badge ${cls}">${_esc(label)}</span>`;
+}
+
+async function _openWidgetRecordsModal(widgetId, fallbackTitle) {
+  document.getElementById('wRecordsOverlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'wRecordsOverlay';
+  overlay.className = 'wrec-overlay';
+  overlay.innerHTML = `
+    <div class="wrec-dialog">
+      <div class="wrec-header">
+        <div>
+          <div class="wrec-title">${_esc(fallbackTitle || 'Dados do widget')}</div>
+          <div class="wrec-sub" id="wrecSub">Carregando registros...</div>
+        </div>
+        <button class="wrec-close" id="wrecClose" title="Fechar">
+          <i data-lucide="x" style="width:16px;height:16px"></i>
+        </button>
+      </div>
+      <div class="wrec-body" id="wrecBody">
+        <div class="dash-load-state"><div class="dash-load-spin"></div><span>Carregando...</span></div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  lucide.createIcons();
+
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  overlay.querySelector('#wrecClose').addEventListener('click', close);
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
+
+  try {
+    const res     = await apiFetch(`/api/dashboard-widgets/${widgetId}/records`, { method:'POST' });
+    const records = res.records || [];
+    const cols    = _RECORD_COLUMNS[res.pillar] || _RECORD_COLUMNS.contacts;
+    const noun    = { contacts:'contato', funnels:'oportunidade', conversations:'conversa' }[res.pillar] || 'registro';
+
+    overlay.querySelector('#wrecSub').textContent =
+      `${records.length} ${noun}${records.length !== 1 ? 's' : ''}`;
+
+    overlay.querySelector('#wrecBody').innerHTML = !records.length
+      ? `<div class="widget-empty" style="padding:32px 0">Nenhum registro encontrado</div>`
+      : `<table class="wrec-table">
+          <thead><tr>${cols.map(c =>
+            `<th${c.align === 'right' ? ' style="text-align:right"' : ''}>${c.label}</th>`).join('')}</tr></thead>
+          <tbody>${records.map(r =>
+            `<tr>${cols.map(c =>
+              `<td${c.align === 'right' ? ' style="text-align:right"' : ''}>${c.render(r)}</td>`).join('')}</tr>`).join('')}
+          </tbody>
+        </table>`;
+  } catch (err) {
+    overlay.querySelector('#wrecSub').textContent = '';
+    overlay.querySelector('#wrecBody').innerHTML =
+      `<div class="widget-error" style="padding:32px 0"><i data-lucide="alert-circle" style="width:14px;height:14px"></i> ${_esc(err.message || 'Erro ao carregar registros')}</div>`;
+    lucide.createIcons();
   }
 }
 

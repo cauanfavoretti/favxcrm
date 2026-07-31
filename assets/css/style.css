@@ -2685,7 +2685,92 @@ tbody tr:hover { background: var(--color-surface-2); }
   /* --widget-h é setada inline (px) quando o widget tem altura
      customizada pelo redimensionamento; sem ela, altura automática. */
   min-height: var(--widget-h, auto);
+  /* Clicável: abre a lista dos registros que o widget mede. */
+  cursor: pointer;
 }
+
+/* ── Drill-down: lista dos registros medidos pelo widget ── */
+.wrec-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.5);
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.wrec-dialog {
+  background: var(--color-surface);
+  border-radius: 14px;
+  width: 900px;
+  max-width: 100%;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 32px 64px rgba(0,0,0,.3);
+}
+.wrec-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.wrec-title { font-size: 15px; font-weight: 700; color: var(--color-text-1); }
+.wrec-sub   { font-size: 12px; color: var(--color-text-3); margin-top: 2px; }
+.wrec-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-3);
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-shrink: 0;
+  transition: color var(--transition), background var(--transition);
+}
+.wrec-close:hover { color: var(--color-text-1); background: var(--color-bg); }
+/* A tabela rola dentro do próprio container (nunca a página inteira). */
+.wrec-body {
+  overflow: auto;
+  padding: 0 4px 4px;
+  flex: 1;
+  min-height: 0;
+}
+.wrec-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.wrec-table th {
+  position: sticky;
+  top: 0;
+  background: var(--color-surface);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--color-text-3);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+.wrec-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-2);
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wrec-table tbody tr:hover td { background: var(--color-bg); }
+.wrec-table tbody tr:last-child td { border-bottom: none; }
 
 /* KPI */
 .widget-kpi {
