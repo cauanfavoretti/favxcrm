@@ -26,8 +26,8 @@ window.pageAgents = function (webhooks) {
   return `
   <div class="page-header" style="margin-bottom:20px">
     <div>
-      <h1 class="page-title">Agentes de IA</h1>
-      <p class="page-subtitle">Gerencie a inteligência artificial da sua subconta</p>
+      <h1 class="page-title">Modo desenvolvedor</h1>
+      <p class="page-subtitle">Webhooks, escritório virtual e configurações avançadas da sua subconta</p>
     </div>
   </div>
 
@@ -47,7 +47,7 @@ window.pageAgents = function (webhooks) {
   <!-- WEBHOOKS -->
   <div style="max-width:760px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-      <div style="font-size:16px;font-weight:700;color:var(--color-text-1)">Plano de IA ativo</div>
+      <div style="font-size:16px;font-weight:700;color:var(--color-text-1)">Webhooks ativos</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" id="btnActivateAll" style="gap:6px">
           <i data-lucide="play" style="width:13px;height:13px"></i> Ativar

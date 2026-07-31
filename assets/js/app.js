@@ -27,14 +27,14 @@ window.favxCan = function(action) {
 const ROLE_DISPLAY = { super_admin: 'Desenvolvedor', admin: 'Admin', user: 'Usuário' };
 
 // Pages that require admin / super_admin role
-const ADMIN_ONLY_PAGES = new Set(['subaccounts']);
+const ADMIN_ONLY_PAGES = new Set(['subaccounts', 'agents']);
 
 const PAGE_MAP = {
   'dashboard':    { load: window.loadDashboard,    render: window.pageDashboard,    init: window.initDashboard,    label: 'Dashboard' },
   'contacts':     { load: window.loadContacts,     render: window.pageContacts,     init: window.initContacts,     label: 'Contatos' },
   'conversations':{ load: window.loadConversations,render: window.pageConversations,init: window.initConversations,label: 'Conversas' },
   'funnels':      { load: window.loadFunnels,      render: window.pageFunnels,      init: window.initFunnels,      label: 'Funis' },
-  'agents':       { load: window.loadAgents,       render: window.pageAgents,       init: window.initAgents,       label: 'Agentes de IA' },
+  'agents':       { load: window.loadAgents,       render: window.pageAgents,       init: window.initAgents,       label: 'Modo desenvolvedor' },
   'ai-dashboard': { load: null,                    render: window.pageAiDashboard,  init: window.initAiDashboard,  label: 'Painel da IA' },
   'automations':  { load: window.loadAutomations,  render: window.pageAutomations,  init: window.initAutomations,  label: 'Automações' },
   'settings':     { load: null,                    render: window.pageSettings,     init: window.initSettings,     label: 'Configurações' },
