@@ -469,12 +469,13 @@ function _renderWidgetGrid(widgets, dataMap, dashId, pipelines) {
 }
 
 function _renderWidgetCard(widget, data) {
-  const { id, title, pillar, display, width } = widget;
+  const { id, title, pillar, display, width, height } = widget;
   const icon  = _PILLAR_ICON[pillar] || 'bar-chart-2';
   const wc    = _WIDTH_CLASS[width]  || 'widget-w-third';
   const body  = _renderWidgetContent(widget, data);
+  const style = height ? ` style="--widget-h:${height}px"` : '';
   return `
-  <div class="widget-card ${wc}" id="widget-${id}">
+  <div class="widget-card ${wc}" id="widget-${id}"${style}>
     <div class="widget-card-header">
       <div class="widget-card-meta">
         <i data-lucide="${icon}" style="width:12px;height:12px;color:var(--color-text-3)"></i>
@@ -486,7 +487,7 @@ function _renderWidgetCard(widget, data) {
       </div>` : ''}
     </div>
     <div class="widget-card-body" id="widget-body-${id}">${body}</div>
-    ${window.favxCan('edit_dashboard') ? `<div class="widget-resize-handle" data-widget-id="${id}" title="Arraste para redimensionar"></div>` : ''}
+    ${window.favxCan('edit_dashboard') ? `<div class="widget-resize-handle" data-widget-id="${id}" title="Arraste para redimensionar (largura e altura)"></div>` : ''}
   </div>`;
 }
 
@@ -627,11 +628,12 @@ function _bindWidgetGridEvents(dashId, pipelines) {
   });
 }
 
-// ── Redimensionar widget arrastando o mouse ─────────────────────
-// A largura persistida continua sendo o enum third/half/full (o mesmo
-// aceito pelo PUT /api/dashboard-widgets/:id) — durante o arrasto o card
-// segue o mouse livremente em px; ao soltar, "encaixa" no tamanho válido
-// mais próximo e salva.
+// ── Redimensionar widget arrastando o mouse (largura + altura) ──
+// Largura: persistida como o enum third/half/full já aceito pelo PUT
+// /api/dashboard-widgets/:id — durante o arrasto o card segue o mouse
+// livremente em px; ao soltar, "encaixa" no tamanho válido mais próximo.
+// Altura: livre em px, guardada na custom property --widget-h e
+// persistida na nova coluna "height".
 let _widgetResize = null;
 
 function _widgetSnapWidth(fraction) {
@@ -644,25 +646,35 @@ function _startWidgetResize(e, widgetId) {
   e.preventDefault();
   e.stopPropagation();
   const card = document.getElementById(`widget-${widgetId}`);
+  const body = document.getElementById(`widget-body-${widgetId}`);
   const grid = card?.closest('.widget-grid');
-  if (!card || !grid) return;
+  if (!card || !grid || !body) return;
   _widgetResize = {
     widgetId, card,
     startX: e.clientX,
+    startY: e.clientY,
     startWidth: card.getBoundingClientRect().width,
+    startHeight: body.getBoundingClientRect().height,
     gridWidth: grid.getBoundingClientRect().width,
   };
   card.classList.add('widget-resizing');
+  // Listeners no document (não no handle) — o mouse quase sempre sai do
+  // elemento original durante o arrasto; sem isso o resize "trava" assim
+  // que o cursor passa por cima de outro widget ou sai da alça.
   document.addEventListener('mousemove', _onWidgetResizeMove);
   document.addEventListener('mouseup', _onWidgetResizeEnd);
 }
 
 function _onWidgetResizeMove(e) {
   if (!_widgetResize) return;
-  const { card, startX, startWidth, gridWidth } = _widgetResize;
+  e.preventDefault();
+  const { card, startX, startY, startWidth, startHeight, gridWidth } = _widgetResize;
   const deltaX = e.clientX - startX;
-  const newPx  = Math.max(200, Math.min(gridWidth, startWidth + deltaX));
-  card.style.flex = `0 0 ${newPx}px`;
+  const deltaY = e.clientY - startY;
+  const newPxW = Math.max(200, Math.min(gridWidth, startWidth + deltaX));
+  const newPxH = Math.max(90, Math.min(800, startHeight + deltaY));
+  card.style.flex = `0 0 ${newPxW}px`;
+  card.style.setProperty('--widget-h', `${newPxH}px`);
 }
 
 async function _onWidgetResizeEnd() {
@@ -673,17 +685,22 @@ async function _onWidgetResizeEnd() {
   _widgetResize = null;
   card.classList.remove('widget-resizing');
 
-  const fraction = card.getBoundingClientRect().width / gridWidth;
-  const newWidth = _widgetSnapWidth(fraction);
+  const fraction  = card.getBoundingClientRect().width / gridWidth;
+  const newWidth  = _widgetSnapWidth(fraction);
+  const newHeight = Math.round(parseFloat(card.style.getPropertyValue('--widget-h'))) || null;
 
   card.style.flex = '';
   card.classList.remove('widget-w-third', 'widget-w-half', 'widget-w-full');
   card.classList.add(_WIDTH_CLASS[newWidth]);
+  if (newHeight) card.style.setProperty('--widget-h', `${newHeight}px`);
   // Garante que o gráfico (se houver) se redesenhe no novo tamanho do card.
   _chartInstances[`chart-${widgetId}`]?.resize();
 
   try {
-    await apiFetch(`/api/dashboard-widgets/${widgetId}`, { method: 'PUT', body: JSON.stringify({ width: newWidth }) });
+    await apiFetch(`/api/dashboard-widgets/${widgetId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ width: newWidth, height: newHeight }),
+    });
   } catch (err) {
     console.error('[widget resize]', err.message);
   }

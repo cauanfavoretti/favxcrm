@@ -344,9 +344,14 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
         config       JSONB NOT NULL DEFAULT '{}',
         position     INTEGER DEFAULT 0,
         width        VARCHAR(20) DEFAULT 'third',
+        height       INTEGER,
         created_at   TIMESTAMPTZ DEFAULT NOW(),
         updated_at   TIMESTAMPTZ DEFAULT NOW()
       )`);
+    // Altura customizada (px) do widget — nula = altura automática/padrão.
+    // Adicionada depois da criação inicial da tabela; ALTER idempotente
+    // garante que bancos já existentes ganhem a coluna.
+    await pool.query(`ALTER TABLE dashboard_widgets ADD COLUMN IF NOT EXISTS height INTEGER`);
   } catch (err) {
     console.error('[init] custom_dashboard tables:', err.message);
   }
@@ -725,7 +730,7 @@ app.get('/api/custom-dashboards/:dashId/widgets', auth, async (req, res) => {
     );
     if (!dash.length) return res.status(404).json({ message: 'Dashboard não encontrado.' });
     const { rows } = await pool.query(
-      `SELECT id, title, pillar, display, config, position, width
+      `SELECT id, title, pillar, display, config, position, width, height
        FROM dashboard_widgets WHERE dashboard_id=$1 ORDER BY position ASC, created_at ASC`,
       [req.params.dashId]
     );
@@ -767,7 +772,7 @@ app.post('/api/custom-dashboards/:dashId/widgets', auth, requireAdmin, async (re
 
 app.put('/api/dashboard-widgets/:id', auth, requireAdmin, async (req, res) => {
   const { subaccount_id } = req.user;
-  const { title, display, config, width } = req.body;
+  const { title, display, config, width, height } = req.body;
   const VALID_DISPLAYS = ['kpi', 'bar', 'pie', 'line', 'table'];
   if (display && !VALID_DISPLAYS.includes(display))
     return res.status(400).json({ message: 'Display inválido.' });
@@ -778,12 +783,13 @@ app.put('/api/dashboard-widgets/:id', auth, requireAdmin, async (req, res) => {
          display    = COALESCE($2, display),
          config     = COALESCE($3, config),
          width      = COALESCE($4, width),
+         height     = COALESCE($5, height),
          updated_at = NOW()
-       WHERE id=$5
-         AND dashboard_id IN (SELECT id FROM custom_dashboards WHERE subaccount_id=$6)
+       WHERE id=$6
+         AND dashboard_id IN (SELECT id FROM custom_dashboards WHERE subaccount_id=$7)
        RETURNING *`,
       [title||null, display||null, config ? JSON.stringify(config) : null, width||null,
-       req.params.id, subaccount_id]
+       height || null, req.params.id, subaccount_id]
     );
     if (!rows.length) return res.status(404).json({ message: 'Widget não encontrado.' });
     res.json(rows[0]);

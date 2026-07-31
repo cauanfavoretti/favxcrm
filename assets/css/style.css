@@ -2582,35 +2582,45 @@ tbody tr:hover { background: var(--color-surface-2); }
 .widget-w-half  { flex: 1 1 calc(50% - 8px);      min-width: 240px; }
 .widget-w-full  { flex: 1 1 100%; }
 
-/* Alça de redimensionamento — arraste a borda direita do widget para
-   ajustar a largura (encaixa em 1/3, 1/2 ou inteiro ao soltar). */
+/* Alça de redimensionamento — no canto inferior direito, arraste na
+   diagonal para ajustar largura (encaixa em 1/3, 1/2 ou inteiro ao
+   soltar) e altura (livre, em px) ao mesmo tempo. */
 .widget-resize-handle {
   position: absolute;
-  top: 0;
   right: 0;
   bottom: 0;
-  width: 8px;
-  cursor: ew-resize;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
   z-index: 4;
+  user-select: none;
 }
 .widget-resize-handle::after {
   content: '';
   position: absolute;
-  top: 50%;
-  right: 2px;
-  width: 3px;
-  height: 28px;
-  border-radius: 3px;
-  background: var(--color-border-2);
-  transform: translateY(-50%);
+  right: 4px;
+  bottom: 4px;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid var(--color-border-2);
+  border-bottom: 2px solid var(--color-border-2);
+  border-radius: 0 0 2px 0;
   opacity: 0;
-  transition: opacity var(--transition), background var(--transition);
+  transition: opacity var(--transition), border-color var(--transition);
 }
 .widget-card:hover .widget-resize-handle::after { opacity: 1; }
 .widget-resize-handle:hover::after,
 .widget-card.widget-resizing .widget-resize-handle::after {
-  background: var(--color-accent);
+  border-color: var(--color-accent);
   opacity: 1;
+}
+/* Enquanto arrasta, impede seleção de texto/conteúdo do card inteiro —
+   sem isso, um drag real (diferente de eventos sintéticos de teste) pode
+   iniciar seleção nativa do navegador e fazer o redimensionamento "não
+   colar". */
+.widget-card.widget-resizing,
+.widget-card.widget-resizing * {
+  user-select: none;
 }
 
 .widget-card-header {
@@ -2658,6 +2668,10 @@ tbody tr:hover { background: var(--color-surface-2); }
 
 .widget-card-body {
   padding: 16px 14px;
+  box-sizing: border-box;
+  /* --widget-h é setada inline (px) quando o widget tem altura
+     customizada pelo redimensionamento; sem ela, altura automática. */
+  min-height: var(--widget-h, auto);
 }
 
 /* KPI */
@@ -2684,7 +2698,7 @@ tbody tr:hover { background: var(--color-surface-2); }
 /* Chart */
 .widget-chart-wrap {
   position: relative;
-  height: 200px;
+  height: calc(var(--widget-h, 232px) - 32px);
 }
 
 /* Table */
