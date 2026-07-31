@@ -414,7 +414,27 @@ function _renderDashTabs(dashboards) {
 // ════════════════════════════════════════════════════════════
 const _PILLAR_ICON  = { contacts:'users', funnels:'filter', conversations:'message-circle' };
 const _PILLAR_LABEL = { contacts:'Contatos', funnels:'Funis', conversations:'Conversas' };
-const _WIDTH_CLASS  = { third:'widget-w-third', half:'widget-w-half', full:'widget-w-full' };
+
+// ── Layout livre (canvas) ──
+// Widgets sem pos_x/pos_y (nunca arrastados) recebem uma posição em
+// cascata só para exibição — nada é persistido até o usuário realmente
+// mover ou redimensionar o widget.
+const _WIDGET_DEFAULT_W = 340;
+const _WIDGET_DEFAULT_H = 220;
+const _WIDGET_GAP       = 16;
+
+function _widgetLayout(widget, index) {
+  const w = widget.width_px || _WIDGET_DEFAULT_W;
+  const h = widget.height   || _WIDGET_DEFAULT_H;
+  let x = widget.pos_x, y = widget.pos_y;
+  if (x == null || y == null) {
+    const col = index % 3;
+    const row = Math.floor(index / 3);
+    x = col * (_WIDGET_DEFAULT_W + _WIDGET_GAP);
+    y = row * (_WIDGET_DEFAULT_H + _WIDGET_GAP);
+  }
+  return { x, y, w, h };
+}
 
 async function _loadAndRenderCustomDash(dashId, pipelines) {
   const content = document.getElementById('dashMainContent');
@@ -440,13 +460,19 @@ async function _loadAndRenderCustomDash(dashId, pipelines) {
 
 function _renderWidgetGrid(widgets, dataMap, dashId, pipelines) {
   const dash = (_dashData?.dashboards||[]).find(d => d.id===dashId);
-  const grid = !widgets.length
-    ? `<div class="dash-empty-widgets">
+  let grid;
+  if (!widgets.length) {
+    grid = `<div class="dash-empty-widgets">
         <div class="dash-empty-icon"><i data-lucide="layout-dashboard" style="width:28px;height:28px"></i></div>
         <div class="dash-empty-title">Dashboard vazio</div>
         <div class="dash-empty-text">Adicione widgets para visualizar dados de contatos, funis e conversas.</div>
-       </div>`
-    : `<div class="widget-grid">${widgets.map(w => _renderWidgetCard(w, dataMap[w.id])).join('')}</div>`;
+       </div>`;
+  } else {
+    const layouts  = widgets.map((w,i) => _widgetLayout(w, i));
+    const canvasH  = Math.max(520, ...layouts.map(l => l.y + l.h + 80));
+    const cards    = widgets.map((w,i) => _renderWidgetCard(w, dataMap[w.id], layouts[i])).join('');
+    grid = `<div class="widget-canvas" id="widgetCanvas" style="min-height:${canvasH}px">${cards}</div>`;
+  }
   return `
   <div class="dash-custom-toolbar">
     <div>
@@ -468,26 +494,27 @@ function _renderWidgetGrid(widgets, dataMap, dashId, pipelines) {
   ${grid}`;
 }
 
-function _renderWidgetCard(widget, data) {
-  const { id, title, pillar, display, width, height } = widget;
-  const icon  = _PILLAR_ICON[pillar] || 'bar-chart-2';
-  const wc    = _WIDTH_CLASS[width]  || 'widget-w-third';
-  const body  = _renderWidgetContent(widget, data);
-  const style = height ? ` style="--widget-h:${height}px"` : '';
+function _renderWidgetCard(widget, data, layout) {
+  const { id, title, pillar } = widget;
+  const icon   = _PILLAR_ICON[pillar] || 'bar-chart-2';
+  const body   = _renderWidgetContent(widget, data);
+  const lay    = layout || _widgetLayout(widget, 0);
+  const canEdit = window.favxCan('edit_dashboard');
+  const style  = `left:${lay.x}px;top:${lay.y}px;width:${lay.w}px;--widget-h:${lay.h}px`;
   return `
-  <div class="widget-card ${wc}" id="widget-${id}"${style}>
-    <div class="widget-card-header">
+  <div class="widget-card" id="widget-${id}" data-widget-id="${id}" style="${style}">
+    <div class="widget-card-header"${canEdit ? ' title="Arraste para mover"' : ''}>
       <div class="widget-card-meta">
         <i data-lucide="${icon}" style="width:12px;height:12px;color:var(--color-text-3)"></i>
         <span class="widget-card-title">${title || _PILLAR_LABEL[pillar] || 'Widget'}</span>
       </div>
-      ${window.favxCan('edit_dashboard') ? `<div class="widget-actions">
+      ${canEdit ? `<div class="widget-actions">
         <button class="widget-edit-btn"   data-widget-id="${id}" title="Editar"><i data-lucide="pencil"  style="width:12px;height:12px"></i></button>
         <button class="widget-delete-btn" data-widget-id="${id}" title="Excluir"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button>
       </div>` : ''}
     </div>
     <div class="widget-card-body" id="widget-body-${id}">${body}</div>
-    ${window.favxCan('edit_dashboard') ? `<div class="widget-resize-handle" data-widget-id="${id}" title="Arraste para redimensionar (largura e altura)"></div>` : ''}
+    ${canEdit ? `<div class="widget-resize-handle" data-widget-id="${id}" title="Arraste para redimensionar (largura e altura)"></div>` : ''}
   </div>`;
 }
 
@@ -626,36 +653,100 @@ function _bindWidgetGridEvents(dashId, pipelines) {
   document.querySelectorAll('.widget-resize-handle').forEach(handle => {
     handle.addEventListener('mousedown', e => _startWidgetResize(e, handle.dataset.widgetId));
   });
+
+  document.querySelectorAll('.widget-card-header').forEach(header => {
+    if (!header.closest('.widget-card')?.dataset.widgetId) return;
+    header.addEventListener('mousedown', e => {
+      if (e.target.closest('.widget-actions')) return; // não iniciar drag ao clicar em editar/excluir
+      _startWidgetDrag(e, header.closest('.widget-card').dataset.widgetId);
+    });
+  });
 }
 
-// ── Redimensionar widget arrastando o mouse (largura + altura) ──
-// Largura: persistida como o enum third/half/full já aceito pelo PUT
-// /api/dashboard-widgets/:id — durante o arrasto o card segue o mouse
-// livremente em px; ao soltar, "encaixa" no tamanho válido mais próximo.
-// Altura: livre em px, guardada na custom property --widget-h e
-// persistida na nova coluna "height".
+// Garante que o canvas cresça verticalmente quando um widget é movido ou
+// redimensionado para perto/além da borda inferior atual — é isso que
+// permite "espaços vazios" abaixo dos widgets em vez de cortar o canvas.
+function _growCanvasIfNeeded(canvas, card) {
+  const bottom  = card.offsetTop + card.getBoundingClientRect().height + 80;
+  const current = parseFloat(canvas.style.minHeight) || canvas.getBoundingClientRect().height;
+  if (bottom > current) canvas.style.minHeight = `${bottom}px`;
+}
+
+// ── Mover widget arrastando pelo cabeçalho — posição livre no canvas ──
+let _widgetDrag = null;
+
+function _startWidgetDrag(e, widgetId) {
+  e.preventDefault();
+  const card   = document.getElementById(`widget-${widgetId}`);
+  const canvas = card?.closest('.widget-canvas');
+  if (!card || !canvas) return;
+  _widgetDrag = {
+    widgetId, card, canvas,
+    startX: e.clientX,
+    startY: e.clientY,
+    startLeft: card.offsetLeft,
+    startTop: card.offsetTop,
+    canvasWidth: canvas.getBoundingClientRect().width,
+  };
+  card.classList.add('widget-dragging');
+  document.addEventListener('mousemove', _onWidgetDragMove);
+  document.addEventListener('mouseup', _onWidgetDragEnd);
+}
+
+function _onWidgetDragMove(e) {
+  if (!_widgetDrag) return;
+  e.preventDefault();
+  const { card, startX, startY, startLeft, startTop, canvasWidth } = _widgetDrag;
+  const cardW   = card.getBoundingClientRect().width;
+  const deltaX  = e.clientX - startX;
+  const deltaY  = e.clientY - startY;
+  const newLeft = Math.max(0, Math.min(canvasWidth - cardW, startLeft + deltaX));
+  const newTop  = Math.max(0, startTop + deltaY);
+  card.style.left = `${newLeft}px`;
+  card.style.top  = `${newTop}px`;
+}
+
+async function _onWidgetDragEnd() {
+  document.removeEventListener('mousemove', _onWidgetDragMove);
+  document.removeEventListener('mouseup', _onWidgetDragEnd);
+  if (!_widgetDrag) return;
+  const { widgetId, card, canvas } = _widgetDrag;
+  _widgetDrag = null;
+  card.classList.remove('widget-dragging');
+
+  const newX = Math.round(parseFloat(card.style.left));
+  const newY = Math.round(parseFloat(card.style.top));
+  _growCanvasIfNeeded(canvas, card);
+
+  try {
+    await apiFetch(`/api/dashboard-widgets/${widgetId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ pos_x: newX, pos_y: newY }),
+    });
+  } catch (err) {
+    console.error('[widget move]', err.message);
+  }
+}
+
+// ── Redimensionar widget arrastando o mouse (largura + altura, livre em
+// px) — sem alça no cabeçalho, então não conflita com o drag de mover.
+// Guardado em width_px/height e persistido via PUT.
 let _widgetResize = null;
-
-function _widgetSnapWidth(fraction) {
-  if (fraction < 0.42) return 'third';
-  if (fraction < 0.75) return 'half';
-  return 'full';
-}
 
 function _startWidgetResize(e, widgetId) {
   e.preventDefault();
   e.stopPropagation();
-  const card = document.getElementById(`widget-${widgetId}`);
-  const body = document.getElementById(`widget-body-${widgetId}`);
-  const grid = card?.closest('.widget-grid');
-  if (!card || !grid || !body) return;
+  const card   = document.getElementById(`widget-${widgetId}`);
+  const body   = document.getElementById(`widget-body-${widgetId}`);
+  const canvas = card?.closest('.widget-canvas');
+  if (!card || !canvas || !body) return;
   _widgetResize = {
-    widgetId, card,
+    widgetId, card, canvas,
     startX: e.clientX,
     startY: e.clientY,
     startWidth: card.getBoundingClientRect().width,
     startHeight: body.getBoundingClientRect().height,
-    gridWidth: grid.getBoundingClientRect().width,
+    maxWidth: canvas.getBoundingClientRect().width - card.offsetLeft,
   };
   card.classList.add('widget-resizing');
   // Listeners no document (não no handle) — o mouse quase sempre sai do
@@ -668,12 +759,12 @@ function _startWidgetResize(e, widgetId) {
 function _onWidgetResizeMove(e) {
   if (!_widgetResize) return;
   e.preventDefault();
-  const { card, startX, startY, startWidth, startHeight, gridWidth } = _widgetResize;
+  const { card, startX, startY, startWidth, startHeight, maxWidth } = _widgetResize;
   const deltaX = e.clientX - startX;
   const deltaY = e.clientY - startY;
-  const newPxW = Math.max(200, Math.min(gridWidth, startWidth + deltaX));
+  const newPxW = Math.max(220, Math.min(maxWidth, startWidth + deltaX));
   const newPxH = Math.max(90, Math.min(800, startHeight + deltaY));
-  card.style.flex = `0 0 ${newPxW}px`;
+  card.style.width = `${newPxW}px`;
   card.style.setProperty('--widget-h', `${newPxH}px`);
 }
 
@@ -681,25 +772,21 @@ async function _onWidgetResizeEnd() {
   document.removeEventListener('mousemove', _onWidgetResizeMove);
   document.removeEventListener('mouseup', _onWidgetResizeEnd);
   if (!_widgetResize) return;
-  const { widgetId, card, gridWidth } = _widgetResize;
+  const { widgetId, card, canvas } = _widgetResize;
   _widgetResize = null;
   card.classList.remove('widget-resizing');
+  _growCanvasIfNeeded(canvas, card);
 
-  const fraction  = card.getBoundingClientRect().width / gridWidth;
-  const newWidth  = _widgetSnapWidth(fraction);
-  const newHeight = Math.round(parseFloat(card.style.getPropertyValue('--widget-h'))) || null;
+  const newWidth  = Math.round(card.getBoundingClientRect().width);
+  const newHeight = Math.round(parseFloat(card.style.getPropertyValue('--widget-h')));
 
-  card.style.flex = '';
-  card.classList.remove('widget-w-third', 'widget-w-half', 'widget-w-full');
-  card.classList.add(_WIDTH_CLASS[newWidth]);
-  if (newHeight) card.style.setProperty('--widget-h', `${newHeight}px`);
   // Garante que o gráfico (se houver) se redesenhe no novo tamanho do card.
   _chartInstances[`chart-${widgetId}`]?.resize();
 
   try {
     await apiFetch(`/api/dashboard-widgets/${widgetId}`, {
       method: 'PUT',
-      body: JSON.stringify({ width: newWidth, height: newHeight }),
+      body: JSON.stringify({ width_px: newWidth, height: newHeight }),
     });
   } catch (err) {
     console.error('[widget resize]', err.message);
@@ -1036,20 +1123,13 @@ function _wFillForm(overlay, dashId, existingWidget) {
 
       ${pillarSection}
 
-      <div style="display:flex;gap:16px;flex-wrap:wrap">
-        <div class="wbuild-section" style="flex:1;min-width:180px">
-          <div class="wbuild-section-title">Exibição</div>
-          <div class="wbuild-btn-group" id="wbDisplayGroup">
-            ${wBtn('KPI','display','kpi')}${wBtn('Barra','display','bar')}
-            ${wBtn('Pizza','display','pie')}${wBtn('Linha','display','line')}${wBtn('Tabela','display','table')}
-          </div>
+      <div class="wbuild-section">
+        <div class="wbuild-section-title">Exibição</div>
+        <div class="wbuild-btn-group" id="wbDisplayGroup">
+          ${wBtn('KPI','display','kpi')}${wBtn('Barra','display','bar')}
+          ${wBtn('Pizza','display','pie')}${wBtn('Linha','display','line')}${wBtn('Tabela','display','table')}
         </div>
-        <div class="wbuild-section" style="flex:1;min-width:140px">
-          <div class="wbuild-section-title">Largura</div>
-          <div class="wbuild-btn-group">
-            ${wBtn('1/3','width','third')}${wBtn('1/2','width','half')}${wBtn('Inteiro','width','full')}
-          </div>
-        </div>
+        <div style="font-size:11px;color:var(--color-text-3);margin-top:6px">Tamanho e posição são ajustados arrastando o widget no dashboard.</div>
       </div>
 
       <div class="wbuild-section">
@@ -1154,7 +1234,6 @@ function _wFillForm(overlay, dashId, existingWidget) {
       title:   title || null,
       pillar:  _wState.pillar,
       display: _wState.display,
-      width:   _wState.width,
       config: {
         metric:     _wState.metric,
         conditions: _wState.conditions.filter(c => c.field),
@@ -1191,14 +1270,13 @@ function _openWidgetBuilder(dashId, pipelines, existingWidget = null) {
     title:      existingWidget.title || '',
     pillar:     existingWidget.pillar || 'funnels',
     display:    existingWidget.display || 'kpi',
-    width:      existingWidget.width || 'third',
     metric:     existingWidget.config?.metric || 'count',
     conditions: (existingWidget.config?.conditions||[]).map(c=>({...c})),
     group_by:   existingWidget.config?.group_by || '',
     sort:       existingWidget.config?.sort || 'desc',
     editId:     existingWidget.id,
     pipelines,
-  } : { title:'', pillar:'funnels', display:'kpi', width:'third',
+  } : { title:'', pillar:'funnels', display:'kpi',
         metric:'count', conditions:[], group_by:'', sort:'desc', editId:null, pipelines };
 
   const overlay = document.createElement('div');

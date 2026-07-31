@@ -2558,17 +2558,21 @@ tbody tr:hover { background: var(--color-surface-2); }
 }
 
 /* ======================================
-   WIDGET GRID
+   WIDGET CANVAS — posicionamento livre
    ====================================== */
-.widget-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  align-items: start;
+/* Canvas de posição livre: cada widget é absolutamente posicionado dentro
+   dele (left/top/width em px, vindos de pos_x/pos_y/width_px), permitindo
+   arrastar para qualquer lugar e deixar espaços vazios entre widgets. A
+   altura mínima é recalculada em JS (_growCanvasIfNeeded) conforme os
+   widgets são movidos/redimensionados perto da borda inferior. */
+.widget-canvas {
+  position: relative;
+  width: 100%;
+  overflow-x: auto;
 }
 
 .widget-card {
-  position: relative;
+  position: absolute;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -2577,14 +2581,16 @@ tbody tr:hover { background: var(--color-surface-2); }
 }
 .widget-card:hover { box-shadow: var(--shadow-sm); }
 .widget-card.widget-resizing { transition: none; box-shadow: 0 0 0 2px var(--color-accent), var(--shadow-md); }
-
-.widget-w-third { flex: 1 1 calc(33.333% - 12px); min-width: 200px; }
-.widget-w-half  { flex: 1 1 calc(50% - 8px);      min-width: 240px; }
-.widget-w-full  { flex: 1 1 100%; }
+.widget-card.widget-dragging {
+  transition: none;
+  z-index: 50;
+  box-shadow: 0 0 0 2px var(--color-accent), var(--shadow-lg);
+  opacity: 0.95;
+}
 
 /* Alça de redimensionamento — no canto inferior direito, arraste na
-   diagonal para ajustar largura (encaixa em 1/3, 1/2 ou inteiro ao
-   soltar) e altura (livre, em px) ao mesmo tempo. */
+   diagonal para ajustar largura e altura (ambas livres, em px) ao
+   mesmo tempo. */
 .widget-resize-handle {
   position: absolute;
   right: 0;
@@ -2614,12 +2620,12 @@ tbody tr:hover { background: var(--color-surface-2); }
   border-color: var(--color-accent);
   opacity: 1;
 }
-/* Enquanto arrasta, impede seleção de texto/conteúdo do card inteiro —
-   sem isso, um drag real (diferente de eventos sintéticos de teste) pode
-   iniciar seleção nativa do navegador e fazer o redimensionamento "não
-   colar". */
-.widget-card.widget-resizing,
-.widget-card.widget-resizing * {
+/* Enquanto arrasta (mover ou redimensionar), impede seleção de
+   texto/conteúdo do card inteiro — sem isso, um drag real (diferente de
+   eventos sintéticos de teste) pode iniciar seleção nativa do navegador
+   e fazer o gesto "não colar". */
+.widget-card.widget-resizing, .widget-card.widget-resizing *,
+.widget-card.widget-dragging, .widget-card.widget-dragging * {
   user-select: none;
 }
 
@@ -2630,6 +2636,7 @@ tbody tr:hover { background: var(--color-surface-2); }
   padding: 11px 14px 9px;
   border-bottom: 1px solid var(--color-border);
   gap: 8px;
+  cursor: move;
 }
 .widget-card-meta {
   display: flex;
@@ -2991,8 +2998,6 @@ tbody tr:hover { background: var(--color-surface-2); }
 }
 
 @media (max-width: 600px) {
-  .widget-w-third,
-  .widget-w-half { flex: 1 1 100%; }
   .dash-tabs { gap: 0; }
   .dash-tab  { padding: 6px 12px; font-size: 12px; }
 }

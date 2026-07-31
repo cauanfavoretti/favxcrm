@@ -345,6 +345,9 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
         position     INTEGER DEFAULT 0,
         width        VARCHAR(20) DEFAULT 'third',
         height       INTEGER,
+        pos_x        INTEGER,
+        pos_y        INTEGER,
+        width_px     INTEGER,
         created_at   TIMESTAMPTZ DEFAULT NOW(),
         updated_at   TIMESTAMPTZ DEFAULT NOW()
       )`);
@@ -352,6 +355,13 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
     // Adicionada depois da criação inicial da tabela; ALTER idempotente
     // garante que bancos já existentes ganhem a coluna.
     await pool.query(`ALTER TABLE dashboard_widgets ADD COLUMN IF NOT EXISTS height INTEGER`);
+    // Posição livre (canvas absoluto) e largura em px — substituem o grid
+    // fixo de terço/metade/inteiro, permitindo arrastar o widget para
+    // qualquer lugar (inclusive deixando espaços vazios). Nulas = o
+    // frontend calcula uma posição/tamanho padrão em cascata.
+    await pool.query(`ALTER TABLE dashboard_widgets ADD COLUMN IF NOT EXISTS pos_x INTEGER`);
+    await pool.query(`ALTER TABLE dashboard_widgets ADD COLUMN IF NOT EXISTS pos_y INTEGER`);
+    await pool.query(`ALTER TABLE dashboard_widgets ADD COLUMN IF NOT EXISTS width_px INTEGER`);
   } catch (err) {
     console.error('[init] custom_dashboard tables:', err.message);
   }
@@ -730,7 +740,7 @@ app.get('/api/custom-dashboards/:dashId/widgets', auth, async (req, res) => {
     );
     if (!dash.length) return res.status(404).json({ message: 'Dashboard não encontrado.' });
     const { rows } = await pool.query(
-      `SELECT id, title, pillar, display, config, position, width, height
+      `SELECT id, title, pillar, display, config, position, width, height, pos_x, pos_y, width_px
        FROM dashboard_widgets WHERE dashboard_id=$1 ORDER BY position ASC, created_at ASC`,
       [req.params.dashId]
     );
@@ -772,10 +782,14 @@ app.post('/api/custom-dashboards/:dashId/widgets', auth, requireAdmin, async (re
 
 app.put('/api/dashboard-widgets/:id', auth, requireAdmin, async (req, res) => {
   const { subaccount_id } = req.user;
-  const { title, display, config, width, height } = req.body;
+  const { title, display, config, width, height, pos_x, pos_y, width_px } = req.body;
   const VALID_DISPLAYS = ['kpi', 'bar', 'pie', 'line', 'table'];
   if (display && !VALID_DISPLAYS.includes(display))
     return res.status(400).json({ message: 'Display inválido.' });
+  // pos_x/pos_y/width_px/height são coordenadas em px — 0 é um valor válido
+  // (canto superior esquerdo do canvas), então não podem usar `|| null`
+  // (0 é falsy em JS e viraria null, descartando a posição).
+  const numOrNull = v => (v === undefined || v === null || Number.isNaN(+v)) ? null : +v;
   try {
     const { rows } = await pool.query(
       `UPDATE dashboard_widgets SET
@@ -784,12 +798,16 @@ app.put('/api/dashboard-widgets/:id', auth, requireAdmin, async (req, res) => {
          config     = COALESCE($3, config),
          width      = COALESCE($4, width),
          height     = COALESCE($5, height),
+         pos_x      = COALESCE($6, pos_x),
+         pos_y      = COALESCE($7, pos_y),
+         width_px   = COALESCE($8, width_px),
          updated_at = NOW()
-       WHERE id=$6
-         AND dashboard_id IN (SELECT id FROM custom_dashboards WHERE subaccount_id=$7)
+       WHERE id=$9
+         AND dashboard_id IN (SELECT id FROM custom_dashboards WHERE subaccount_id=$10)
        RETURNING *`,
       [title||null, display||null, config ? JSON.stringify(config) : null, width||null,
-       height || null, req.params.id, subaccount_id]
+       numOrNull(height), numOrNull(pos_x), numOrNull(pos_y), numOrNull(width_px),
+       req.params.id, subaccount_id]
     );
     if (!rows.length) return res.status(404).json({ message: 'Widget não encontrado.' });
     res.json(rows[0]);
