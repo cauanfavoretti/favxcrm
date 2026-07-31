@@ -684,14 +684,16 @@ function _renderConvTasksTab(box) {
 
 const _shieldSvg = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;
 const _sparkSvg  = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>`;
+const _zapSvg    = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>`;
 
 function renderMessageHtml(m, contactName) {
-  const isInternal = !!m.is_internal;
-  const isBot      = m.sender_type === 'bot' && !isInternal;
-  const isInbound  = m.direction === 'inbound';
-  const isAudio    = m.message_type === 'audio';
-  const isImage    = m.message_type === 'image' || m.message_type === 'imagem';
-  const bubbleClass = isInternal ? ' internal' : isBot ? ' ai' : '';
+  const isInternal   = !!m.is_internal;
+  const isBot        = m.sender_type === 'bot' && !isInternal;
+  const isAutomation = m.sender_type === 'automation' && !isInternal;
+  const isInbound    = m.direction === 'inbound';
+  const isAudio      = m.message_type === 'audio';
+  const isImage      = m.message_type === 'image' || m.message_type === 'imagem';
+  const bubbleClass = isInternal ? ' internal' : (isBot || isAutomation) ? ' ai' : '';
 
   let bubbleContent, bubbleStyle;
   if (isAudio) {
@@ -715,6 +717,7 @@ function renderMessageHtml(m, contactName) {
       <div class="msg-content">
         ${isInternal ? `<div class="internal-note-label">${_shieldSvg} Nota interna${m.sender_name ? ` · ${m.sender_name}` : ''}</div>` : ''}
         ${isBot ? `<div class="ai-label">${_sparkSvg} Clara AI</div>` : ''}
+        ${isAutomation ? `<div class="ai-label">${_zapSvg} Automação</div>` : ''}
         <div class="msg-bubble${bubbleClass}" ${bubbleStyle ? `style="${bubbleStyle}"` : ''}>${bubbleContent}</div>
         <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
       </div>

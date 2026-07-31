@@ -11,5 +11,8 @@
     { "src": "/health",    "dest": "/server/index.js" },
     { "src": "/",          "dest": "/index.html" },
     { "src": "/(.*)",      "dest": "/$1" }
+  ],
+  "crons": [
+    { "path": "/api/automations/process-due", "schedule": "*/5 * * * *" }
   ]
 }

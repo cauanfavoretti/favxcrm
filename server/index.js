@@ -408,6 +408,58 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
   }
 })();
 
+;(async function initAutomationTables() {
+  try {
+    // Fluxo (nodes + edges) armazenado como grafo — permite ramificação
+    // (if/else, split) e não apenas uma lista linear de passos.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS automations (
+        id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        subaccount_id  UUID NOT NULL,
+        name           VARCHAR(200) NOT NULL,
+        description    TEXT,
+        is_active      BOOLEAN NOT NULL DEFAULT FALSE,
+        trigger_type   VARCHAR(80) NOT NULL,
+        trigger_config JSONB NOT NULL DEFAULT '{}',
+        graph          JSONB NOT NULL DEFAULT '{"nodes":[],"edges":[]}',
+        run_count      INTEGER NOT NULL DEFAULT 0,
+        last_run_at    TIMESTAMPTZ,
+        created_by     UUID,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+    await pool.query(`ALTER TABLE automations ADD COLUMN IF NOT EXISTS graph JSONB NOT NULL DEFAULT '{"nodes":[],"edges":[]}'`);
+
+    // Execuções: cada run avança nó a nó. Timers pausam a run (status='waiting'
+    // + next_run_at) até o processador de cron retomá-la.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS automation_runs (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        automation_id    UUID NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+        contact_id       UUID REFERENCES contacts(id) ON DELETE CASCADE,
+        opportunity_id   UUID REFERENCES opportunities(id) ON DELETE CASCADE,
+        status           VARCHAR(20) NOT NULL DEFAULT 'running',
+        -- running | waiting | completed | failed | cancelled
+        current_node_id  VARCHAR(80),
+        context          JSONB NOT NULL DEFAULT '{}',
+        next_run_at      TIMESTAMPTZ,
+        error            TEXT,
+        started_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        finished_at      TIMESTAMPTZ
+      )`);
+    await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS opportunity_id UUID REFERENCES opportunities(id) ON DELETE CASCADE`);
+    await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS current_node_id VARCHAR(80)`);
+    await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS context JSONB NOT NULL DEFAULT '{}'`);
+    await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ`);
+    // Runs disparadas por webhook/gatilhos sem contato associado precisam de contact_id nulo.
+    try { await pool.query(`ALTER TABLE automation_runs ALTER COLUMN contact_id DROP NOT NULL`); } catch {}
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_automation_runs_waiting ON automation_runs (status, next_run_at) WHERE status = 'waiting'`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations (subaccount_id, trigger_type, is_active)`);
+  } catch (err) {
+    console.error('[init] automation tables:', err.message);
+  }
+})();
+
 async function executeWidgetQuery(pillar, config, subaccount_id) {
   const params = [subaccount_id];
   const wheres = [];
@@ -1153,22 +1205,36 @@ app.post('/api/contacts', auth, async (req, res) => {
 
 app.put('/api/contacts/:id', auth, async (req, res) => {
   const { subaccount_id } = req.user;
-  const { name, email, phone, company, source, status, notes, custom_fields } = req.body;
+  const { name, email, phone, company, source, status, notes, custom_fields, assigned_to } = req.body;
   try {
+    const { rows: before } = await pool.query(
+      `SELECT assigned_to FROM contacts WHERE id = $1 AND subaccount_id = $2`, [req.params.id, subaccount_id]
+    );
+    if (!before.length) return res.status(404).json({ message: 'Contato não encontrado.' });
+
     const { rows } = await pool.query(
       `UPDATE contacts SET
          name          = COALESCE($1, name),   email   = COALESCE($2, email),
          phone         = COALESCE($3, phone),  company = COALESCE($4, company),
          source        = COALESCE($5, source), status  = COALESCE($6, status),
          notes         = COALESCE($7, notes),
-         custom_fields = COALESCE($8, custom_fields)
-       WHERE id = $9 AND subaccount_id = $10 RETURNING *`,
+         custom_fields = COALESCE($8, custom_fields),
+         assigned_to   = COALESCE($9, assigned_to)
+       WHERE id = $10 AND subaccount_id = $11 RETURNING *`,
       [name, email, phone, company, source, status, notes,
        custom_fields ? JSON.stringify(custom_fields) : null,
+       assigned_to || null,
        req.params.id, subaccount_id]
     );
     if (!rows.length) return res.status(404).json({ message: 'Contato não encontrado.' });
     res.json(rows[0]);
+
+    if (assigned_to && assigned_to !== before[0].assigned_to) {
+      const { rows: userRows } = await pool.query(`SELECT id, name FROM users WHERE id = $1`, [assigned_to]);
+      await fireAutomations(subaccount_id, 'contact_assigned', {
+        contact: rows[0], assigned_to, user: userRows[0] || null,
+      }, { contact_id: rows[0].id }).catch(e => console.error('[fireAutomations contact_assigned]', e.message));
+    }
   } catch (err) {
     console.error('[contacts PUT]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
@@ -1383,36 +1449,18 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
       return res.status(201).json(savedMsg);
     }
 
+    // Dispara automações do gatilho "Usuário respondeu" (resposta pública de
+    // um usuário do CRM). Fire-and-forget: não deve atrasar a resposta ao
+    // usuário que está enviando a mensagem no chat.
+    const fireUserRepliedAutomations = () =>
+      fireAutomations(subaccount_id, 'user_replied', {
+        message: content, conversation_id: req.params.id,
+        contact: { id: conv[0].contact_id, name: conv[0].contact_name, phone: conv[0].contact_phone },
+      }, { contact_id: conv[0].contact_id }).catch(e => console.error('[fireAutomations user_replied]', e.message));
+
     // Send via Evolution API if WhatsApp conversation
     if (conv[0].channel === 'whatsapp' && conv[0].contact_phone) {
-      let cfg;
-      if (instance_id) {
-        // Instância específica selecionada pelo usuário
-        const { rows: specific } = await pool.query(
-          `SELECT api_url AS evolution_api_url, api_key AS evolution_api_key, instance_name AS evolution_instance_name
-           FROM whatsapp_instances WHERE id = $1 AND subaccount_id = $2`,
-          [instance_id, subaccount_id]
-        );
-        cfg = specific[0];
-      }
-      if (!cfg) {
-        const { rows: instRows } = await pool.query(
-          `SELECT api_url AS evolution_api_url, api_key AS evolution_api_key, instance_name AS evolution_instance_name
-           FROM whatsapp_instances
-           WHERE subaccount_id = $1
-           ORDER BY connected_at DESC NULLS LAST, created_at DESC LIMIT 1`,
-          [subaccount_id]
-        );
-        cfg = instRows[0];
-      }
-      if (!cfg) {
-        const { rows: cfgRows } = await pool.query(
-          `SELECT evolution_api_url, evolution_api_key, evolution_instance_name
-           FROM subaccount_settings WHERE subaccount_id = $1`,
-          [subaccount_id]
-        );
-        cfg = cfgRows[0];
-      }
+      const cfg = await resolveEvoConfig(subaccount_id, instance_id);
       if (cfg?.evolution_api_url && cfg?.evolution_instance_name) {
         const number     = conv[0].contact_phone.replace(/\D/g, '');
         const msgId      = rows[0].id;
@@ -1476,12 +1524,14 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
             context:          is_internal ? 'nota_interna' : 'mensagem_publica',
             assigned_contact: convCopy.owner_name || null,
           }).catch(() => {});
+          await fireUserRepliedAutomations();
         })();
         return; // res já foi enviado acima
       }
     }
 
     res.status(201).json(savedMsg);
+    await fireUserRepliedAutomations();
   } catch (err) {
     console.error('[messages POST]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
@@ -1818,6 +1868,9 @@ app.post('/api/opportunities', auth, async (req, res) => {
       [subaccount_id, pipeline_id, stage_id, contact_id, title, value || 0]
     );
     res.status(201).json(rows[0]);
+    await fireAutomations(subaccount_id, 'opportunity_created', {
+      opportunity: rows[0],
+    }, { contact_id, opportunity_id: rows[0].id }).catch(e => console.error('[fireAutomations opportunity_created]', e.message));
   } catch (err) {
     console.error('[opportunities POST]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
@@ -1828,6 +1881,12 @@ app.put('/api/opportunities/:id', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   const { title, stage_id, pipeline_id, value, status, lost_reason, custom_fields } = req.body;
   try {
+    const { rows: before } = await pool.query(
+      `SELECT stage_id, status, contact_id FROM opportunities WHERE id = $1 AND subaccount_id = $2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!before.length) return res.status(404).json({ message: 'Oportunidade não encontrada.' });
+
     const { rows } = await pool.query(
       `UPDATE opportunities SET
          title         = COALESCE($1, title),
@@ -1848,6 +1907,19 @@ app.put('/api/opportunities/:id', auth, async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ message: 'Oportunidade não encontrada.' });
     res.json(rows[0]);
+
+    const opp = rows[0];
+    const refs = { contact_id: opp.contact_id, opportunity_id: opp.id };
+    if (stage_id && stage_id !== before[0].stage_id) {
+      await fireAutomations(subaccount_id, 'opportunity_stage_changed', {
+        opportunity: opp, pipeline_id: opp.pipeline_id, from_stage_id: before[0].stage_id, to_stage_id: opp.stage_id,
+      }, refs).catch(e => console.error('[fireAutomations opportunity_stage_changed]', e.message));
+    }
+    if (status && status !== before[0].status) {
+      await fireAutomations(subaccount_id, 'opportunity_status_changed', {
+        opportunity: opp, from_status: before[0].status, to_status: opp.status,
+      }, refs).catch(e => console.error('[fireAutomations opportunity_status_changed]', e.message));
+    }
   } catch (err) {
     console.error('[opportunities PUT]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
@@ -1873,6 +1945,12 @@ app.put('/api/opportunities/:id/stage', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   const { stage_id } = req.body;
   try {
+    const { rows: before } = await pool.query(
+      `SELECT stage_id FROM opportunities WHERE id = $1 AND subaccount_id = $2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!before.length) return res.status(404).json({ message: 'Oportunidade não encontrada.' });
+
     const { rows } = await pool.query(
       `UPDATE opportunities SET stage_id = $1
        WHERE id = $2 AND subaccount_id = $3 RETURNING *`,
@@ -1880,6 +1958,13 @@ app.put('/api/opportunities/:id/stage', auth, async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ message: 'Oportunidade não encontrada.' });
     res.json(rows[0]);
+
+    if (stage_id && stage_id !== before[0].stage_id) {
+      const opp = rows[0];
+      await fireAutomations(subaccount_id, 'opportunity_stage_changed', {
+        opportunity: opp, pipeline_id: opp.pipeline_id, from_stage_id: before[0].stage_id, to_stage_id: opp.stage_id,
+      }, { contact_id: opp.contact_id, opportunity_id: opp.id }).catch(e => console.error('[fireAutomations opportunity_stage_changed]', e.message));
+    }
   } catch (err) {
     console.error('[opportunities stage PUT]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
@@ -1939,19 +2024,542 @@ app.put('/api/agents/:id/toggle', auth, async (req, res) => {
 });
 
 // ============================================================
-// AUTOMATIONS
+// AUTOMATIONS — motor de execução (estilo n8n)
+// ============================================================
+//
+// Um fluxo (automation) é um grafo: { nodes:[{id,type,config,isTrigger?}], edges:[{source,sourceHandle,target}] }.
+// O nó de gatilho não é "executado" — ele só define trigger_type/trigger_config
+// (espelhados nas colunas dedicadas para permitir busca rápida) e aponta para
+// o primeiro nó real do fluxo. A partir daí, processAutomationStep avança nó a
+// nó, seguindo as arestas de saída (sourceHandle 'default', ou 'true'/'false'
+// para if/else). Quando um nó tem mais de uma aresta de saída no mesmo handle
+// (ex: depois de um nó "Split"), o motor cria runs extras para os caminhos
+// adicionais — cada ramo é executado de forma independente.
+
+const AUTOMATION_TRIGGERS = [
+  'contact_replied', 'webhook', 'user_replied', 'opportunity_created',
+  'opportunity_stage_changed', 'opportunity_status_changed', 'contact_assigned',
+];
+const AUTOMATION_NODE_TYPES = [
+  'whatsapp_send_message', 'pipeline_create', 'opportunity_search',
+  'opportunity_update', 'timer', 'if_else', 'split',
+];
+
+function _autoGetPath(obj, path) {
+  if (!path) return undefined;
+  return String(path).split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+}
+
+// Substitui {{caminho.no.contexto}} pelo valor resolvido (texto de mensagens, campos, etc).
+function autoInterpolate(template, context) {
+  if (!template) return '';
+  return String(template).replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, path) => {
+    const v = _autoGetPath(context, path);
+    return v == null ? '' : String(v);
+  });
+}
+
+function resolveNextNodeIds(graph, nodeId, handle) {
+  const edges = graph?.edges || [];
+  return edges
+    .filter(e => e.source === nodeId && (e.sourceHandle || 'default') === (handle || 'default'))
+    .map(e => e.target)
+    .filter(Boolean);
+}
+
+// Resolve a config de conexão Evolution API (instância específica → mais
+// recente conectada → configuração da subconta). Compartilhado entre o envio
+// manual de mensagens e o node "Enviar WhatsApp" das automações.
+async function resolveEvoConfig(subaccount_id, instance_id) {
+  let cfg;
+  if (instance_id) {
+    const { rows } = await pool.query(
+      `SELECT api_url AS evolution_api_url, api_key AS evolution_api_key, instance_name AS evolution_instance_name
+       FROM whatsapp_instances WHERE id = $1 AND subaccount_id = $2`,
+      [instance_id, subaccount_id]
+    );
+    cfg = rows[0];
+  }
+  if (!cfg) {
+    const { rows } = await pool.query(
+      `SELECT api_url AS evolution_api_url, api_key AS evolution_api_key, instance_name AS evolution_instance_name
+       FROM whatsapp_instances WHERE subaccount_id = $1
+       ORDER BY connected_at DESC NULLS LAST, created_at DESC LIMIT 1`,
+      [subaccount_id]
+    );
+    cfg = rows[0];
+  }
+  if (!cfg) {
+    const { rows } = await pool.query(
+      `SELECT evolution_api_url, evolution_api_key, evolution_instance_name FROM subaccount_settings WHERE subaccount_id = $1`,
+      [subaccount_id]
+    );
+    cfg = rows[0];
+  }
+  return (cfg && cfg.evolution_api_url && cfg.evolution_instance_name) ? cfg : null;
+}
+
+const AUTOMATION_NODE_EXECUTORS = {
+  // Envia uma mensagem de WhatsApp (Evolution API/não-oficial) para o contato
+  // da run, registrando a mensagem na conversa do CRM (sender_type='automation').
+  whatsapp_send_message: async (node, { context, subaccount_id, run }) => {
+    const contactId = run.contact_id;
+    if (!contactId) throw new Error('Este fluxo não tem um contato associado para enviar a mensagem.');
+    const text = autoInterpolate(node.config?.message, context).trim();
+    if (!text) throw new Error('O node "Enviar WhatsApp" está com a mensagem vazia.');
+
+    const { rows: contactRows } = await pool.query(
+      `SELECT id, name, phone FROM contacts WHERE id = $1 AND subaccount_id = $2`, [contactId, subaccount_id]
+    );
+    const contact = contactRows[0];
+    if (!contact?.phone) throw new Error('O contato não tem telefone cadastrado.');
+
+    const { rows: convRows } = await pool.query(
+      `SELECT id FROM conversations WHERE subaccount_id = $1 AND contact_id = $2 AND channel = 'whatsapp' AND status = 'open' LIMIT 1`,
+      [subaccount_id, contactId]
+    );
+    let convId = convRows[0]?.id;
+    if (!convId) {
+      const ins = await pool.query(
+        `INSERT INTO conversations (subaccount_id, contact_id, channel, status) VALUES ($1,$2,'whatsapp','open') RETURNING id`,
+        [subaccount_id, contactId]
+      );
+      convId = ins.rows[0].id;
+    }
+
+    const { rows: msgRows } = await pool.query(
+      `INSERT INTO messages (conversation_id, direction, sender_type, content, message_type)
+       VALUES ($1,'outbound','automation',$2,'text') RETURNING id`,
+      [convId, text]
+    );
+
+    const cfg = await resolveEvoConfig(subaccount_id, node.config?.instance_id);
+    if (cfg) {
+      try {
+        const number = contact.phone.replace(/\D/g, '');
+        const evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
+          `/message/sendText/${cfg.evolution_instance_name}`, { number, text });
+        const externalId = evoResp?.key?.id;
+        if (externalId) await pool.query(`UPDATE messages SET external_id = $1 WHERE id = $2`, [externalId, msgRows[0].id]);
+      } catch (e) {
+        console.warn('[automation whatsapp send]', e.message);
+      }
+    }
+    await pool.query(`UPDATE conversations SET last_message_at = NOW(), unread_count = 0 WHERE id = $1`, [convId]);
+
+    return { output: 'default', patch: { conversation_id: convId, message: text } };
+  },
+
+  // Cria um novo pipeline (funil) com as etapas configuradas no node.
+  pipeline_create: async (node, { subaccount_id }) => {
+    const name = (node.config?.name || '').trim();
+    const stages = Array.isArray(node.config?.stages) ? node.config.stages.filter(s => s?.name?.trim()) : [];
+    if (!name) throw new Error('O node "Criar pipeline" precisa de um nome.');
+    if (!stages.length) throw new Error('O node "Criar pipeline" precisa de ao menos uma etapa.');
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: existing } = await client.query('SELECT id FROM pipelines WHERE subaccount_id = $1', [subaccount_id]);
+      const { rows: pipeline } = await client.query(
+        'INSERT INTO pipelines (subaccount_id, name, is_default) VALUES ($1,$2,$3) RETURNING *',
+        [subaccount_id, name, existing.length === 0]
+      );
+      for (let i = 0; i < stages.length; i++) {
+        const s = stages[i];
+        await client.query(
+          'INSERT INTO pipeline_stages (pipeline_id, name, color, position, is_won, is_lost) VALUES ($1,$2,$3,$4,$5,$6)',
+          [pipeline[0].id, s.name.trim(), s.color || '#6b7280', i, !!s.is_won, !!s.is_lost]
+        );
+      }
+      await client.query('COMMIT');
+      return { output: 'default', patch: { pipeline_id: pipeline[0].id, pipeline_name: pipeline[0].name } };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  },
+
+  // Procura oportunidade(s) e guarda o resultado no contexto para nodes seguintes.
+  opportunity_search: async (node, { context, subaccount_id, run }) => {
+    const scope = node.config?.scope || 'trigger_opportunity';
+    let rows = [];
+    if (scope === 'trigger_opportunity') {
+      if (!run.opportunity_id) throw new Error('Este fluxo não tem uma oportunidade de origem (gatilho não é de oportunidade).');
+      ({ rows } = await pool.query(
+        `SELECT o.*, p.name AS pipeline_name, ps.name AS stage_name
+         FROM opportunities o
+         LEFT JOIN pipelines p ON p.id = o.pipeline_id
+         LEFT JOIN pipeline_stages ps ON ps.id = o.stage_id
+         WHERE o.id = $1 AND o.subaccount_id = $2`,
+        [run.opportunity_id, subaccount_id]
+      ));
+    } else if (scope === 'by_contact') {
+      if (!run.contact_id) throw new Error('Este fluxo não tem um contato associado.');
+      const params = [subaccount_id, run.contact_id];
+      let where = 'o.subaccount_id = $1 AND o.contact_id = $2';
+      if (node.config?.status) { params.push(node.config.status); where += ` AND o.status = $${params.length}`; }
+      ({ rows } = await pool.query(
+        `SELECT o.*, p.name AS pipeline_name, ps.name AS stage_name
+         FROM opportunities o
+         LEFT JOIN pipelines p ON p.id = o.pipeline_id
+         LEFT JOIN pipeline_stages ps ON ps.id = o.stage_id
+         WHERE ${where} ORDER BY o.created_at DESC LIMIT 20`,
+        params
+      ));
+    } else {
+      const params = [subaccount_id];
+      let where = 'o.subaccount_id = $1';
+      if (node.config?.pipeline_id) { params.push(node.config.pipeline_id); where += ` AND o.pipeline_id = $${params.length}`; }
+      if (node.config?.stage_id)    { params.push(node.config.stage_id);    where += ` AND o.stage_id = $${params.length}`; }
+      if (node.config?.status)      { params.push(node.config.status);      where += ` AND o.status = $${params.length}`; }
+      ({ rows } = await pool.query(
+        `SELECT o.*, p.name AS pipeline_name, ps.name AS stage_name
+         FROM opportunities o
+         LEFT JOIN pipelines p ON p.id = o.pipeline_id
+         LEFT JOIN pipeline_stages ps ON ps.id = o.stage_id
+         WHERE ${where} ORDER BY o.created_at DESC LIMIT 20`,
+        params
+      ));
+    }
+    return { output: 'default', patch: { found: rows.length > 0, count: rows.length, opportunity: rows[0] || null, opportunities: rows } };
+  },
+
+  // Atualiza campos de uma oportunidade (da run do gatilho, ou de um node de busca anterior).
+  opportunity_update: async (node, { context, subaccount_id, run }) => {
+    const source = node.config?.source || 'trigger';
+    let opportunityId = null;
+    if (source === 'trigger') opportunityId = run.opportunity_id;
+    else if (node.config?.source_node_id) opportunityId = context?.[node.config.source_node_id]?.opportunity?.id || null;
+    if (!opportunityId) throw new Error('O node "Atualizar oportunidade" não encontrou uma oportunidade de origem.');
+
+    const f = node.config?.fields || {};
+    const { rows } = await pool.query(
+      `UPDATE opportunities SET
+         stage_id    = COALESCE($1, stage_id),
+         status      = COALESCE($2, status),
+         value       = COALESCE($3, value),
+         lost_reason = COALESCE($4, lost_reason),
+         updated_at  = NOW()
+       WHERE id = $5 AND subaccount_id = $6 RETURNING *`,
+      [
+        f.stage_id || null,
+        f.status || null,
+        f.value != null && f.value !== '' ? f.value : null,
+        f.lost_reason ? autoInterpolate(f.lost_reason, context) : null,
+        opportunityId, subaccount_id,
+      ]
+    );
+    if (!rows.length) throw new Error('Oportunidade não encontrada para atualizar.');
+    return { output: 'default', patch: { opportunity: rows[0] } };
+  },
+
+  // Pausa a run. Na primeira passagem define next_run_at e sinaliza "waiting";
+  // quando o cron retoma (next_run_at já passou), segue em frente normalmente.
+  timer: async (node, { run }) => {
+    const amount = Math.max(1, parseInt(node.config?.amount) || 1);
+    const unit = ['minutes', 'hours', 'days'].includes(node.config?.unit) ? node.config.unit : 'minutes';
+    const alreadyWaited = run.status === 'waiting' && run.next_run_at && new Date(run.next_run_at) <= new Date();
+    if (alreadyWaited) return { output: 'default' };
+    const ms = amount * (unit === 'days' ? 86400000 : unit === 'hours' ? 3600000 : 60000);
+    return { waiting: true, nextRunAt: new Date(Date.now() + ms) };
+  },
+
+  // Avalia uma condição simples contra o contexto acumulado; duas saídas: true/false.
+  if_else: async (node, { context }) => {
+    const field = node.config?.field || '';
+    const op = node.config?.operator || 'eq';
+    const expected = node.config?.value ?? '';
+    const actual = _autoGetPath(context, field);
+
+    let result;
+    switch (op) {
+      case 'is_empty':     result = actual === undefined || actual === null || actual === ''; break;
+      case 'is_not_empty': result = !(actual === undefined || actual === null || actual === ''); break;
+      case 'contains':     result = String(actual ?? '').toLowerCase().includes(String(expected).toLowerCase()); break;
+      case 'gt':            result = parseFloat(actual) > parseFloat(expected); break;
+      case 'lt':            result = parseFloat(actual) < parseFloat(expected); break;
+      case 'gte':           result = parseFloat(actual) >= parseFloat(expected); break;
+      case 'lte':            result = parseFloat(actual) <= parseFloat(expected); break;
+      case 'neq':           result = String(actual ?? '') !== String(expected); break;
+      case 'eq':
+      default:               result = String(actual ?? '') === String(expected); break;
+    }
+    return { output: result ? 'true' : 'false', patch: { result } };
+  },
+
+  // Passa adiante sem efeito — existe para deixar explícito, no canvas, o
+  // ponto em que o fluxo se ramifica em múltiplos caminhos paralelos
+  // (o fan-out em si acontece no motor sempre que há mais de uma aresta
+  // saindo do mesmo handle de um node).
+  split: async () => ({ output: 'default' }),
+};
+
+async function executeAutomationNode(node, ctx) {
+  const executor = AUTOMATION_NODE_EXECUTORS[node.type];
+  if (!executor) throw new Error(`Tipo de node desconhecido: ${node.type}`);
+  return executor(node, ctx);
+}
+
+// Processa uma run passo a passo até: terminar, precisar esperar (timer), ou
+// atingir o prazo de segurança (a run fica 'waiting' com retomada imediata,
+// para não estourar o timeout da função serverless).
+async function processAutomationStep(runId) {
+  const MAX_STEPS = 100;
+  const SOFT_DEADLINE_MS = 20000;
+  const t0 = Date.now();
+
+  const { rows } = await pool.query(
+    `SELECT r.*, a.graph, a.subaccount_id, a.is_active, a.id AS automation_id
+     FROM automation_runs r JOIN automations a ON a.id = r.automation_id
+     WHERE r.id = $1`,
+    [runId]
+  );
+  const run = rows[0];
+  if (!run || !['running', 'waiting'].includes(run.status)) return;
+  if (!run.is_active) {
+    await pool.query(`UPDATE automation_runs SET status='cancelled', finished_at=NOW() WHERE id=$1`, [runId]);
+    return;
+  }
+
+  const graph = run.graph || { nodes: [], edges: [] };
+  const nodesById = Object.fromEntries((graph.nodes || []).map(n => [n.id, n]));
+  let context = run.context || {};
+  let currentId = run.current_node_id;
+  const spawned = [];
+  let steps = 0;
+
+  try {
+    while (currentId) {
+      if (++steps > MAX_STEPS) throw new Error('Limite de passos excedido (possível loop no fluxo).');
+      if (Date.now() - t0 > SOFT_DEADLINE_MS) {
+        await pool.query(
+          `UPDATE automation_runs SET status='waiting', current_node_id=$1, context=$2, next_run_at=NOW() WHERE id=$3`,
+          [currentId, JSON.stringify(context), runId]
+        );
+        return;
+      }
+      const node = nodesById[currentId];
+      if (!node) throw new Error(`Node "${currentId}" não existe mais no fluxo.`);
+
+      const result = await executeAutomationNode(node, { context, subaccount_id: run.subaccount_id, run: { ...run, status: currentId === run.current_node_id ? run.status : 'running' } });
+
+      if (result.waiting) {
+        await pool.query(
+          `UPDATE automation_runs SET status='waiting', current_node_id=$1, context=$2, next_run_at=$3 WHERE id=$4`,
+          [currentId, JSON.stringify(context), result.nextRunAt, runId]
+        );
+        return;
+      }
+      if (result.patch) context = { ...context, [node.id]: result.patch };
+
+      const targets = resolveNextNodeIds(graph, node.id, result.output || 'default');
+      if (!targets.length) { currentId = null; break; }
+      for (let i = 1; i < targets.length; i++) {
+        const ins = await pool.query(
+          `INSERT INTO automation_runs (automation_id, contact_id, opportunity_id, status, current_node_id, context)
+           VALUES ($1,$2,$3,'running',$4,$5) RETURNING id`,
+          [run.automation_id, run.contact_id, run.opportunity_id, targets[i], JSON.stringify(context)]
+        );
+        spawned.push(ins.rows[0].id);
+      }
+      currentId = targets[0];
+    }
+
+    await pool.query(
+      `UPDATE automation_runs SET status='completed', current_node_id=NULL, context=$1, finished_at=NOW() WHERE id=$2`,
+      [JSON.stringify(context), runId]
+    );
+    await pool.query(`UPDATE automations SET run_count = run_count + 1, last_run_at = NOW() WHERE id = $1`, [run.automation_id]);
+  } catch (err) {
+    await pool.query(`UPDATE automation_runs SET status='failed', error=$1, finished_at=NOW() WHERE id=$2`, [err.message, runId]);
+  }
+
+  // Processa os ramos gerados por fan-out (ex: node "Split") sequencialmente.
+  for (const id of spawned) {
+    try { await processAutomationStep(id); } catch (e) { console.error('[automation branch]', e.message); }
+  }
+}
+
+// Filtros opcionais definidos na config do node de gatilho (ex: só disparar
+// para um pipeline/etapa/usuário específico). Ausência de filtro = sempre casa.
+function automationTriggerMatches(triggerType, config, seedContext) {
+  config = config || {};
+  if (triggerType === 'opportunity_stage_changed') {
+    if (config.pipeline_id && config.pipeline_id !== seedContext.pipeline_id) return false;
+    if (config.to_stage_id && config.to_stage_id !== seedContext.to_stage_id) return false;
+    return true;
+  }
+  if (triggerType === 'opportunity_status_changed') {
+    if (config.to_status && config.to_status !== seedContext.to_status) return false;
+    return true;
+  }
+  if (triggerType === 'opportunity_created') {
+    if (config.pipeline_id && config.pipeline_id !== seedContext.opportunity?.pipeline_id) return false;
+    return true;
+  }
+  if (triggerType === 'contact_assigned') {
+    if (config.user_id && config.user_id !== seedContext.assigned_to) return false;
+    return true;
+  }
+  return true;
+}
+
+// Encontra automações ativas para o gatilho e dispara uma run para cada uma.
+async function fireAutomations(subaccount_id, triggerType, seedContext, refs = {}) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, graph FROM automations WHERE subaccount_id = $1 AND trigger_type = $2 AND is_active = TRUE`,
+      [subaccount_id, triggerType]
+    );
+    for (const a of rows) {
+      const graph = a.graph || { nodes: [], edges: [] };
+      const triggerNode = (graph.nodes || []).find(n => n.isTrigger);
+      if (!triggerNode) continue;
+      if (!automationTriggerMatches(triggerType, triggerNode.config, seedContext)) continue;
+
+      const firstTargets = resolveNextNodeIds(graph, triggerNode.id, 'default');
+      if (!firstTargets.length) continue;
+
+      const { rows: ins } = await pool.query(
+        `INSERT INTO automation_runs (automation_id, contact_id, opportunity_id, status, current_node_id, context)
+         VALUES ($1,$2,$3,'running',$4,$5) RETURNING id`,
+        [a.id, refs.contact_id || null, refs.opportunity_id || null, firstTargets[0], JSON.stringify({ trigger: seedContext })]
+      );
+      await processAutomationStep(ins[0].id);
+    }
+  } catch (err) {
+    console.error('[fireAutomations]', triggerType, err.message);
+  }
+}
+
+// ============================================================
+// AUTOMATIONS — API
 // ============================================================
 
 app.get('/api/automations', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   try {
     const { rows } = await pool.query(
-      'SELECT * FROM automations WHERE subaccount_id = $1 ORDER BY created_at DESC',
+      'SELECT id, name, description, is_active, trigger_type, trigger_config, run_count, last_run_at, created_at, updated_at FROM automations WHERE subaccount_id = $1 ORDER BY created_at DESC',
       [subaccount_id]
     );
     res.json(rows);
   } catch (err) {
     console.error('[automations GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.get('/api/automations/:id', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM automations WHERE id = $1 AND subaccount_id = $2', [req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Automação não encontrada.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[automations GET one]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+function _validateAutomationGraph(graph) {
+  if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges))
+    return 'Fluxo inválido.';
+  const triggerNode = graph.nodes.find(n => n.isTrigger);
+  if (!triggerNode) return 'O fluxo precisa de um gatilho.';
+  if (!AUTOMATION_TRIGGERS.includes(triggerNode.triggerType)) return 'Tipo de gatilho inválido.';
+  for (const n of graph.nodes) {
+    if (n.isTrigger) continue;
+    if (!AUTOMATION_NODE_TYPES.includes(n.type)) return `Tipo de node inválido: ${n.type}`;
+  }
+  return null;
+}
+
+app.post('/api/automations', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id, sub: user_id } = req.user;
+  const { name, description, graph } = req.body;
+  if (!name?.trim()) return res.status(400).json({ message: 'Nome é obrigatório.' });
+
+  const err = _validateAutomationGraph(graph);
+  if (err) return res.status(400).json({ message: err });
+
+  const triggerNode = graph.nodes.find(n => n.isTrigger);
+  // Webhook precisa de um token público único, gerado no servidor.
+  if (triggerNode.triggerType === 'webhook' && !triggerNode.config?.token) {
+    triggerNode.config = { ...(triggerNode.config || {}), token: crypto.randomBytes(20).toString('hex') };
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO automations (subaccount_id, name, description, trigger_type, trigger_config, graph, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [subaccount_id, name.trim(), description || null, triggerNode.triggerType,
+       JSON.stringify(triggerNode.config || {}), JSON.stringify(graph), user_id]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err2) {
+    console.error('[automations POST]', err2.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.put('/api/automations/:id', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { name, description, graph, is_active } = req.body;
+
+  try {
+    let triggerType = null, triggerConfig = null, graphJson = null;
+    if (graph) {
+      const err = _validateAutomationGraph(graph);
+      if (err) return res.status(400).json({ message: err });
+      const triggerNode = graph.nodes.find(n => n.isTrigger);
+      if (triggerNode.triggerType === 'webhook' && !triggerNode.config?.token) {
+        // preserva o token já existente, se houver
+        const { rows: cur } = await pool.query('SELECT trigger_config FROM automations WHERE id=$1 AND subaccount_id=$2', [req.params.id, subaccount_id]);
+        const existingToken = cur[0]?.trigger_config?.token;
+        triggerNode.config = { ...(triggerNode.config || {}), token: existingToken || crypto.randomBytes(20).toString('hex') };
+      }
+      triggerType = triggerNode.triggerType;
+      triggerConfig = JSON.stringify(triggerNode.config || {});
+      graphJson = JSON.stringify(graph);
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE automations SET
+         name           = COALESCE($1, name),
+         description    = COALESCE($2, description),
+         trigger_type   = COALESCE($3, trigger_type),
+         trigger_config = COALESCE($4, trigger_config),
+         graph          = COALESCE($5, graph),
+         is_active      = COALESCE($6, is_active),
+         updated_at     = NOW()
+       WHERE id = $7 AND subaccount_id = $8 RETURNING *`,
+      [name?.trim() || null, description ?? null, triggerType, triggerConfig, graphJson,
+       typeof is_active === 'boolean' ? is_active : null, req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Automação não encontrada.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[automations PUT]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.delete('/api/automations/:id', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rowCount } = await pool.query(
+      `DELETE FROM automations WHERE id = $1 AND subaccount_id = $2`, [req.params.id, subaccount_id]
+    );
+    if (!rowCount) return res.status(404).json({ message: 'Automação não encontrada.' });
+    res.status(204).send();
+  } catch (err) {
+    console.error('[automations DELETE]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
   }
 });
@@ -1968,6 +2576,115 @@ app.put('/api/automations/:id/toggle', auth, async (req, res) => {
     res.json(rows[0]);
   } catch (err) {
     console.error('[automations toggle]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// Histórico de execuções (para depuração/confiança no fluxo)
+app.get('/api/automations/:id/runs', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows: own } = await pool.query('SELECT id FROM automations WHERE id=$1 AND subaccount_id=$2', [req.params.id, subaccount_id]);
+    if (!own.length) return res.status(404).json({ message: 'Automação não encontrada.' });
+    const { rows } = await pool.query(
+      `SELECT r.id, r.status, r.current_node_id, r.error, r.started_at, r.finished_at, r.next_run_at,
+              c.name AS contact_name
+       FROM automation_runs r LEFT JOIN contacts c ON c.id = r.contact_id
+       WHERE r.automation_id = $1 ORDER BY r.started_at DESC LIMIT 30`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[automations runs GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// Executa manualmente para teste (opcionalmente contra um contato específico)
+app.post('/api/automations/:id/test', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { contact_id } = req.body;
+  try {
+    const { rows } = await pool.query('SELECT * FROM automations WHERE id=$1 AND subaccount_id=$2', [req.params.id, subaccount_id]);
+    const automation = rows[0];
+    if (!automation) return res.status(404).json({ message: 'Automação não encontrada.' });
+
+    const graph = automation.graph || { nodes: [], edges: [] };
+    const triggerNode = graph.nodes.find(n => n.isTrigger);
+    if (!triggerNode) return res.status(400).json({ message: 'Fluxo sem gatilho.' });
+    const firstTargets = resolveNextNodeIds(graph, triggerNode.id, 'default');
+    if (!firstTargets.length) return res.status(400).json({ message: 'Fluxo sem nós após o gatilho.' });
+
+    let opportunity_id = null;
+    if (contact_id) {
+      const { rows: oppRows } = await pool.query(
+        `SELECT id FROM opportunities WHERE contact_id=$1 AND subaccount_id=$2 ORDER BY created_at DESC LIMIT 1`,
+        [contact_id, subaccount_id]
+      );
+      opportunity_id = oppRows[0]?.id || null;
+    }
+
+    const { rows: ins } = await pool.query(
+      `INSERT INTO automation_runs (automation_id, contact_id, opportunity_id, status, current_node_id, context)
+       VALUES ($1,$2,$3,'running',$4,$5) RETURNING id`,
+      [automation.id, contact_id || null, opportunity_id, firstTargets[0], JSON.stringify({ trigger: { test: true } })]
+    );
+    await processAutomationStep(ins[0].id);
+
+    const { rows: final } = await pool.query('SELECT * FROM automation_runs WHERE id=$1', [ins[0].id]);
+    res.json(final[0]);
+  } catch (err) {
+    console.error('[automations test]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// Receptor público de webhook — dispara diretamente a automação dona do token.
+app.post('/api/automations/webhook/:token', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, subaccount_id, graph FROM automations
+       WHERE trigger_type = 'webhook' AND is_active = TRUE AND trigger_config->>'token' = $1`,
+      [req.params.token]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Webhook não encontrado ou inativo.' });
+    const automation = rows[0];
+    const graph = automation.graph || { nodes: [], edges: [] };
+    const triggerNode = graph.nodes.find(n => n.isTrigger);
+    const firstTargets = resolveNextNodeIds(graph, triggerNode.id, 'default');
+    if (!firstTargets.length) return res.status(202).json({ message: 'Recebido (fluxo vazio).' });
+
+    const { rows: ins } = await pool.query(
+      `INSERT INTO automation_runs (automation_id, status, current_node_id, context)
+       VALUES ($1,'running',$2,$3) RETURNING id`,
+      [automation.id, firstTargets[0], JSON.stringify({ trigger: { body: req.body, headers: req.headers, query: req.query } })]
+    );
+    processAutomationStep(ins[0].id).catch(e => console.error('[automation webhook run]', e.message));
+    res.status(202).json({ message: 'Recebido.' });
+  } catch (err) {
+    console.error('[automations webhook]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// Retoma runs pausadas em timers vencidos. Chamado por um cron do Vercel
+// (vercel.json) e pode ser chamado manualmente para depuração.
+app.all('/api/automations/process-due', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (secret) {
+    const provided = req.headers.authorization?.replace(/^Bearer\s+/i, '') || req.query.secret;
+    if (provided !== secret) return res.status(401).json({ message: 'Não autorizado.' });
+  }
+  try {
+    const { rows } = await pool.query(
+      `SELECT id FROM automation_runs WHERE status = 'waiting' AND next_run_at <= NOW() LIMIT 25`
+    );
+    for (const r of rows) {
+      try { await processAutomationStep(r.id); } catch (e) { console.error('[process-due]', r.id, e.message); }
+    }
+    res.json({ processed: rows.length });
+  } catch (err) {
+    console.error('[automations process-due]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
   }
 });
@@ -2522,6 +3239,15 @@ async function processWaMsg(subaccount_id, instanceName, apiUrl, apiKey, data) {
     context:          'mensagem_publica',
     assigned_contact: ownerName,
   }).catch(() => {});
+
+  // Dispara automações do gatilho "Cliente respondeu" (mesma lógica de
+  // await do webhook de agentes acima — necessário em ambiente serverless).
+  if (!fromMe) {
+    await fireAutomations(subaccount_id, 'contact_replied', {
+      message: content, conversation_id: conv_id,
+      contact: { id: contact_id, name: pushName || ('+' + phone), phone: '+' + phone },
+    }, { contact_id }).catch(e => console.error('[fireAutomations contact_replied]', e.message));
+  }
 
   return 'saved';
 }
