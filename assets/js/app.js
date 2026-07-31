@@ -415,6 +415,12 @@ function initNotifications() {
   // Badge de conversas não lidas no menu lateral
   _updateConvNavBadge();
   setInterval(_updateConvNavBadge, 15000);
+
+  // Retoma automações pausadas em Timer (complementa o cron diário do plano
+  // Hobby do Vercel — enquanto o CRM estiver aberto no navegador, os timers
+  // são verificados a cada 2 minutos em vez de esperar o cron do dia seguinte).
+  apiFetch('/api/automations/process-due', { method: 'POST' }).catch(() => {});
+  setInterval(() => { apiFetch('/api/automations/process-due', { method: 'POST' }).catch(() => {}); }, 120000);
 }
 
 // ---- Logout ----
