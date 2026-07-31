@@ -35,7 +35,7 @@ const AUTO_NODE_DEFS = {
 
 const AUTO_STAGE_COLORS = ['#3b82f6','#f97316','#a855f7','#ef4444','#3b82f6','#f97316','#a855f7'];
 
-let automationsState = { mode: 'list', list: [] };
+let automationsState = { list: [] };
 let _autoCurrent      = null;  // { id, name, description, graph:{nodes,edges} }
 let _autoSelectedNode = null;
 let _autoNodeEls      = {};
@@ -54,17 +54,16 @@ window.loadAutomations = async function() {
   return await apiFetch('/api/automations');
 };
 
-// ── PAGE (list ↔ builder) ────────────────────────────────────
+// ── PAGE (lista) — o construtor abre em camada própria de tela cheia,
+// fora de #pageContent (ver _autoMountBuilder). ──────────────────
 
 window.pageAutomations = function(data) {
   if (Array.isArray(data)) automationsState.list = data;
-  if (automationsState.mode === 'builder') return _autoBuilderHtml();
   return _autoListHtml(automationsState.list);
 };
 
 window.initAutomations = function() {
-  if (automationsState.mode === 'builder') _autoInitBuilder();
-  else _autoInitList();
+  _autoInitList();
 };
 
 // ── LIST VIEW ─────────────────────────────────────────────────
@@ -160,7 +159,6 @@ function _autoInitList() {
 }
 
 async function _autoReloadList() {
-  automationsState.mode = 'list';
   const data = await window.loadAutomations();
   const content = document.getElementById('pageContent');
   if (!content) return;
@@ -172,11 +170,7 @@ async function _autoReloadList() {
 function _autoOpenNew() {
   _autoCurrent = { id: null, name: 'Nova automação', description: '', graph: { nodes: [], edges: [] } };
   _autoSelectedNode = null;
-  automationsState.mode = 'builder';
-  const content = document.getElementById('pageContent');
-  content.innerHTML = window.pageAutomations();
-  lucide.createIcons();
-  window.initAutomations();
+  _autoMountBuilder();
 }
 
 async function _autoOpenEdit(id) {
@@ -188,11 +182,35 @@ async function _autoOpenEdit(id) {
     graph: automation.graph && automation.graph.nodes ? automation.graph : { nodes: [], edges: [] },
   };
   _autoSelectedNode = null;
-  automationsState.mode = 'builder';
-  const content = document.getElementById('pageContent');
-  content.innerHTML = window.pageAutomations();
+  _autoMountBuilder();
+}
+
+// Monta o construtor como uma camada de tela cheia, fora do layout normal
+// do CRM (sem sidebar/topbar) — "abre em outra página".
+function _autoMountBuilder() {
+  document.getElementById('autoBuilderOverlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'autoBuilderOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:4000';
+  overlay.innerHTML = _autoBuilderHtml();
+  document.body.appendChild(overlay);
   lucide.createIcons();
-  window.initAutomations();
+  _autoInitBuilder();
+}
+
+// Substitui o conteúdo do construtor já montado (usado após salvar, para
+// refletir ex. o token de webhook gerado no servidor sem fechar a tela).
+function _autoRefreshBuilder() {
+  const overlay = document.getElementById('autoBuilderOverlay');
+  if (!overlay) return;
+  overlay.innerHTML = _autoBuilderHtml();
+  lucide.createIcons();
+  _autoInitBuilder();
+}
+
+async function _autoCloseBuilder() {
+  document.getElementById('autoBuilderOverlay')?.remove();
+  await _autoReloadList();
 }
 
 // ── TEST MODAL ────────────────────────────────────────────────
@@ -289,6 +307,7 @@ function _autoBuilderHtml() {
     <div class="auto-builder-header">
       <button class="btn btn-ghost btn-sm" id="btnAutoBack"><i data-lucide="arrow-left" style="width:14px;height:14px"></i></button>
       <input type="text" id="autoNameInput" class="auto-name-input" value="${_autoEsc(_autoCurrent.name)}" placeholder="Nome da automação" />
+      <button class="btn btn-secondary btn-sm" id="btnAutoAddMenu"><i data-lucide="plus" style="width:13px;height:13px"></i> Adicionar</button>
       <span id="autoSaveError" style="font-size:12px;color:var(--color-red)"></span>
       <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
         ${_autoCurrent.id ? `<button class="btn btn-ghost btn-sm" id="btnAutoTest"><i data-lucide="play" style="width:13px;height:13px"></i> Testar</button>` : ''}
@@ -296,24 +315,10 @@ function _autoBuilderHtml() {
       </div>
     </div>
     <div class="auto-builder-body" id="autoBuilderBody">
-      <div class="auto-palette">
-        <div class="auto-palette-title">Gatilho (escolha 1)</div>
-        ${Object.entries(AUTO_TRIGGER_DEFS).map(([type, def]) => `
-          <div class="auto-palette-item" data-add-trigger="${type}">
-            <div class="auto-node-icon" style="background:${AUTO_TRIGGER_COLOR};box-shadow:0 0 10px ${AUTO_TRIGGER_GLOW}"><i data-lucide="${def.icon}" style="width:13px;height:13px"></i></div>
-            ${def.label}
-          </div>`).join('')}
-        <div class="auto-palette-title">Ações &amp; Lógica</div>
-        ${Object.entries(AUTO_NODE_DEFS).map(([type, def]) => `
-          <div class="auto-palette-item" data-add-node="${type}">
-            <div class="auto-node-icon" style="background:${def.color};box-shadow:0 0 10px ${def.glow}"><i data-lucide="${def.icon}" style="width:13px;height:13px"></i></div>
-            ${def.label}
-          </div>`).join('')}
-      </div>
       <div class="auto-canvas-wrap" id="autoCanvasWrap">
         <div class="auto-canvas" id="autoCanvas">
           <svg class="auto-edges" id="autoEdgesSvg"></svg>
-          ${!hasNodes ? `<div class="auto-canvas-empty-hint"><i data-lucide="mouse-pointer-click" style="width:16px;height:16px;flex-shrink:0"></i> Comece escolhendo um gatilho na barra lateral. Depois adicione ações e conecte as portas arrastando.</div>` : ''}
+          ${!hasNodes ? `<div class="auto-canvas-empty-hint"><i data-lucide="mouse-pointer-click" style="width:16px;height:16px;flex-shrink:0"></i> Clique em "+ Adicionar" para escolher um gatilho e começar o fluxo.</div>` : ''}
         </div>
       </div>
     </div>
@@ -328,23 +333,17 @@ function _autoInitBuilder() {
         title: 'Sair sem salvar?',
         message: 'Há alterações não salvas neste fluxo. Deseja sair mesmo assim?',
         confirmLabel: 'Sair sem salvar',
-        onConfirm: async () => { await _autoReloadList(); },
+        onConfirm: async () => { await _autoCloseBuilder(); },
       });
     } else {
-      _autoReloadList();
+      _autoCloseBuilder();
     }
   });
 
   document.getElementById('autoNameInput')?.addEventListener('input', e => { _autoCurrent.name = e.target.value; });
   document.getElementById('btnAutoSave')?.addEventListener('click', _autoSave);
   document.getElementById('btnAutoTest')?.addEventListener('click', () => _autoOpenTestModal(_autoCurrent.id, _autoCurrent.name));
-
-  document.querySelectorAll('.auto-palette-item[data-add-trigger]').forEach(el => {
-    el.addEventListener('click', () => _autoAddTrigger(el.dataset.addTrigger));
-  });
-  document.querySelectorAll('.auto-palette-item[data-add-node]').forEach(el => {
-    el.addEventListener('click', () => _autoAddNode(el.dataset.addNode));
-  });
+  document.getElementById('btnAutoAddMenu')?.addEventListener('click', e => { e.stopPropagation(); _autoOpenAddMenu(e.currentTarget); });
 
   Promise.all([
     apiFetch('/api/pipelines').catch(() => []),
@@ -418,6 +417,82 @@ function _autoDeleteNode(nodeId) {
   _autoRedrawEdges();
 }
 
+// ── BUILDER: menu "+ Adicionar" (Acionador ou Nó) ─────────────
+// Substitui a paleta fixa: clicar em "+ Adicionar" abre um menu de duas
+// etapas — primeiro escolhe a categoria (Acionador / Nó), depois o tipo
+// específico dentro dela.
+
+function _autoCloseAddMenuOnOutside(e) {
+  const menu = document.getElementById('autoAddMenu');
+  if (menu && !menu.contains(e.target) && e.target.id !== 'btnAutoAddMenu') _autoCloseAddMenu();
+}
+function _autoCloseAddMenu() {
+  document.getElementById('autoAddMenu')?.remove();
+  document.removeEventListener('click', _autoCloseAddMenuOnOutside);
+}
+
+function _autoOpenAddMenu(anchorEl) {
+  _autoCloseAddMenu();
+  const menu = document.createElement('div');
+  menu.id = 'autoAddMenu';
+  menu.className = 'auto-add-menu';
+  document.body.appendChild(menu);
+  const r = anchorEl.getBoundingClientRect();
+  menu.style.top = (r.bottom + 6) + 'px';
+  menu.style.left = r.left + 'px';
+  _autoRenderAddMenuLevel1(menu);
+  setTimeout(() => document.addEventListener('click', _autoCloseAddMenuOnOutside), 0);
+}
+
+function _autoRenderAddMenuLevel1(menu) {
+  const hasTrigger = _autoCurrent.graph.nodes.some(n => n.isTrigger);
+  menu.innerHTML = `
+    <button class="auto-add-menu-item" data-cat="trigger">
+      <div class="auto-node-icon" style="background:${AUTO_TRIGGER_COLOR};box-shadow:0 0 10px ${AUTO_TRIGGER_GLOW}"><i data-lucide="zap" style="width:14px;height:14px"></i></div>
+      <div class="auto-add-menu-text">
+        <div class="auto-add-menu-title">Acionador</div>
+        <div class="auto-add-menu-desc">${hasTrigger ? 'Trocar o gatilho do fluxo' : 'Evento que inicia o fluxo'}</div>
+      </div>
+      <i data-lucide="chevron-right" style="width:14px;height:14px;color:var(--ab-text-3)"></i>
+    </button>
+    <button class="auto-add-menu-item" data-cat="node">
+      <div class="auto-node-icon" style="background:${AUTO_COLORS.blue.color};box-shadow:0 0 10px ${AUTO_COLORS.blue.glow}"><i data-lucide="box" style="width:14px;height:14px"></i></div>
+      <div class="auto-add-menu-text">
+        <div class="auto-add-menu-title">Nó</div>
+        <div class="auto-add-menu-desc">Ação ou lógica do fluxo</div>
+      </div>
+      <i data-lucide="chevron-right" style="width:14px;height:14px;color:var(--ab-text-3)"></i>
+    </button>`;
+  lucide.createIcons();
+  menu.querySelectorAll('[data-cat]').forEach(btn => {
+    btn.addEventListener('click', () => _autoRenderAddMenuLevel2(menu, btn.dataset.cat));
+  });
+}
+
+function _autoRenderAddMenuLevel2(menu, cat) {
+  const isTrigger = cat === 'trigger';
+  const defs = isTrigger ? AUTO_TRIGGER_DEFS : AUTO_NODE_DEFS;
+  menu.innerHTML = `
+    <button class="auto-add-menu-item auto-add-menu-back" data-back="1">
+      <i data-lucide="chevron-left" style="width:14px;height:14px"></i>
+      <div class="auto-add-menu-text"><div class="auto-add-menu-title">${isTrigger ? 'Acionador' : 'Nó'}</div></div>
+    </button>
+    ${Object.entries(defs).map(([type, def]) => `
+      <button class="auto-add-menu-item" data-type="${type}">
+        <div class="auto-node-icon" style="background:${isTrigger ? AUTO_TRIGGER_COLOR : def.color};box-shadow:0 0 10px ${isTrigger ? AUTO_TRIGGER_GLOW : def.glow}"><i data-lucide="${def.icon}" style="width:13px;height:13px"></i></div>
+        <div class="auto-add-menu-text"><div class="auto-add-menu-title">${def.label}</div></div>
+      </button>`).join('')}`;
+  lucide.createIcons();
+  menu.querySelector('[data-back]')?.addEventListener('click', () => _autoRenderAddMenuLevel1(menu));
+  menu.querySelectorAll('[data-type]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _autoCloseAddMenu();
+      if (isTrigger) _autoAddTrigger(btn.dataset.type);
+      else _autoAddNode(btn.dataset.type);
+    });
+  });
+}
+
 // ── BUILDER: node summary text (canvas preview) ──────────────
 
 function _autoNodeSummary(node) {
@@ -473,7 +548,7 @@ function _autoRenderNodes() {
     el.style.top = node.position.y + 'px';
     el.dataset.nodeId = node.id;
 
-    const title = node.isTrigger ? (def?.label || node.triggerType) : def.label;
+    const title = node.label?.trim() || (node.isTrigger ? (def?.label || node.triggerType) : def.label);
     el.innerHTML = `
       <div class="auto-node-head">
         <div class="auto-node-icon" style="background:${color};box-shadow:0 0 12px ${glow}"><i data-lucide="${def?.icon || 'circle'}" style="width:13px;height:13px"></i></div>
@@ -689,12 +764,16 @@ function _autoRenderConfigPanel() {
   _autoBindConfigInputs(node, panel);
 }
 
-function _autoConfigHeader(title, icon, color, glow) {
+function _autoConfigHeader(node, defLabel, icon, color, glow) {
   return `
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
       <div class="auto-node-icon" style="background:${color};box-shadow:0 0 12px ${glow || 'transparent'}"><i data-lucide="${icon}" style="width:14px;height:14px"></i></div>
-      <div style="font-size:13px;font-weight:700;flex:1;color:var(--ab-text-1)">${_autoEsc(title)}</div>
+      <div style="font-size:11px;font-weight:700;flex:1;color:var(--ab-text-3);text-transform:uppercase;letter-spacing:.05em">${_autoEsc(defLabel)}</div>
       <button id="autoConfigClose" style="background:none;border:none;cursor:pointer;color:var(--ab-text-3)"><i data-lucide="x" style="width:16px;height:16px"></i></button>
+    </div>
+    <div class="settings-field">
+      <label class="settings-label">NOME DO NODE</label>
+      <input type="text" id="cfgNodeLabel" class="settings-input" value="${_autoEsc(node.label || '')}" placeholder="${_autoEsc(defLabel)}" />
     </div>`;
 }
 
@@ -749,7 +828,7 @@ function _autoTriggerConfigHtml(node) {
       </div>` : `<p style="font-size:12px;color:var(--ab-text-3)">A URL será gerada quando você salvar a automação.</p>`;
   }
 
-  return _autoConfigHeader(def.label, def.icon, AUTO_TRIGGER_COLOR, AUTO_TRIGGER_GLOW) + fields;
+  return _autoConfigHeader(node, def.label, def.icon, AUTO_TRIGGER_COLOR, AUTO_TRIGGER_GLOW) + fields;
 }
 
 function _autoNodeConfigHtml(node) {
@@ -847,10 +926,16 @@ function _autoNodeConfigHtml(node) {
     fields = `<p style="font-size:12px;color:var(--ab-text-3);line-height:1.5">Conecte a saída deste node a vários outros — todos serão executados em paralelo.</p>`;
   }
 
-  return _autoConfigHeader(def.label, def.icon, def.color, def.glow) + fields;
+  return _autoConfigHeader(node, def.label, def.icon, def.color, def.glow) + fields;
 }
 
 function _autoBindConfigInputs(node, panel) {
+  // Nome customizado — comum a triggers e nodes.
+  panel.querySelector('#cfgNodeLabel')?.addEventListener('input', e => {
+    node.label = e.target.value;
+    _autoRenderNodes();
+  });
+
   const set = (path, val) => {
     const keys = path.split('.');
     let obj = node.config || (node.config = {});
@@ -945,11 +1030,7 @@ async function _autoSave() {
     _autoCurrent.graph = saved.graph;
     // Re-render para refletir o token de webhook gerado no servidor, se houver.
     const selectedBefore = _autoSelectedNode;
-    automationsState.mode = 'builder';
-    const content = document.getElementById('pageContent');
-    content.innerHTML = window.pageAutomations();
-    lucide.createIcons();
-    window.initAutomations();
+    _autoRefreshBuilder();
     if (selectedBefore) _autoSelectNode(selectedBefore);
   } catch (e) {
     errEl.textContent = e.message;

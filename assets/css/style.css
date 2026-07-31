@@ -3034,13 +3034,11 @@ tbody tr:hover { background: var(--color-surface-2); }
 
   display: flex;
   flex-direction: column;
-  height: calc(100vh - var(--topbar-h) - 32px);
-  border: 1px solid var(--ab-border);
-  border-radius: var(--radius-lg);
+  height: 100vh;
+  width: 100vw;
   overflow: hidden;
   background: var(--ab-bg);
   color: var(--ab-text-1);
-  box-shadow: 0 20px 60px rgba(0,0,0,.35);
 }
 
 .auto-builder-header {
@@ -3078,48 +3076,41 @@ tbody tr:hover { background: var(--color-surface-2); }
   min-height: 0;
 }
 
-.auto-palette {
-  width: 236px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--ab-border);
+/* Menu "+ Adicionar" (Acionador / Nó) — substitui a paleta fixa antiga.
+   Ancorado sob o botão, com navegação em 2 níveis (categoria → tipo). */
+.auto-add-menu {
+  position: fixed;
+  width: 260px;
+  max-height: 70vh;
   overflow-y: auto;
-  padding: 14px 12px;
-  background: var(--ab-bg-2);
+  background: #0e1220;
+  border: 1px solid #2a3150;
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.03);
+  padding: 6px;
+  z-index: 4100;
 }
 
-.auto-palette-title {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .1em;
-  color: var(--ab-text-3);
-  margin: 16px 2px 9px;
-}
-.auto-palette-title:first-child { margin-top: 0; }
-
-.auto-palette-item {
+.auto-add-menu-item {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
+  width: 100%;
   padding: 8px 9px;
-  border-radius: 10px;
+  border-radius: 9px;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ab-text-2);
-  border: 1px solid var(--ab-border);
-  margin-bottom: 6px;
-  background: var(--ab-surface);
-  transition: background .15s, border-color .15s, transform .1s, box-shadow .15s;
+  border: none;
+  background: none;
+  text-align: left;
+  transition: background .12s;
 }
-.auto-palette-item:hover {
-  background: var(--ab-surface-2);
-  border-color: var(--ab-border-2);
-  color: var(--ab-text-1);
-  transform: translateX(2px);
-}
-.auto-palette-item:active { transform: scale(0.98); }
-.auto-palette-item.auto-disabled { opacity: .4; cursor: not-allowed; }
+.auto-add-menu-item:hover { background: #171d33; }
+.auto-add-menu-item + .auto-add-menu-item { margin-top: 2px; }
+.auto-add-menu-back { border-bottom: 1px solid #1e2438; border-radius: 0; padding-bottom: 10px; margin-bottom: 4px; }
+
+.auto-add-menu-text { min-width: 0; flex: 1; }
+.auto-add-menu-title { font-size: 12px; font-weight: 600; color: #f1f3fa; }
+.auto-add-menu-desc { font-size: 11px; color: #6b7292; margin-top: 1px; }
 
 .auto-node-icon {
   width: 26px;
@@ -3363,6 +3354,3 @@ tbody tr:hover { background: var(--color-surface-2); }
   margin-bottom: 6px;
 }
 
-@media (max-width: 900px) {
-  .auto-palette { display: none; }
-}
