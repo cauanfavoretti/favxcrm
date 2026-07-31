@@ -2587,6 +2587,12 @@ tbody tr:hover { background: var(--color-surface-2); }
   box-shadow: 0 0 0 2px var(--color-accent), var(--shadow-lg);
   opacity: 0.95;
 }
+/* Aplicada só durante "Organizar automaticamente" — anima o encaixe nas
+   novas posições. Não fica ligada durante o arrasto manual (deixaria o
+   card "atrasado" em relação ao mouse). */
+.widget-card.widget-arranging {
+  transition: left 0.28s ease, top 0.28s ease;
+}
 
 /* Alça de redimensionamento — no canto inferior direito, arraste na
    diagonal para ajustar largura e altura (ambas livres, em px) ao

@@ -483,6 +483,9 @@ function _renderWidgetGrid(widgets, dataMap, dashId, pipelines) {
       <button class="btn btn-primary btn-sm" id="btnAddWidget">
         <i data-lucide="plus" style="width:13px;height:13px"></i> Adicionar Widget
       </button>
+      <button class="btn btn-secondary btn-sm" id="btnArrangeWidgets" title="Organizar automaticamente" ${!widgets.length ? 'disabled' : ''}>
+        <i data-lucide="layout-grid" style="width:13px;height:13px"></i> Organizar
+      </button>
       <button class="btn btn-secondary btn-sm" id="btnRenameDash" title="Renomear">
         <i data-lucide="pencil" style="width:13px;height:13px"></i>
       </button>
@@ -606,6 +609,8 @@ function _bindWidgetGridEvents(dashId, pipelines) {
     _openWidgetBuilder(dashId, pipelines, null);
   });
 
+  document.getElementById('btnArrangeWidgets')?.addEventListener('click', () => _autoArrangeWidgets());
+
   document.getElementById('btnRenameDash')?.addEventListener('click', async () => {
     const dash = (_dashData?.dashboards||[]).find(d => d.id===dashId);
     const name = prompt('Novo nome do dashboard:', dash?.name||'');
@@ -670,6 +675,56 @@ function _growCanvasIfNeeded(canvas, card) {
   const bottom  = card.offsetTop + card.getBoundingClientRect().height + 80;
   const current = parseFloat(canvas.style.minHeight) || canvas.getBoundingClientRect().height;
   if (bottom > current) canvas.style.minHeight = `${bottom}px`;
+}
+
+// ── Organizar automaticamente ──
+// Reflui os widgets em linhas alinhadas (esquerda→direita, quebrando de
+// linha quando não cabe mais), preservando o tamanho de cada um e a
+// ordem visual atual (linha, depois coluna) — não altera width/height,
+// só reorganiza as posições para eliminar sobreposição e desalinhamento.
+async function _autoArrangeWidgets() {
+  const canvas = document.getElementById('widgetCanvas');
+  if (!canvas) return;
+  const cards = Array.from(canvas.querySelectorAll('.widget-card'));
+  if (!cards.length) return;
+
+  cards.sort((a, b) => {
+    const dy = a.offsetTop - b.offsetTop;
+    return Math.abs(dy) > 40 ? dy : a.offsetLeft - b.offsetLeft;
+  });
+
+  const canvasWidth = canvas.getBoundingClientRect().width;
+  const GAP = 16;
+  let x = 0, y = 0, rowH = 0;
+  const updates = [];
+
+  cards.forEach(card => card.classList.add('widget-arranging'));
+
+  cards.forEach(card => {
+    // Altura do card inteiro (cabeçalho + corpo), não só do corpo — usar
+    // --widget-h aqui faria as linhas se sobreporem pela altura do header.
+    const rect = card.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    if (x > 0 && x + w > canvasWidth) { x = 0; y += rowH + GAP; rowH = 0; }
+    card.style.left = `${x}px`;
+    card.style.top  = `${y}px`;
+    updates.push({ id: card.dataset.widgetId, x, y });
+    x += w + GAP;
+    rowH = Math.max(rowH, h);
+  });
+
+  canvas.style.minHeight = `${y + rowH + 80}px`;
+  setTimeout(() => cards.forEach(card => card.classList.remove('widget-arranging')), 300);
+
+  try {
+    await Promise.all(updates.map(u => apiFetch(`/api/dashboard-widgets/${u.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ pos_x: u.x, pos_y: u.y }),
+    })));
+  } catch (err) {
+    console.error('[widget auto-arrange]', err.message);
+  }
 }
 
 // ── Mover widget arrastando pelo cabeçalho — posição livre no canvas ──
