@@ -424,7 +424,15 @@ function _autoDeleteNode(nodeId) {
 
 function _autoCloseAddMenuOnOutside(e) {
   const menu = document.getElementById('autoAddMenu');
-  if (menu && !menu.contains(e.target) && e.target.id !== 'btnAutoAddMenu') _autoCloseAddMenu();
+  if (!menu) return;
+  // Usa composedPath() (capturado no momento do clique, antes de qualquer
+  // handler mexer no DOM) em vez de e.target: clicar num item do menu troca
+  // o innerHTML (nível 1 → nível 2) e desanexa o elemento clicado, então
+  // menu.contains(e.target) ficaria false mesmo para cliques dentro do menu.
+  const path = typeof e.composedPath === 'function' ? e.composedPath() : [e.target];
+  const btn = document.getElementById('btnAutoAddMenu');
+  if (path.includes(menu) || (btn && path.includes(btn))) return;
+  _autoCloseAddMenu();
 }
 function _autoCloseAddMenu() {
   document.getElementById('autoAddMenu')?.remove();
