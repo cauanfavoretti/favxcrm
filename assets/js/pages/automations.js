@@ -11,19 +11,29 @@ const AUTO_TRIGGER_DEFS = {
   opportunity_status_changed: { label: 'Status da oportunidade mudou',icon: 'flag',            desc: 'Quando é marcada como aberta, ganha ou perdida' },
   contact_assigned:           { label: 'Usuário atribuído ao contato',icon: 'user-check',      desc: 'Quando um usuário passa a ser responsável pelo contato' },
 };
-const AUTO_TRIGGER_COLOR = '#a855f7';
+// Paleta do workflow: azul, laranja, vermelho, roxo — cada cor com um
+// tom de glow correspondente, usado nos badges de ícone e nas bordas
+// dos nós selecionados/gatilho no canvas escuro.
+const AUTO_COLORS = {
+  blue:   { color: '#3b82f6', glow: 'rgba(59,130,246,.45)'  },
+  orange: { color: '#f97316', glow: 'rgba(249,115,22,.45)'  },
+  red:    { color: '#ef4444', glow: 'rgba(239,68,68,.45)'   },
+  purple: { color: '#a855f7', glow: 'rgba(168,85,247,.45)'  },
+};
+const AUTO_TRIGGER_COLOR = AUTO_COLORS.purple.color;
+const AUTO_TRIGGER_GLOW  = AUTO_COLORS.purple.glow;
 
 const AUTO_NODE_DEFS = {
-  whatsapp_send_message: { label: 'Enviar WhatsApp',        icon: 'message-square', color: '#22c55e' },
-  pipeline_create:       { label: 'Criar Pipeline',         icon: 'columns-3',      color: '#3b82f6' },
-  opportunity_search:    { label: 'Procurar Oportunidade',  icon: 'search',         color: '#3b82f6' },
-  opportunity_update:    { label: 'Atualizar Oportunidade', icon: 'pencil',         color: '#3b82f6' },
-  timer:                 { label: 'Timer',                  icon: 'clock',          color: '#f59e0b' },
-  if_else:                { label: 'If / Else',              icon: 'git-branch',     color: '#ec4899' },
-  split:                  { label: 'Split',                  icon: 'split',          color: '#6366f1' },
+  whatsapp_send_message: { label: 'Enviar WhatsApp',        icon: 'message-square', ...AUTO_COLORS.blue },
+  pipeline_create:       { label: 'Criar Pipeline',         icon: 'columns-3',      ...AUTO_COLORS.blue },
+  opportunity_search:    { label: 'Procurar Oportunidade',  icon: 'search',         ...AUTO_COLORS.blue },
+  opportunity_update:    { label: 'Atualizar Oportunidade', icon: 'pencil',         ...AUTO_COLORS.blue },
+  timer:                 { label: 'Timer',                  icon: 'clock',          ...AUTO_COLORS.orange },
+  if_else:                { label: 'If / Else',              icon: 'git-branch',     ...AUTO_COLORS.red },
+  split:                  { label: 'Split',                  icon: 'split',          ...AUTO_COLORS.purple },
 };
 
-const AUTO_STAGE_COLORS = ['#3b82f6','#f59e0b','#8b5cf6','#ec4899','#10b981','#ef4444','#6b7280'];
+const AUTO_STAGE_COLORS = ['#3b82f6','#f97316','#a855f7','#ef4444','#3b82f6','#f97316','#a855f7'];
 
 let automationsState = { mode: 'list', list: [] };
 let _autoCurrent      = null;  // { id, name, description, graph:{nodes,edges} }
@@ -290,13 +300,13 @@ function _autoBuilderHtml() {
         <div class="auto-palette-title">Gatilho (escolha 1)</div>
         ${Object.entries(AUTO_TRIGGER_DEFS).map(([type, def]) => `
           <div class="auto-palette-item" data-add-trigger="${type}">
-            <div class="auto-node-icon" style="background:${AUTO_TRIGGER_COLOR}"><i data-lucide="${def.icon}" style="width:13px;height:13px"></i></div>
+            <div class="auto-node-icon" style="background:${AUTO_TRIGGER_COLOR};box-shadow:0 0 10px ${AUTO_TRIGGER_GLOW}"><i data-lucide="${def.icon}" style="width:13px;height:13px"></i></div>
             ${def.label}
           </div>`).join('')}
         <div class="auto-palette-title">Ações &amp; Lógica</div>
         ${Object.entries(AUTO_NODE_DEFS).map(([type, def]) => `
           <div class="auto-palette-item" data-add-node="${type}">
-            <div class="auto-node-icon" style="background:${def.color}"><i data-lucide="${def.icon}" style="width:13px;height:13px"></i></div>
+            <div class="auto-node-icon" style="background:${def.color};box-shadow:0 0 10px ${def.glow}"><i data-lucide="${def.icon}" style="width:13px;height:13px"></i></div>
             ${def.label}
           </div>`).join('')}
       </div>
@@ -456,6 +466,7 @@ function _autoRenderNodes() {
   _autoCurrent.graph.nodes.forEach(node => {
     const def = node.isTrigger ? AUTO_TRIGGER_DEFS[node.triggerType] : AUTO_NODE_DEFS[node.type];
     const color = node.isTrigger ? AUTO_TRIGGER_COLOR : def.color;
+    const glow  = node.isTrigger ? AUTO_TRIGGER_GLOW  : def.glow;
     const el = document.createElement('div');
     el.className = 'auto-node' + (node.isTrigger ? ' auto-node-trigger' : '') + (node.type === 'if_else' ? ' auto-node-if' : '') + (_autoSelectedNode === node.id ? ' auto-node-selected' : '');
     el.style.left = node.position.x + 'px';
@@ -465,7 +476,7 @@ function _autoRenderNodes() {
     const title = node.isTrigger ? (def?.label || node.triggerType) : def.label;
     el.innerHTML = `
       <div class="auto-node-head">
-        <div class="auto-node-icon" style="background:${color}"><i data-lucide="${def?.icon || 'circle'}" style="width:13px;height:13px"></i></div>
+        <div class="auto-node-icon" style="background:${color};box-shadow:0 0 12px ${glow}"><i data-lucide="${def?.icon || 'circle'}" style="width:13px;height:13px"></i></div>
         <div class="auto-node-title">${_autoEsc(title)}</div>
         ${node.isTrigger ? '' : `<button class="auto-node-del" data-del="${node.id}" title="Remover"><i data-lucide="x" style="width:13px;height:13px"></i></button>`}
       </div>
@@ -603,17 +614,38 @@ function _autoBezier(p1, p2) {
   return `M ${p1.x} ${p1.y} C ${p1.x + dx} ${p1.y}, ${p2.x - dx} ${p2.y}, ${p2.x} ${p2.y}`;
 }
 
+// Cor de origem de uma aresta — herda a cor do node de onde ela sai
+// (gatilho = roxo, ação = a cor do seu tipo), dando o efeito de "fluxo
+// colorido" visto no diagrama de referência.
+function _autoEdgeSourceColor(nodeId) {
+  const node = _autoCurrent.graph.nodes.find(n => n.id === nodeId);
+  if (!node) return AUTO_COLORS.blue.color;
+  return node.isTrigger ? AUTO_TRIGGER_COLOR : (AUTO_NODE_DEFS[node.type]?.color || AUTO_COLORS.blue.color);
+}
+
 function _autoRedrawEdges() {
   const svg = document.getElementById('autoEdgesSvg');
   if (!svg) return;
-  let html = '';
+  let html = `
+    <defs>
+      <marker id="autoArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f5680"></path>
+      </marker>
+    </defs>`;
 
   _autoCurrent.graph.edges.forEach(edge => {
     const p1 = _autoPortWorldPos(edge.source, 'out', edge.sourceHandle);
     const p2 = _autoPortWorldPos(edge.target, 'in');
     const d = _autoBezier(p1, p2);
     const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
-    html += `<path class="auto-edge-line" d="${d}"></path>`;
+    const gradId = `autoGrad_${edge.id}`;
+    const srcColor = _autoEdgeSourceColor(edge.source);
+    html += `
+      <linearGradient id="${gradId}" x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="${srcColor}"></stop>
+        <stop offset="100%" stop-color="#4f5680"></stop>
+      </linearGradient>`;
+    html += `<path class="auto-edge-line" d="${d}" style="stroke:url(#${gradId})" marker-end="url(#autoArrow)"></path>`;
     html += `<path class="auto-edge-hit" d="${d}" data-edge-id="${edge.id}"></path>`;
     html += `<g class="auto-edge-del" data-edge-del="${edge.id}"><circle cx="${mx}" cy="${my}" r="9"></circle><text x="${mx}" y="${my}">×</text></g>`;
   });
@@ -657,18 +689,18 @@ function _autoRenderConfigPanel() {
   _autoBindConfigInputs(node, panel);
 }
 
-function _autoConfigHeader(title, icon, color) {
+function _autoConfigHeader(title, icon, color, glow) {
   return `
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
-      <div class="auto-node-icon" style="background:${color}"><i data-lucide="${icon}" style="width:14px;height:14px"></i></div>
-      <div style="font-size:13px;font-weight:700;flex:1">${_autoEsc(title)}</div>
-      <button id="autoConfigClose" style="background:none;border:none;cursor:pointer;color:var(--color-text-3)"><i data-lucide="x" style="width:16px;height:16px"></i></button>
+      <div class="auto-node-icon" style="background:${color};box-shadow:0 0 12px ${glow || 'transparent'}"><i data-lucide="${icon}" style="width:14px;height:14px"></i></div>
+      <div style="font-size:13px;font-weight:700;flex:1;color:var(--ab-text-1)">${_autoEsc(title)}</div>
+      <button id="autoConfigClose" style="background:none;border:none;cursor:pointer;color:var(--ab-text-3)"><i data-lucide="x" style="width:16px;height:16px"></i></button>
     </div>`;
 }
 
 function _autoTriggerConfigHtml(node) {
   const def = AUTO_TRIGGER_DEFS[node.triggerType];
-  let fields = `<p style="font-size:12px;color:var(--color-text-3);line-height:1.5;margin-bottom:14px">${def.desc}</p>`;
+  let fields = `<p style="font-size:12px;color:var(--ab-text-3);line-height:1.5;margin-bottom:14px">${def.desc}</p>`;
 
   if (node.triggerType === 'opportunity_stage_changed') {
     const pid = node.config?.pipeline_id || '';
@@ -710,14 +742,14 @@ function _autoTriggerConfigHtml(node) {
       <div class="settings-field">
         <label class="settings-label">URL DO WEBHOOK</label>
         <div style="display:flex;gap:6px">
-          <input type="text" readonly value="${url}" style="flex:1;font-size:11px;padding:8px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-bg)" />
+          <input type="text" readonly value="${url}" style="flex:1;font-size:11px;padding:8px;border:1px solid var(--ab-border-2);border-radius:var(--radius-sm);background:var(--ab-surface)" />
           <button class="btn btn-secondary btn-sm" id="cfgCopyWebhook" title="Copiar"><i data-lucide="copy" style="width:13px;height:13px"></i></button>
         </div>
-        <p style="font-size:11px;color:var(--color-text-3);margin-top:6px">Envie um POST para esta URL para disparar o fluxo.</p>
-      </div>` : `<p style="font-size:12px;color:var(--color-text-3)">A URL será gerada quando você salvar a automação.</p>`;
+        <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">Envie um POST para esta URL para disparar o fluxo.</p>
+      </div>` : `<p style="font-size:12px;color:var(--ab-text-3)">A URL será gerada quando você salvar a automação.</p>`;
   }
 
-  return _autoConfigHeader(def.label, def.icon, AUTO_TRIGGER_COLOR) + fields;
+  return _autoConfigHeader(def.label, def.icon, AUTO_TRIGGER_COLOR, AUTO_TRIGGER_GLOW) + fields;
 }
 
 function _autoNodeConfigHtml(node) {
@@ -730,7 +762,7 @@ function _autoNodeConfigHtml(node) {
       <div class="settings-field">
         <label class="settings-label">MENSAGEM *</label>
         <textarea id="cfgMessage" class="settings-input" rows="6" style="resize:vertical">${_autoEsc(c.message || '')}</textarea>
-        <p style="font-size:11px;color:var(--color-text-3);margin-top:6px">Use <code>{{trigger.contact.name}}</code>, <code>{{trigger.message}}</code>, etc. para inserir dados do gatilho.</p>
+        <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">Use <code>{{trigger.contact.name}}</code>, <code>{{trigger.message}}</code>, etc. para inserir dados do gatilho.</p>
       </div>`;
   } else if (node.type === 'pipeline_create') {
     const stages = c.stages && c.stages.length ? c.stages : [{ name: '', color: AUTO_STAGE_COLORS[0] }];
@@ -795,7 +827,7 @@ function _autoNodeConfigHtml(node) {
           <input type="number" id="cfgAmount" class="settings-input" value="${c.amount || 1}" min="1" style="width:90px" />
           ${_sel2('cfgUnit', [['minutes','Minutos'],['hours','Horas'],['days','Dias']], c.unit || 'minutes')}
         </div>
-        <p style="font-size:11px;color:var(--color-text-3);margin-top:6px">A retomada depende de uma tarefa agendada (cron) — pode levar alguns minutos além do tempo configurado.</p>
+        <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">A retomada depende de uma tarefa agendada (cron) — pode levar alguns minutos além do tempo configurado.</p>
       </div>`;
   } else if (node.type === 'if_else') {
     fields = `
@@ -812,10 +844,10 @@ function _autoNodeConfigHtml(node) {
         <input type="text" id="cfgValue" class="settings-input" value="${_autoEsc(c.value ?? '')}" />
       </div>`;
   } else if (node.type === 'split') {
-    fields = `<p style="font-size:12px;color:var(--color-text-3);line-height:1.5">Conecte a saída deste node a vários outros — todos serão executados em paralelo.</p>`;
+    fields = `<p style="font-size:12px;color:var(--ab-text-3);line-height:1.5">Conecte a saída deste node a vários outros — todos serão executados em paralelo.</p>`;
   }
 
-  return _autoConfigHeader(def.label, def.icon, def.color) + fields;
+  return _autoConfigHeader(def.label, def.icon, def.color, def.glow) + fields;
 }
 
 function _autoBindConfigInputs(node, panel) {
