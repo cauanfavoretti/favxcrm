@@ -365,9 +365,11 @@ window.initAgents = function (webhooks) {
   tabWebhooks?.addEventListener('click', () => switchTab('webhooks'));
   tabOffice?.addEventListener('click',   () => switchTab('office'));
 
-  // Mostra "Configurações avançadas" apenas para admin@favx.com.br
+  // Mostra "Configurações avançadas" (criar/editar webhooks) para o papel
+  // Desenvolvedor (super_admin) — antes travado num único e-mail fixo, o
+  // que impedia qualquer outro desenvolvedor de criar webhooks no plano.
   const u = typeof decodeToken === 'function' ? decodeToken() : null;
-  if (u?.email === 'admin@favx.com.br') {
+  if (u?.role === 'super_admin') {
     const wrapper = document.getElementById('btnAdvancedWrapper');
     if (wrapper) wrapper.style.display = '';
     document.getElementById('btnAdvanced')?.addEventListener('click', () => {
