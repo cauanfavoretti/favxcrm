@@ -897,6 +897,39 @@ app.delete('/api/dashboard-widgets/:id', auth, requireAdmin, async (req, res) =>
   }
 });
 
+// Duplica um widget dentro do mesmo dashboard. A cópia nasce deslocada em
+// relação ao original (+24px) para não ficar exatamente por baixo dele no
+// canvas de posição livre.
+app.post('/api/dashboard-widgets/:id/duplicate', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO dashboard_widgets
+         (dashboard_id, title, pillar, display, config, position, width, height, pos_x, pos_y, width_px)
+       SELECT dw.dashboard_id,
+              -- Sem título o widget exibe o nome do pilar; manter NULL evita
+              -- que a cópia vire literalmente " (cópia)".
+              CASE WHEN dw.title IS NULL THEN NULL
+                   ELSE LEFT(dw.title || ' (cópia)', 150) END,
+              dw.pillar, dw.display, dw.config,
+              (SELECT COALESCE(MAX(position),0)+1 FROM dashboard_widgets WHERE dashboard_id = dw.dashboard_id),
+              dw.width, dw.height,
+              COALESCE(dw.pos_x,0) + 24, COALESCE(dw.pos_y,0) + 24,
+              dw.width_px
+       FROM dashboard_widgets dw
+       JOIN custom_dashboards cd ON cd.id = dw.dashboard_id
+       WHERE dw.id = $1 AND cd.subaccount_id = $2
+       RETURNING *`,
+      [req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Widget não encontrado.' });
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error('[widget duplicate]', err.message);
+    res.status(500).json({ message: 'Erro ao duplicar widget.' });
+  }
+});
+
 app.post('/api/dashboard-widgets/:id/data', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   try {

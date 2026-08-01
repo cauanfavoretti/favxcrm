@@ -2663,8 +2663,7 @@ tbody tr:hover { background: var(--color-surface-2); }
   gap: 2px;
   flex-shrink: 0;
 }
-.widget-edit-btn,
-.widget-delete-btn {
+.widget-menu-btn {
   background: none;
   border: none;
   cursor: pointer;
@@ -2676,8 +2675,47 @@ tbody tr:hover { background: var(--color-surface-2); }
   align-items: center;
   justify-content: center;
 }
-.widget-edit-btn:hover   { color: var(--color-text-1); background: var(--color-bg); }
-.widget-delete-btn:hover { color: var(--color-red);    background: var(--color-red-lite); }
+.widget-menu-btn:hover { color: var(--color-text-1); background: var(--color-bg); }
+
+/* Popup do menu "..." — vive no <body> (position:fixed) porque o card tem
+   overflow:hidden e cortaria um dropdown posicionado dentro dele. */
+.widget-menu-popup {
+  position: fixed;
+  z-index: 3500;
+  min-width: 168px;
+  padding: 5px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.widget-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--color-text-2);
+  text-align: left;
+  transition: color var(--transition), background var(--transition);
+}
+.widget-menu-item:hover { background: var(--color-bg); color: var(--color-text-1); }
+.widget-menu-item--danger { color: var(--color-red); }
+.widget-menu-item--danger:hover { background: var(--color-red-lite); color: var(--color-red); }
+.widget-menu-sep {
+  height: 1px;
+  background: var(--color-border);
+  margin: 4px 2px;
+}
 
 .widget-card-body {
   padding: 16px 14px;

@@ -524,8 +524,7 @@ function _renderWidgetCard(widget, data, layout) {
         <span class="widget-card-title">${title || _PILLAR_LABEL[pillar] || 'Widget'}</span>
       </div>
       ${canEdit ? `<div class="widget-actions">
-        <button class="widget-edit-btn"   data-widget-id="${id}" title="Editar"><i data-lucide="pencil"  style="width:12px;height:12px"></i></button>
-        <button class="widget-delete-btn" data-widget-id="${id}" title="Excluir"><i data-lucide="trash-2" style="width:12px;height:12px"></i></button>
+        <button class="widget-menu-btn" data-widget-id="${id}" title="Mais opções"><i data-lucide="more-vertical" style="width:14px;height:14px"></i></button>
       </div>` : ''}
     </div>
     <div class="widget-card-body" id="widget-body-${id}" title="Clique para ver os dados">${body}</div>
@@ -646,24 +645,10 @@ function _bindWidgetGridEvents(dashId, pipelines) {
     } catch(e) { alert(e.message); }
   });
 
-  document.querySelectorAll('.widget-edit-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const wid     = btn.dataset.widgetId;
-      const widgets = await apiFetch(`/api/custom-dashboards/${dashId}/widgets`).catch(()=>[]);
-      const widget  = widgets.find(w => w.id===wid);
-      if (widget) _openWidgetBuilder(dashId, pipelines, widget);
-    });
-  });
-
-  document.querySelectorAll('.widget-delete-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      if (!confirm('Excluir este widget?')) return;
-      try {
-        await apiFetch(`/api/dashboard-widgets/${btn.dataset.widgetId}`, { method:'DELETE' });
-        const inst = _chartInstances[`chart-${btn.dataset.widgetId}`];
-        if (inst) { inst.destroy(); delete _chartInstances[`chart-${btn.dataset.widgetId}`]; }
-        await _loadAndRenderCustomDash(dashId, pipelines);
-      } catch(e) { alert(e.message); }
+  document.querySelectorAll('.widget-menu-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      _openWidgetMenu(btn, btn.dataset.widgetId, dashId, pipelines);
     });
   });
 
@@ -747,6 +732,93 @@ async function _autoArrangeWidgets() {
   } catch (err) {
     console.error('[widget auto-arrange]', err.message);
   }
+}
+
+// ── Menu "..." de cada widget (editar / duplicar / excluir) ──
+// O menu é anexado ao <body> com position:fixed porque .widget-card tem
+// overflow:hidden — um dropdown dentro do card seria cortado.
+function _closeWidgetMenu() {
+  document.getElementById('widgetMenuPopup')?.remove();
+  document.removeEventListener('mousedown', _onWidgetMenuOutside, true);
+  document.removeEventListener('keydown', _onWidgetMenuKey);
+  window.removeEventListener('scroll', _closeWidgetMenu, true);
+  window.removeEventListener('resize', _closeWidgetMenu);
+}
+function _onWidgetMenuOutside(e) {
+  const menu = document.getElementById('widgetMenuPopup');
+  // composedPath() em vez de menu.contains(e.target): o alvo pode já ter
+  // sido substituído/removido do DOM quando o handler roda.
+  if (menu && !e.composedPath().includes(menu)) _closeWidgetMenu();
+}
+function _onWidgetMenuKey(e) { if (e.key === 'Escape') _closeWidgetMenu(); }
+
+function _openWidgetMenu(btn, widgetId, dashId, pipelines) {
+  const alreadyOpen = document.getElementById('widgetMenuPopup')?.dataset.widgetId === widgetId;
+  _closeWidgetMenu();
+  if (alreadyOpen) return; // clicar de novo no mesmo "..." fecha o menu
+
+  const menu = document.createElement('div');
+  menu.id = 'widgetMenuPopup';
+  menu.className = 'widget-menu-popup';
+  menu.dataset.widgetId = widgetId;
+  menu.innerHTML = `
+    <button class="widget-menu-item" data-act="edit">
+      <i data-lucide="pencil" style="width:13px;height:13px"></i> Editar
+    </button>
+    <button class="widget-menu-item" data-act="duplicate">
+      <i data-lucide="copy" style="width:13px;height:13px"></i> Duplicar
+    </button>
+    <div class="widget-menu-sep"></div>
+    <button class="widget-menu-item widget-menu-item--danger" data-act="delete">
+      <i data-lucide="trash-2" style="width:13px;height:13px"></i> Excluir
+    </button>`;
+  document.body.appendChild(menu);
+  lucide.createIcons();
+
+  // Ancora abaixo/à direita do botão, virando para dentro se não couber.
+  const r  = btn.getBoundingClientRect();
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  const left = Math.max(8, Math.min(r.right - mw, window.innerWidth  - mw - 8));
+  const top  = (r.bottom + mh + 8 > window.innerHeight) ? Math.max(8, r.top - mh - 4) : r.bottom + 4;
+  menu.style.left = `${left}px`;
+  menu.style.top  = `${top}px`;
+
+  menu.addEventListener('click', async e => {
+    const item = e.target.closest('.widget-menu-item');
+    if (!item) return;
+    const act = item.dataset.act;
+    _closeWidgetMenu();
+
+    if (act === 'edit') {
+      const widgets = await apiFetch(`/api/custom-dashboards/${dashId}/widgets`).catch(()=>[]);
+      const widget  = widgets.find(w => w.id === widgetId);
+      if (widget) _openWidgetBuilder(dashId, pipelines, widget);
+
+    } else if (act === 'duplicate') {
+      try {
+        await apiFetch(`/api/dashboard-widgets/${widgetId}/duplicate`, { method:'POST' });
+        await _loadAndRenderCustomDash(dashId, pipelines);
+      } catch (err) { alert(err.message); }
+
+    } else if (act === 'delete') {
+      showConfirmModal({
+        title: 'Excluir widget',
+        message: 'Tem certeza que deseja excluir este widget? Esta ação não pode ser desfeita.',
+        confirmLabel: 'Sim, excluir',
+        onConfirm: async () => {
+          await apiFetch(`/api/dashboard-widgets/${widgetId}`, { method:'DELETE' });
+          const inst = _chartInstances[`chart-${widgetId}`];
+          if (inst) { inst.destroy(); delete _chartInstances[`chart-${widgetId}`]; }
+          await _loadAndRenderCustomDash(dashId, pipelines);
+        },
+      });
+    }
+  });
+
+  document.addEventListener('mousedown', _onWidgetMenuOutside, true);
+  document.addEventListener('keydown', _onWidgetMenuKey);
+  window.addEventListener('scroll', _closeWidgetMenu, true);
+  window.addEventListener('resize', _closeWidgetMenu);
 }
 
 // ── Drill-down: ver os registros por trás do número do widget ──
