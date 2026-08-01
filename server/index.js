@@ -1734,6 +1734,25 @@ app.post('/api/conversations/:id/read', auth, async (req, res) => {
   } catch { res.json({ ok: true }); }
 });
 
+// Apaga a conversa e todo o seu histórico. Restrito a admin porque as
+// mensagens são removidas em definitivo. As tabelas dependentes já têm
+// ON DELETE CASCADE (messages, conversation_followers, ai_agent_sessions);
+// ai_usage_logs usa SET NULL para preservar o histórico de consumo de IA.
+app.delete('/api/conversations/:id', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rowCount } = await pool.query(
+      `DELETE FROM conversations WHERE id = $1 AND subaccount_id = $2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!rowCount) return res.status(404).json({ message: 'Conversa não encontrada.' });
+    res.status(204).send();
+  } catch (err) {
+    console.error('[conversations DELETE]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 // Lista usuários disponíveis para atribuição (sem exigir admin)
 app.get('/api/conversations/members', auth, async (req, res) => {
   const { subaccount_id } = req.user;

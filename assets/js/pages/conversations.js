@@ -49,6 +49,9 @@ function _convItemHtml(c) {
         <div class="conv-time">${c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—'}</div>
         ${c.unread_count > 0 ? `<div class="conv-unread-count">${c.unread_count}</div>` : ''}
       </div>
+      ${window.favxCan('delete_conversation') ? `<button class="conv-delete-btn" data-conv-id="${c.id}" title="Apagar conversa">
+        <i data-lucide="trash-2" style="width:13px;height:13px"></i>
+      </button>` : ''}
     </div>`;
 }
 
@@ -80,6 +83,35 @@ function _bindConvItems() {
       const conv = _convData.find(c => c.id === activeConvId);
       await loadAndRenderChat(activeConvId, conv);
     });
+  });
+
+  document.querySelectorAll('.conv-delete-btn').forEach(btn => {
+    // stopPropagation: sem isso o clique também abriria a conversa que se
+    // está prestes a apagar.
+    btn.addEventListener('click', e => { e.stopPropagation(); _convDelete(btn.dataset.convId); });
+  });
+}
+
+function _convDelete(convId) {
+  const conv = _convData.find(c => c.id === convId);
+  const nome = conv?.contact_name || conv?.contact_phone || 'esta conversa';
+  showConfirmModal({
+    title: 'Apagar conversa',
+    message: `Tem certeza que deseja apagar a conversa com <strong>${_convEsc(nome)}</strong>? Todo o histórico de mensagens será perdido e esta ação não pode ser desfeita.`,
+    confirmLabel: 'Sim, apagar',
+    onConfirm: async () => {
+      await apiFetch(`/api/conversations/${convId}`, { method: 'DELETE' });
+      _convData = _convData.filter(c => c.id !== convId);
+      // Se a conversa aberta foi apagada, limpa o painel do chat.
+      if (activeConvId === convId) {
+        _convStopPolling();
+        activeConvId = null;
+        const chat = document.getElementById('chatArea');
+        if (chat) { chat.innerHTML = renderEmptyChat(); lucide.createIcons(); }
+      }
+      _renderConvList();
+      window.refreshConvNavBadge?.();
+    },
   });
 }
 

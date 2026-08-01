@@ -20,7 +20,7 @@ window.favxCan = function(action) {
   const role = window.favxCurrentUser()?.role;
   if (!role) return false;
   if (role === 'super_admin' || role === 'admin') return true;
-  const restricted = new Set(['edit_dashboard', 'manage_ai', 'manage_settings']);
+  const restricted = new Set(['edit_dashboard', 'manage_ai', 'manage_settings', 'delete_conversation']);
   return !restricted.has(action);
 };
 
