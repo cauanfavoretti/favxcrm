@@ -1131,8 +1131,6 @@ const _GROUP_BY = {
     { id:'pipeline',        label:'Por funil' },
     { id:'stage',           label:'Por etapa' },
     { id:'status',          label:'Por status' },
-    { id:'contact',         label:'Por contato' },
-    { id:'assigned',        label:'Por responsável' },
     { id:'title',           label:'Por título' },
     { id:'currency',        label:'Por moeda' },
     { id:'value',           label:'Por valor' },

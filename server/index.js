@@ -634,10 +634,14 @@ async function executeWidgetQuery(pillar, config, subaccount_id) {
       avg_value: 'ROUND(AVG(o.value)::numeric,2)',
     };
     const metricSql = METRIC_SQL[metric] || 'COUNT(o.id)';
-    const joins     = `LEFT JOIN pipeline_stages ps ON ps.id = o.stage_id
-                       LEFT JOIN pipelines p        ON p.id  = o.pipeline_id
-                       LEFT JOIN contacts cc        ON cc.id = o.contact_id
-                       LEFT JOIN users u            ON u.id  = o.assigned_to`;
+    // contact/assigned saíram das opções da interface (são dados de outras
+    // entidades, não da oportunidade), mas continuam suportados para não
+    // quebrar widgets já salvos com esses agrupamentos. Os JOINs entram só
+    // quando realmente usados.
+    const joins = `LEFT JOIN pipeline_stages ps ON ps.id = o.stage_id
+                   LEFT JOIN pipelines p        ON p.id  = o.pipeline_id`
+      + (group_by === 'contact'  ? ` LEFT JOIN contacts cc ON cc.id = o.contact_id`  : '')
+      + (group_by === 'assigned' ? ` LEFT JOIN users u     ON u.id  = o.assigned_to` : '');
     const GB_MAP = {
       pipeline:      `COALESCE(p.name,'—')`,
       stage:         `COALESCE(ps.name,'—')`,
