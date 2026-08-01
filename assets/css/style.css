@@ -2663,6 +2663,17 @@ tbody tr:hover { background: var(--color-surface-2); }
   gap: 2px;
   flex-shrink: 0;
 }
+/* Mensagem salva no CRM que não chegou ao contato. */
+.msg-failed {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-red);
+}
+
 .widget-menu-btn {
   background: none;
   border: none;

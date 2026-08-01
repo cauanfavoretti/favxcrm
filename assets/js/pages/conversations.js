@@ -720,8 +720,26 @@ function renderMessageHtml(m, contactName) {
         ${isAutomation ? `<div class="ai-label">${_zapSvg} Automação</div>` : ''}
         <div class="msg-bubble${bubbleClass}" ${bubbleStyle ? `style="${bubbleStyle}"` : ''}>${bubbleContent}</div>
         <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
+        ${m.status === 'failed' ? _msgFailedLabel(m.error_message) : ''}
       </div>
     </div>`;
+}
+
+// Aviso de que a mensagem ficou salva no CRM mas não chegou ao contato.
+// Sem isso, uma falha de envio fica indistinguível de um envio bem-sucedido.
+function _msgFailedLabel(errorMessage) {
+  const detail = errorMessage ? ` · ${_convEsc(errorMessage)}` : '';
+  return `<div class="msg-failed" title="${errorMessage ? _convEsc(errorMessage) : 'Falha no envio'}">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+         stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle>
+      <line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+    Não entregue${detail}
+  </div>`;
+}
+
+function _convEsc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, ch =>
+    ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
 }
 
 async function loadAndRenderChat(convId, conv) {
@@ -1274,6 +1292,12 @@ async function loadAndRenderChat(convId, conv) {
         const existing = container?.querySelector(`[data-msg-id="${saved.id}"]`);
         if (existing && existing !== tempRow) tempRow.remove();
         else tempRow.dataset.msgId = saved.id;
+      }
+      // A mensagem é salva no CRM mesmo quando o WhatsApp recusa o envio —
+      // marca visualmente para não parecer entregue.
+      if (saved?.status === 'failed' && tempRow?.isConnected) {
+        tempRow.querySelector('.msg-content')
+          ?.insertAdjacentHTML('beforeend', _msgFailedLabel(saved.error_message));
       }
       if (saved?.sent_at) _lastMsgSentAt = saved.sent_at;
       // Responder o contato marca a conversa como lida (nota interna não)
