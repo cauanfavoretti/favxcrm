@@ -52,9 +52,6 @@ window.pageAiDashboard = function () {
       <div class="wbuild-btn-group" id="aiRangeGroup">
         ${_AI_RANGES.map(r => `<button class="wbuild-btn${r.id===_aiRange?' active':''}" data-range="${r.id}">${r.label}</button>`).join('')}
       </div>
-      ${window.favxCan('manage_ai') ? `<button class="btn btn-secondary btn-sm" id="aiSetupBtn">
-        <i data-lucide="plug" style="width:14px;height:14px"></i> Conectar IA
-      </button>` : ''}
       <button class="btn btn-secondary btn-sm" id="aiRefreshBtn">
         <i data-lucide="refresh-cw" style="width:14px;height:14px"></i> Atualizar
       </button>
@@ -71,10 +68,8 @@ function _aiEmptyState() {
     <div class="dash-empty-icon"><i data-lucide="bot" style="width:28px;height:28px"></i></div>
     <div class="dash-empty-title">Nenhuma ação registrada ainda</div>
     <div class="dash-empty-text">
-      Este painel é preenchido pelas ações que suas IAs reportam ao CRM.
-      ${window.favxCan('manage_ai')
-        ? 'Use o botão <strong>Conectar IA</strong> para pegar o endereço e o token que o seu agente precisa usar.'
-        : 'Peça a um administrador para conectar um agente de IA.'}
+      Este painel é preenchido pelas ações que os agentes de IA reportam ao CRM.
+      Assim que um agente começar a reportar, os dados aparecem aqui.
     </div>
   </div>`;
 }
@@ -256,6 +251,11 @@ async function _aiLoad() {
 
 // Tela com o endereço e o token que o agente de IA precisa usar, mais um
 // exemplo pronto de requisição.
+//
+// Propositalmente SEM botão na interface: a ingestão continua ativa no
+// backend (POST /api/ai-events/:token) para a IA externa e, no futuro, para
+// as IAs criadas no CRM. Para consultar o token quando for configurar um
+// agente, chame _aiOpenSetup() pelo console ou GET /api/ai-events-token.
 async function _aiOpenSetup() {
   document.getElementById('aiSetupOverlay')?.remove();
   const overlay = document.createElement('div');
@@ -378,7 +378,6 @@ function _aiRenderSetup(overlay) {
 
 window.initAiDashboard = function () {
   document.getElementById('aiRefreshBtn')?.addEventListener('click', _aiLoad);
-  document.getElementById('aiSetupBtn')?.addEventListener('click', _aiOpenSetup);
   document.getElementById('aiRangeGroup')?.addEventListener('click', e => {
     const btn = e.target.closest('[data-range]');
     if (!btn || btn.dataset.range === _aiRange) return;
