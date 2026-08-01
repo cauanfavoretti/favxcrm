@@ -449,6 +449,14 @@ function _widgetLayout(widget, index) {
   return { x, y, w, h };
 }
 
+// O banco devolve a origem crua ("whatsapp", "__none__" quando vazia).
+// Traduz para exibição em qualquer widget agrupado por origem — vale para
+// contatos e para oportunidades.
+function _humanizeSeries(widget, data) {
+  if (!data || data.type !== 'series' || widget.config?.group_by !== 'source') return data;
+  return { ...data, rows: (data.rows || []).map(r => ({ ...r, label: _srcLabel(r.label) })) };
+}
+
 async function _loadAndRenderCustomDash(dashId, pipelines) {
   const content = document.getElementById('dashMainContent');
   if (!content) return;
@@ -463,7 +471,9 @@ async function _loadAndRenderCustomDash(dashId, pipelines) {
     widgets.map(w => apiFetch(`/api/dashboard-widgets/${w.id}/data`, { method:'POST' }))
   );
   const dataMap = {};
-  widgets.forEach((w,i) => { dataMap[w.id] = results[i].status==='fulfilled' ? results[i].value : null; });
+  widgets.forEach((w,i) => {
+    dataMap[w.id] = _humanizeSeries(w, results[i].status==='fulfilled' ? results[i].value : null);
+  });
 
   content.innerHTML = _renderWidgetGrid(widgets, dataMap, dashId, pipelines);
   lucide.createIcons();
@@ -1131,6 +1141,7 @@ const _GROUP_BY = {
     { id:'pipeline',        label:'Por funil' },
     { id:'stage',           label:'Por etapa' },
     { id:'status',          label:'Por status' },
+    { id:'source',          label:'Por origem' },
     { id:'title',           label:'Por título' },
     { id:'currency',        label:'Por moeda' },
     { id:'value',           label:'Por valor' },

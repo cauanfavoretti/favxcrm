@@ -646,6 +646,10 @@ async function executeWidgetQuery(pillar, config, subaccount_id) {
       pipeline:      `COALESCE(p.name,'—')`,
       stage:         `COALESCE(ps.name,'—')`,
       status:        `o.status`,
+      // A oportunidade guarda a origem no próprio JSONB custom_fields
+      // (não há coluna source em opportunities). Mesmo sentinela usada
+      // pelo pilar de contatos, traduzida para texto no frontend.
+      source:        `COALESCE(NULLIF(o.custom_fields->>'source',''),'__none__')`,
       contact:       `COALESCE(NULLIF(cc.name,''),'Sem contato')`,
       assigned:      `COALESCE(NULLIF(u.name,''),'Sem responsável')`,
       title:         `COALESCE(NULLIF(o.title,''),'Sem título')`,
