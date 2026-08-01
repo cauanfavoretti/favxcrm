@@ -423,6 +423,43 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
   }
 })();
 
+;(async function initAiEventTables() {
+  try {
+    // Registro de ações das IAs — alimenta o Painel da IA.
+    // Serve tanto para IA externa (n8n, agente próprio, etc: identificada
+    // por agent_name) quanto para as IAs criadas dentro do CRM no futuro
+    // (agent_id apontando para ai_agents). Por isso agent_id é opcional e
+    // o vínculo com conversa/contato usa SET NULL: apagar uma conversa não
+    // pode furar o histórico do painel.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ai_agent_events (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        subaccount_id   UUID NOT NULL,
+        agent_id        UUID REFERENCES ai_agents(id) ON DELETE SET NULL,
+        agent_name      VARCHAR(120) NOT NULL,
+        agent_source    VARCHAR(20)  NOT NULL DEFAULT 'external',
+        conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+        contact_id      UUID REFERENCES contacts(id) ON DELETE SET NULL,
+        contact_name    VARCHAR(150),
+        event_type      VARCHAR(60)  NOT NULL,
+        description     TEXT,
+        status          VARCHAR(20)  NOT NULL DEFAULT 'success',
+        duration_ms     INTEGER,
+        tokens          INTEGER,
+        cost_usd        NUMERIC(12,6),
+        metadata        JSONB NOT NULL DEFAULT '{}',
+        occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_ai_events_sub_time
+                      ON ai_agent_events (subaccount_id, occurred_at DESC)`);
+    // Token público que a IA externa usa para postar os eventos.
+    await pool.query(`ALTER TABLE subaccount_settings ADD COLUMN IF NOT EXISTS ai_events_token VARCHAR(64)`);
+  } catch (err) {
+    console.error('[init] ai_agent_events:', err.message);
+  }
+})();
+
 ;(async function initAutomationTables() {
   try {
     // Fluxo (nodes + edges) armazenado como grafo — permite ramificação
@@ -3715,6 +3752,235 @@ app.get('/api/diagnostic/audio-columns', async (req, res) => {
 // POST /api/ai-message
 // Body: { conversation_id, message }
 // ============================================================
+
+// ============================================================
+// PAINEL DA IA — ingestão de eventos e leitura das métricas
+// ============================================================
+
+const AI_EVENT_STATUSES = ['success', 'escalated', 'warning', 'error'];
+
+// Normaliza um evento vindo da IA. Retorna { ok, value } ou { ok:false, error }.
+function normalizeAiEvent(raw, subaccount_id) {
+  if (!raw || typeof raw !== 'object') return { ok: false, error: 'Evento inválido.' };
+
+  const agentName = String(raw.agent || raw.agent_name || '').trim();
+  if (!agentName)         return { ok: false, error: 'Campo "agent" é obrigatório.' };
+  if (agentName.length > 120) return { ok: false, error: 'Campo "agent" excede 120 caracteres.' };
+
+  const eventType = String(raw.event || raw.event_type || '').trim();
+  if (!eventType)         return { ok: false, error: 'Campo "event" é obrigatório.' };
+  if (eventType.length > 60)  return { ok: false, error: 'Campo "event" excede 60 caracteres.' };
+
+  const status = String(raw.status || 'success').trim().toLowerCase();
+  if (!AI_EVENT_STATUSES.includes(status))
+    return { ok: false, error: `Campo "status" deve ser: ${AI_EVENT_STATUSES.join(', ')}.` };
+
+  // occurred_at é opcional; data inválida cai para agora em vez de rejeitar,
+  // para não descartar o evento por um detalhe de formato.
+  let occurredAt = null;
+  if (raw.occurred_at) {
+    const d = new Date(raw.occurred_at);
+    if (!isNaN(d)) occurredAt = d.toISOString();
+  }
+
+  const num = (v, max) => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    if (!isFinite(n) || n < 0) return null;
+    return max !== undefined ? Math.min(n, max) : n;
+  };
+
+  const uuid = v => (typeof v === 'string' && /^[0-9a-f-]{36}$/i.test(v)) ? v : null;
+
+  return { ok: true, value: {
+    subaccount_id,
+    agent_id:        uuid(raw.agent_id),
+    agent_name:      agentName,
+    agent_source:    raw.agent_id ? 'internal' : (raw.agent_source === 'internal' ? 'internal' : 'external'),
+    conversation_id: uuid(raw.conversation_id),
+    contact_id:      uuid(raw.contact_id),
+    contact_name:    raw.contact_name ? String(raw.contact_name).slice(0, 150) : null,
+    event_type:      eventType,
+    description:     raw.description ? String(raw.description).slice(0, 2000) : null,
+    status,
+    duration_ms:     num(raw.duration_ms, 3600000),
+    tokens:          num(raw.tokens, 10000000),
+    cost_usd:        num(raw.cost_usd, 100000),
+    metadata:        (raw.metadata && typeof raw.metadata === 'object') ? raw.metadata : {},
+    occurred_at:     occurredAt,
+  }};
+}
+
+// Ingestão. Autenticada por token público na URL (mesmo padrão do gatilho
+// de webhook das automações), porque quem chama é um sistema externo que
+// não tem sessão de usuário.
+app.post('/api/ai-events/:token', async (req, res) => {
+  const token = req.params.token || '';
+  try {
+    const { rows: sub } = await pool.query(
+      `SELECT subaccount_id FROM subaccount_settings WHERE ai_events_token = $1 LIMIT 1`,
+      [token]
+    );
+    if (!sub.length) return res.status(404).json({ message: 'Token inválido.' });
+    const subaccount_id = sub[0].subaccount_id;
+
+    // Aceita um evento solto ou um lote em "events".
+    const incoming = Array.isArray(req.body?.events) ? req.body.events : [req.body];
+    if (!incoming.length) return res.status(400).json({ message: 'Nenhum evento enviado.' });
+    if (incoming.length > 500) return res.status(400).json({ message: 'Máximo de 500 eventos por requisição.' });
+
+    const accepted = [];
+    const rejected = [];
+    incoming.forEach((raw, i) => {
+      const r = normalizeAiEvent(raw, subaccount_id);
+      if (r.ok) accepted.push(r.value);
+      else rejected.push({ index: i, error: r.error });
+    });
+
+    if (!accepted.length)
+      return res.status(400).json({ message: 'Nenhum evento válido.', rejected });
+
+    // Um único INSERT com todas as linhas — evita N idas ao banco num lote.
+    const cols = ['subaccount_id','agent_id','agent_name','agent_source','conversation_id','contact_id',
+                  'contact_name','event_type','description','status','duration_ms','tokens','cost_usd',
+                  'metadata','occurred_at'];
+    const params = [];
+    const tuples = accepted.map(ev => {
+      const ph = cols.map(c => {
+        if (c === 'occurred_at' && ev[c] === null) return 'NOW()';
+        params.push(c === 'metadata' ? JSON.stringify(ev[c]) : ev[c]);
+        return `$${params.length}`;
+      });
+      return `(${ph.join(',')})`;
+    });
+    const { rows } = await pool.query(
+      `INSERT INTO ai_agent_events (${cols.join(',')}) VALUES ${tuples.join(',')} RETURNING id`,
+      params
+    );
+
+    res.status(201).json({ received: incoming.length, stored: rows.length, rejected });
+  } catch (err) {
+    console.error('[ai-events POST]', err.message);
+    res.status(500).json({ message: 'Erro ao registrar eventos.' });
+  }
+});
+
+// Métricas agregadas do painel.
+app.get('/api/ai-dashboard', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const HOURS = { '24h': 24, '7d': 168, '30d': 720 };
+  const hours = HOURS[req.query.range] || 24;
+  try {
+    const since = `NOW() - INTERVAL '${hours} hours'`;
+
+    const [totals, byAgent, series, recent, prev] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE status='escalated')::int AS escalated,
+                COUNT(*) FILTER (WHERE status='error')::int     AS errors,
+                COUNT(*) FILTER (WHERE status='success')::int   AS success,
+                AVG(duration_ms)::int                           AS avg_ms,
+                COALESCE(SUM(tokens),0)::bigint                 AS tokens,
+                COALESCE(SUM(cost_usd),0)::numeric              AS cost
+         FROM ai_agent_events WHERE subaccount_id=$1 AND occurred_at >= ${since}`,
+        [subaccount_id]
+      ),
+      pool.query(
+        `SELECT agent_name, agent_source, COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE status='success')::int   AS success,
+                COUNT(*) FILTER (WHERE status='escalated')::int AS escalated
+         FROM ai_agent_events WHERE subaccount_id=$1 AND occurred_at >= ${since}
+         GROUP BY 1,2 ORDER BY total DESC LIMIT 12`,
+        [subaccount_id]
+      ),
+      pool.query(
+        `SELECT agent_name,
+                TO_CHAR(date_trunc('hour', occurred_at), 'YYYY-MM-DD"T"HH24:00') AS bucket,
+                COUNT(*)::int AS total
+         FROM ai_agent_events WHERE subaccount_id=$1 AND occurred_at >= ${since}
+         GROUP BY 1,2 ORDER BY 2 ASC`,
+        [subaccount_id]
+      ),
+      pool.query(
+        `SELECT e.id, e.agent_name, e.agent_source, e.event_type, e.description, e.status,
+                e.duration_ms, e.occurred_at, e.conversation_id,
+                COALESCE(e.contact_name, c.name) AS contact_name
+         FROM ai_agent_events e
+         LEFT JOIN contacts c ON c.id = e.contact_id
+         WHERE e.subaccount_id=$1
+         ORDER BY e.occurred_at DESC LIMIT 50`,
+        [subaccount_id]
+      ),
+      // Janela anterior de mesmo tamanho, para calcular a variação.
+      pool.query(
+        `SELECT COUNT(*)::int AS total
+         FROM ai_agent_events
+         WHERE subaccount_id=$1
+           AND occurred_at >= NOW() - INTERVAL '${hours * 2} hours'
+           AND occurred_at <  ${since}`,
+        [subaccount_id]
+      ),
+    ]);
+
+    const t = totals.rows[0];
+    const decided = t.success + t.escalated;
+    res.json({
+      range: req.query.range || '24h',
+      totals: {
+        total:      t.total,
+        escalated:  t.escalated,
+        errors:     t.errors,
+        avg_ms:     t.avg_ms,
+        tokens:     Number(t.tokens),
+        cost_usd:   Number(t.cost),
+        // Resolução = sucessos sobre o que teve desfecho (ignora avisos).
+        resolution_rate: decided ? +(t.success * 100 / decided).toFixed(1) : null,
+        prev_total: prev.rows[0].total,
+      },
+      agents: byAgent.rows,
+      series: series.rows,
+      recent: recent.rows,
+    });
+  } catch (err) {
+    console.error('[ai-dashboard GET]', err.message);
+    res.status(500).json({ message: 'Erro ao carregar o painel.' });
+  }
+});
+
+// Token de ingestão: consulta (cria na primeira vez) e rotação.
+app.get('/api/ai-events-token', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO subaccount_settings (subaccount_id, ai_events_token)
+       VALUES ($1, $2)
+       ON CONFLICT (subaccount_id) DO UPDATE
+         SET ai_events_token = COALESCE(subaccount_settings.ai_events_token, EXCLUDED.ai_events_token)
+       RETURNING ai_events_token`,
+      [subaccount_id, crypto.randomBytes(20).toString('hex')]
+    );
+    res.json({ token: rows[0].ai_events_token });
+  } catch (err) {
+    console.error('[ai-events-token GET]', err.message);
+    res.status(500).json({ message: 'Erro ao obter o token.' });
+  }
+});
+
+app.post('/api/ai-events-token/rotate', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO subaccount_settings (subaccount_id, ai_events_token) VALUES ($1,$2)
+       ON CONFLICT (subaccount_id) DO UPDATE SET ai_events_token = EXCLUDED.ai_events_token
+       RETURNING ai_events_token`,
+      [subaccount_id, crypto.randomBytes(20).toString('hex')]
+    );
+    res.json({ token: rows[0].ai_events_token });
+  } catch (err) {
+    console.error('[ai-events-token rotate]', err.message);
+    res.status(500).json({ message: 'Erro ao gerar novo token.' });
+  }
+});
 
 app.post('/api/ai-message', async (req, res) => {
   const { conversation_id, message } = req.body || {};
