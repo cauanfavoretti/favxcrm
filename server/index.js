@@ -634,17 +634,42 @@ async function executeWidgetQuery(pillar, config, subaccount_id) {
       avg_value: 'ROUND(AVG(o.value)::numeric,2)',
     };
     const metricSql = METRIC_SQL[metric] || 'COUNT(o.id)';
-    const joins     = `LEFT JOIN pipeline_stages ps ON ps.id = o.stage_id LEFT JOIN pipelines p ON p.id = o.pipeline_id`;
+    const joins     = `LEFT JOIN pipeline_stages ps ON ps.id = o.stage_id
+                       LEFT JOIN pipelines p        ON p.id  = o.pipeline_id
+                       LEFT JOIN contacts cc        ON cc.id = o.contact_id
+                       LEFT JOIN users u            ON u.id  = o.assigned_to`;
     const GB_MAP = {
-      pipeline:   `COALESCE(p.name,'—')`,
-      stage:      `COALESCE(ps.name,'—')`,
-      status:     `o.status`,
-      date_day:   `TO_CHAR(o.created_at,'YYYY-MM-DD')`,
-      date_month: `TO_CHAR(date_trunc('month',o.created_at),'YYYY-MM')`,
+      pipeline:      `COALESCE(p.name,'—')`,
+      stage:         `COALESCE(ps.name,'—')`,
+      status:        `o.status`,
+      contact:       `COALESCE(NULLIF(cc.name,''),'Sem contato')`,
+      assigned:      `COALESCE(NULLIF(u.name,''),'Sem responsável')`,
+      title:         `COALESCE(NULLIF(o.title,''),'Sem título')`,
+      currency:      `COALESCE(NULLIF(o.currency,''),'—')`,
+      value:         `COALESCE(o.value,0)::text`,
+      probability:   `COALESCE(o.probability,0)::text`,
+      lost_reason:   `COALESCE(NULLIF(o.lost_reason,''),'—')`,
+      date_day:      `TO_CHAR(o.created_at,'YYYY-MM-DD')`,
+      date_month:    `TO_CHAR(date_trunc('month',o.created_at),'YYYY-MM')`,
+      updated_day:   `TO_CHAR(o.updated_at,'YYYY-MM-DD')`,
+      updated_month: `TO_CHAR(date_trunc('month',o.updated_at),'YYYY-MM')`,
+      close_day:     `COALESCE(TO_CHAR(o.expected_close,'YYYY-MM-DD'),'Sem data')`,
+      close_month:   `COALESCE(TO_CHAR(date_trunc('month',o.expected_close),'YYYY-MM'),'Sem data')`,
     };
-    if (group_by && GB_MAP[group_by]) {
+    // Campos personalizados chegam como "cf:<nome>" e vivem no JSONB
+    // custom_fields. O nome vem do usuário, então entra como parâmetro —
+    // nunca interpolado no SQL.
+    let gbExpr = GB_MAP[group_by];
+    if (!gbExpr && typeof group_by === 'string' && group_by.startsWith('cf:')) {
+      const cfName = group_by.slice(3);
+      if (cfName && cfName.length <= 60) {
+        params.push(cfName);
+        gbExpr = `COALESCE(NULLIF(o.custom_fields->>$${params.length},''),'Sem valor')`;
+      }
+    }
+    if (group_by && gbExpr) {
       const { rows } = await pool.query(
-        `SELECT ${GB_MAP[group_by]} AS label, ${metricSql} AS value FROM opportunities o ${joins} ${where}
+        `SELECT ${gbExpr} AS label, ${metricSql} AS value FROM opportunities o ${joins} ${where}
          GROUP BY 1 ORDER BY value ${sort === 'asc' ? 'ASC' : 'DESC'} LIMIT ${safeLimit}`,
         params
       );

@@ -7,6 +7,7 @@ let _activeMirrorIdx = 0;
 let _activeDashId    = null;   // null = Visão Geral; string UUID = custom dashboard
 let _chartInstances  = {};     // canvasId → Chart instance
 let _wState          = null;   // widget builder state
+let _oppCustomFields = [];     // definições de campos personalizados de oportunidade
 
 // ── Formatters ──────────────────────────────────────────────
 function _brl(v) {
@@ -1126,11 +1127,23 @@ const _GROUP_BY = {
     { id:'date_day',   label:'Por dia (criação)' },
   ],
   funnels: [
-    { id:'',           label:'Nenhum — valor único' },
-    { id:'pipeline',   label:'Por funil' },
-    { id:'stage',      label:'Por etapa' },
-    { id:'status',     label:'Por status' },
-    { id:'date_month', label:'Por mês (criação)' },
+    { id:'',                label:'Nenhum — valor único' },
+    { id:'pipeline',        label:'Por funil' },
+    { id:'stage',           label:'Por etapa' },
+    { id:'status',          label:'Por status' },
+    { id:'contact',         label:'Por contato' },
+    { id:'assigned',        label:'Por responsável' },
+    { id:'title',           label:'Por título' },
+    { id:'currency',        label:'Por moeda' },
+    { id:'value',           label:'Por valor' },
+    { id:'probability',     label:'Por probabilidade (%)' },
+    { id:'lost_reason',     label:'Por motivo de perda' },
+    { id:'date_day',        label:'Por dia (criação)' },
+    { id:'date_month',      label:'Por mês (criação)' },
+    { id:'updated_day',     label:'Por dia (atualização)' },
+    { id:'updated_month',   label:'Por mês (atualização)' },
+    { id:'close_day',       label:'Por dia (previsão de fechamento)' },
+    { id:'close_month',     label:'Por mês (previsão de fechamento)' },
   ],
   conversations: [
     { id:'',           label:'Nenhum — valor único' },
@@ -1139,6 +1152,18 @@ const _GROUP_BY = {
     { id:'date_day',   label:'Por dia (criação)' },
   ],
 };
+// Opções de "Agrupar por": as fixas do pilar mais, para oportunidades, os
+// campos personalizados da subconta (prefixados com "cf:" para o backend
+// saber que precisa ler do JSONB custom_fields).
+function _groupByOptions(pillar) {
+  const base = _GROUP_BY[pillar] || [];
+  if (pillar !== 'funnels' || !_oppCustomFields.length) return base;
+  return base.concat(_oppCustomFields.map(f => ({
+    id:    `cf:${f.name}`,
+    label: `Por ${f.label} (personalizado)`,
+  })));
+}
+
 const _METRICS = {
   contacts:      [{ id:'count',     label:'Contagem de contatos' }],
   funnels:       [{ id:'count',     label:'Contagem de oportunidades' },
@@ -1394,8 +1419,8 @@ function _wFillForm(overlay, dashId, existingWidget) {
         <div class="wbuild-section" style="flex:1;min-width:180px">
           <div class="wbuild-section-title">Agrupar por</div>
           <select id="wbGroupBy" class="form-input" style="font-size:13px">
-            ${(_GROUP_BY[_wState.pillar]||[]).map(g =>
-              `<option value="${g.id}" ${g.id===_wState.group_by?'selected':''}>${g.label}</option>`
+            ${_groupByOptions(_wState.pillar).map(g =>
+              `<option value="${_esc(g.id)}" ${g.id===_wState.group_by?'selected':''}>${_esc(g.label)}</option>`
             ).join('')}
           </select>
         </div>
@@ -1445,8 +1470,8 @@ function _wFillForm(overlay, dashId, existingWidget) {
       inner.querySelector('#wbMetricGroup').innerHTML = (_METRICS[val]||[]).map(m =>
         `<button class="wbuild-btn${m.id==='count'?' active':''}" data-wkey="metric" data-wval="${m.id}">${m.label}</button>`
       ).join('');
-      inner.querySelector('#wbGroupBy').innerHTML = (_GROUP_BY[val]||[]).map(g =>
-        `<option value="${g.id}">${g.label}</option>`
+      inner.querySelector('#wbGroupBy').innerHTML = _groupByOptions(val).map(g =>
+        `<option value="${_esc(g.id)}">${_esc(g.label)}</option>`
       ).join('');
       _wReRenderConditions(overlay);
     } else {
@@ -1584,10 +1609,14 @@ function _refreshMirrorFunnel(pipelines) {
 // Public API
 // ════════════════════════════════════════════════════════════
 window.loadDashboard = async function () {
-  const [advanced, dashboards] = await Promise.all([
+  const [advanced, dashboards, oppFields] = await Promise.all([
     apiFetch('/api/dashboard/advanced').catch(() => null),
     apiFetch('/api/custom-dashboards').catch(() => []),
+    apiFetch('/api/custom-fields?entity=opportunity').catch(() => []),
   ]);
+  // Cache dos campos personalizados de oportunidade — usados para montar as
+  // opções de "Agrupar por" do construtor de widgets.
+  _oppCustomFields = oppFields || [];
   return { advanced, dashboards: dashboards || [] };
 };
 
