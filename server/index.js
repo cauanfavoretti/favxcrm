@@ -9,7 +9,22 @@ const cors     = require('cors');
 const bcrypt   = require('bcryptjs');
 const jwt      = require('jsonwebtoken');
 const crypto   = require('crypto');
+const OpenAI   = require('openai');
 const pool     = require('./db');
+
+// Cliente do LLM. Instanciado uma vez só — em serverless o módulo é reusado
+// entre invocações da mesma instância. Sem a chave configurada o cliente fica
+// nulo e a IA simplesmente não responde, em vez de derrubar o servidor no boot
+// (o CRM inteiro não pode deixar de subir por falta de uma chave de IA).
+// OPENAI_BASE_URL permite apontar para um proxy ou para um servidor falso
+// nos testes, sem tocar no código.
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+      ...(process.env.OPENAI_BASE_URL ? { baseURL: process.env.OPENAI_BASE_URL } : {}),
+    })
+  : null;
+if (!openai) console.warn('[ai] OPENAI_API_KEY ausente — agentes de IA não vão responder.');
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -423,6 +438,13 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
   }
 })();
 
+const AI_DEFAULT_MODEL   = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+const AI_HISTORY_LIMIT   = 20;    // mensagens de contexto enviadas ao modelo
+const AI_HUMAN_PAUSE_MIN = 30;    // minutos de silêncio após um humano responder
+const AI_TIMEOUT_MS      = 20000; // < maxDuration (30s) da Vercel, com folga
+                                  // para o envio pelo WhatsApp depois da resposta
+const AI_NO_REPLY        = '[SEM RESPOSTA]';
+
 // Prompt inicial de um agente novo. Segue o template da seção 5 do
 // skill-favx.md (CONTEXTO → IDENTIDADE → ABERTURA → COMUNICAÇÃO → FLUXO →
 // LIMITES → QUANDO NÃO RESPONDER → OBJETIVO FINAL), incluindo o marcador
@@ -468,6 +490,111 @@ Toda conversa deve terminar em um destes resultados: dúvida resolvida,
 atendimento encaminhado a um humano, ou próximo passo agendado.`;
 }
 
+// ── Resposta automática da IA ──────────────────────────────────
+// Decide se a IA deve responder a uma mensagem recebida e, se sim, gera a
+// resposta. Retorna o texto a enviar, ou null quando a IA deve ficar calada.
+//
+// IMPORTANTE: quem chama precisa AGUARDAR esta função. Em serverless a
+// execução pode ser congelada assim que a resposta HTTP sai — foi exatamente
+// assim que as mensagens do chat sumiam antes. Nada de fire-and-forget aqui.
+async function generateAiReply({ subaccount_id, conversation_id, contact_name }) {
+  if (!openai) return null;
+
+  const { rows: agents } = await pool.query(
+    `SELECT id, model, system_prompt, max_tokens, temperature
+     FROM ai_agents WHERE subaccount_id = $1 AND is_default AND is_active LIMIT 1`,
+    [subaccount_id]
+  );
+  const agent = agents[0];
+  if (!agent || !agent.system_prompt) return null;
+
+  // Pausa por atendente humano: se alguém do CRM respondeu há pouco, a IA
+  // não atropela o atendimento. O eco do WhatsApp e as respostas do próprio
+  // bot têm sender_id nulo — só mensagem de usuário do CRM conta como humano.
+  const { rows: human } = await pool.query(
+    `SELECT 1 FROM messages
+     WHERE conversation_id = $1 AND direction = 'outbound' AND sender_id IS NOT NULL
+       AND sent_at > NOW() - ($2 || ' minutes')::interval
+     LIMIT 1`,
+    [conversation_id, AI_HUMAN_PAUSE_MIN]
+  );
+  if (human.length) return null;
+
+  // O histórico da conversa já mora na tabela messages — não há memória
+  // separada para manter. Busca as últimas em ordem decrescente e inverte,
+  // para pegar as mais recentes e ainda entregar em ordem cronológica.
+  const { rows: recent } = await pool.query(
+    `SELECT direction, content FROM messages
+     WHERE conversation_id = $1 AND COALESCE(is_internal, FALSE) = FALSE
+       AND content IS NOT NULL AND content <> ''
+     ORDER BY sent_at DESC LIMIT $2`,
+    [conversation_id, AI_HISTORY_LIMIT]
+  );
+  const history = recent.reverse().map(m => ({
+    role: m.direction === 'inbound' ? 'user' : 'assistant',
+    content: m.content,
+  }));
+  if (!history.length) return null;
+
+  const system = contact_name
+    ? `${agent.system_prompt}\n\n(Nome do contato nesta conversa: ${contact_name}.)`
+    : agent.system_prompt;
+
+  // temperature é NUMERIC no Postgres e volta como string ('0.70') — a API
+  // espera número, então a conversão é obrigatória.
+  const temperature = agent.temperature == null ? 0.7 : Number(agent.temperature);
+
+  let completion;
+  try {
+    completion = await openai.chat.completions.create(
+      {
+        model:       agent.model || AI_DEFAULT_MODEL,
+        max_tokens:  agent.max_tokens || 500,
+        temperature: Number.isFinite(temperature) ? temperature : 0.7,
+        messages:    [{ role: 'system', content: system }, ...history],
+      },
+      { timeout: AI_TIMEOUT_MS }
+    );
+  } catch (err) {
+    console.error('[ai reply]', err.message);
+    return null;
+  }
+
+  const reply = completion.choices?.[0]?.message?.content?.trim() || '';
+
+  // Consumo é melhor-esforço: falhar ao registrar não pode impedir o envio.
+  const u = completion.usage;
+  if (u) {
+    pool.query(
+      `INSERT INTO ai_usage_logs
+         (subaccount_id, agent_id, conversation_id, model, prompt_tokens, completion_tokens, total_tokens, cost_usd)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [subaccount_id, agent.id, conversation_id, agent.model || AI_DEFAULT_MODEL,
+       u.prompt_tokens, u.completion_tokens, u.total_tokens,
+       aiCostUsd(agent.model || AI_DEFAULT_MODEL, u)]
+    ).catch(e => console.warn('[ai usage]', e.message));
+  }
+
+  // O marcador do prompt: a IA sinaliza que a mensagem não pede resposta
+  // (um "ok", um emoji). Sem isso ela responderia educadamente a tudo.
+  if (!reply || reply.includes(AI_NO_REPLY)) return null;
+  return reply;
+}
+
+// Preço por 1M de tokens. Fora da tabela, devolve null em vez de chutar um
+// número — custo errado no relatório é pior que custo ausente.
+const AI_PRICING = {
+  'gpt-4.1-mini': { input: 0.40, output: 1.60 },
+  'gpt-4.1-nano': { input: 0.10, output: 0.40 },
+  'gpt-4.1':      { input: 2.00, output: 8.00 },
+};
+function aiCostUsd(model, usage) {
+  const p = AI_PRICING[model];
+  if (!p || !usage) return null;
+  return +(((usage.prompt_tokens || 0) * p.input +
+            (usage.completion_tokens || 0) * p.output) / 1e6).toFixed(6);
+}
+
 ;(async function initSubaccountAgents() {
   try {
     // Marca qual agente é o "da subconta". O índice parcial garante no
@@ -502,7 +629,7 @@ async function ensureSubaccountAgent(subaccount_id, subaccountName, created_by =
     [subaccount_id,
      `IA de ${(subaccountName || 'atendimento').trim()}`,
      'Agente de atendimento da subconta. Edite o prompt em Modo desenvolvedor.',
-     'claude-sonnet-4-6',
+     AI_DEFAULT_MODEL,
      defaultAgentPrompt(subaccountName),
      created_by]
   );
@@ -2330,7 +2457,7 @@ app.post('/api/agents', auth, async (req, res) => {
     const { rows } = await pool.query(
       `INSERT INTO ai_agents (subaccount_id, name, description, model, system_prompt, created_by)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [subaccount_id, name, description || null, model || 'claude-sonnet-4-6', system_prompt || null, created_by]
+      [subaccount_id, name, description || null, model || AI_DEFAULT_MODEL, system_prompt || null, created_by]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -2355,11 +2482,9 @@ app.get('/api/agents/default', auth, async (req, res) => {
 });
 
 // Edição do agente. É por aqui que o prompt é alterado dentro do CRM.
-// temperature não é exposto de propósito: os modelos atuais rejeitam esse
-// parâmetro com erro 400, então deixá-lo editável criaria uma armadilha.
 app.put('/api/agents/:id', auth, requireAdmin, async (req, res) => {
   const { subaccount_id } = req.user;
-  const { name, description, system_prompt, model, max_tokens, is_active } = req.body;
+  const { name, description, system_prompt, model, max_tokens, temperature, is_active } = req.body;
 
   if (name !== undefined && !String(name).trim())
     return res.status(400).json({ message: 'Nome não pode ficar vazio.' });
@@ -2368,6 +2493,10 @@ app.put('/api/agents/:id', auth, requireAdmin, async (req, res) => {
   const tokens = max_tokens === undefined || max_tokens === null ? null : parseInt(max_tokens, 10);
   if (tokens !== null && (isNaN(tokens) || tokens < 1 || tokens > 128000))
     return res.status(400).json({ message: 'max_tokens deve ficar entre 1 e 128000.' });
+  // 0 é um valor válido (resposta mais previsível), então não pode usar `||`.
+  const temp = temperature === undefined || temperature === null ? null : Number(temperature);
+  if (temp !== null && (isNaN(temp) || temp < 0 || temp > 2))
+    return res.status(400).json({ message: 'temperature deve ficar entre 0 e 2.' });
 
   try {
     const { rows } = await pool.query(
@@ -2377,12 +2506,13 @@ app.put('/api/agents/:id', auth, requireAdmin, async (req, res) => {
          system_prompt = COALESCE($3, system_prompt),
          model         = COALESCE($4, model),
          max_tokens    = COALESCE($5, max_tokens),
-         is_active     = COALESCE($6, is_active),
+         temperature   = COALESCE($6, temperature),
+         is_active     = COALESCE($7, is_active),
          updated_at    = NOW()
-       WHERE id = $7 AND subaccount_id = $8
+       WHERE id = $8 AND subaccount_id = $9
        RETURNING *`,
       [name?.trim() || null, description ?? null, system_prompt ?? null,
-       model?.trim() || null, tokens, is_active ?? null, req.params.id, subaccount_id]
+       model?.trim() || null, tokens, temp, is_active ?? null, req.params.id, subaccount_id]
     );
     if (!rows.length) return res.status(404).json({ message: 'Agente não encontrado.' });
     res.json(rows[0]);
@@ -3638,6 +3768,48 @@ async function processWaMsg(subaccount_id, instanceName, apiUrl, apiKey, data) {
       message: content, conversation_id: conv_id,
       contact: { id: contact_id, name: pushName || ('+' + phone), phone: '+' + phone },
     }, { contact_id }).catch(e => console.error('[fireAutomations contact_replied]', e.message));
+  }
+
+  // Resposta automática da IA da subconta. Só para mensagens recebidas de
+  // texto — áudio/imagem entram como "[Áudio 🎤]" e não há o que responder.
+  // Aguardado de propósito: em serverless nada em segundo plano sobrevive ao
+  // fim da requisição.
+  if (!fromMe && msgType === 'texto' && content) {
+    try {
+      const reply = await generateAiReply({
+        subaccount_id,
+        conversation_id: conv_id,
+        contact_name:    pushName || null,
+      });
+      if (reply) {
+        const { rows: sent } = await pool.query(
+          `INSERT INTO messages (conversation_id, direction, sender_type, content, message_type)
+           VALUES ($1,'outbound','bot',$2,'text') RETURNING id`,
+          [conv_id, reply]
+        );
+        await pool.query(`UPDATE conversations SET last_message_at = NOW() WHERE id = $1`, [conv_id]);
+        if (apiUrl && apiKey) {
+          try {
+            const evoResp = await evoRequest('POST', apiUrl, apiKey,
+              `/message/sendText/${instanceName}`, { number: phone, text: reply });
+            const externalId = evoResp?.key?.id;
+            if (externalId)
+              await pool.query(`UPDATE messages SET external_id = $1 WHERE id = $2`, [externalId, sent[0].id]);
+          } catch (e) {
+            // Mesma regra do envio manual: a mensagem fica registrada, mas
+            // marcada como não entregue em vez de parecer que chegou.
+            console.error('[ai send]', e.message);
+            await pool.query(
+              `UPDATE messages SET status = 'failed', error_message = $1 WHERE id = $2`,
+              [String(e.message).slice(0, 500), sent[0].id]
+            ).catch(() => {});
+          }
+        }
+      }
+    } catch (e) {
+      // A IA nunca pode impedir o registro da mensagem recebida.
+      console.error('[ai reply pipeline]', e.message);
+    }
   }
 
   return 'saved';
@@ -5027,5 +5199,11 @@ let _resyncDone = false;
   await new Promise(r => setTimeout(r, 1500));
   resyncAllWebhooks();
 })();
+
+// A Vercel consome o app como export padrão do módulo. As funções abaixo
+// ficam penduradas nele apenas para permitir teste direto, sem trocar o
+// formato do export (trocá-lo quebraria o deploy).
+app.generateAiReply = generateAiReply;
+app.aiCostUsd       = aiCostUsd;
 
 module.exports = app;

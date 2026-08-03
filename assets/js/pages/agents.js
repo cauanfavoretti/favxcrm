@@ -344,10 +344,9 @@ function openDeactivateConfirm() {
 // editado dentro do próprio CRM, sem precisar mexer no banco.
 
 const _AI_MODELS = [
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { id: 'claude-sonnet-5',   label: 'Claude Sonnet 5' },
-  { id: 'claude-opus-5',     label: 'Claude Opus 5' },
-  { id: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5' },
+  { id: 'gpt-4.1-mini', label: 'GPT-4.1 mini — $0,40/$1,60 por 1M' },
+  { id: 'gpt-4.1-nano', label: 'GPT-4.1 nano — $0,10/$0,40 por 1M' },
+  { id: 'gpt-4.1',      label: 'GPT-4.1 — $2,00/$8,00 por 1M' },
 ];
 
 function _aiEscape(v) {
@@ -398,6 +397,17 @@ async function loadAiAgentPanel() {
             ${models.map(m => `<option value="${_aiEscape(m.id)}" ${m.id === agent.model ? 'selected' : ''}>${_aiEscape(m.label)}</option>`).join('')}
           </select>
         </div>
+        <div style="flex:0 0 130px">
+          <label class="settings-label" style="display:block;margin-bottom:6px">
+            Criatividade
+            <span id="aiTempVal" style="font-weight:400;color:var(--color-text-3)">${Number(agent.temperature ?? 0.7).toFixed(1)}</span>
+          </label>
+          <input type="range" id="aiTemp" min="0" max="1" step="0.1"
+            value="${Number(agent.temperature ?? 0.7)}" style="width:100%;cursor:pointer">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-text-3);margin-top:2px">
+            <span>previsível</span><span>criativa</span>
+          </div>
+        </div>
       </div>
 
       <label class="settings-label" style="display:block;margin-bottom:6px">
@@ -420,6 +430,11 @@ async function loadAiAgentPanel() {
     </div>`;
   lucide.createIcons();
 
+  const tempInput = document.getElementById('aiTemp');
+  tempInput.addEventListener('input', () => {
+    document.getElementById('aiTempVal').textContent = Number(tempInput.value).toFixed(1);
+  });
+
   document.getElementById('aiSave').addEventListener('click', async () => {
     const btn = document.getElementById('aiSave');
     const msg = document.getElementById('aiSaveMsg');
@@ -436,6 +451,7 @@ async function loadAiAgentPanel() {
           name,
           model:         document.getElementById('aiModel').value,
           system_prompt: document.getElementById('aiPrompt').value,
+          temperature:   Number(tempInput.value),
           is_active:     document.getElementById('aiActive').checked,
         }),
       });
