@@ -4393,15 +4393,51 @@ app.post('/api/ai-events-token/rotate', auth, requireAdmin, async (req, res) => 
   }
 });
 
-app.post('/api/ai-message', async (req, res) => {
+// Identifica a subconta de quem chama /api/ai-message. Dois caminhos:
+// token da subconta na URL (para sistemas externos como n8n, que não têm
+// sessão de usuário) ou JWT no header (para chamadas de dentro do CRM).
+// É o mesmo token de /api/ai-events, então não há um segundo segredo para
+// gerenciar nem para rotacionar.
+async function resolveAiMessageCaller(req) {
+  const token = req.params.token;
+  if (token) {
+    const { rows } = await pool.query(
+      `SELECT subaccount_id FROM subaccount_settings WHERE ai_events_token = $1 LIMIT 1`,
+      [token]
+    );
+    return rows[0]?.subaccount_id || null;
+  }
+  const bearer = req.headers.authorization?.split(' ')[1];
+  if (!bearer) return null;
+  try {
+    return jwt.verify(bearer, process.env.JWT_SECRET).subaccount_id || null;
+  } catch {
+    return null;
+  }
+}
+
+// Registra no CRM uma resposta gerada por uma IA externa.
+//
+// Este endpoint era completamente aberto: sem autenticação e sem filtro de
+// subconta, qualquer pessoa que descobrisse um conversation_id conseguia
+// injetar mensagens de bot em qualquer conversa de qualquer cliente. As duas
+// falhas são corrigidas aqui — exige identificação, e a conversa precisa
+// pertencer à subconta autenticada.
+app.post('/api/ai-message/:token?', async (req, res) => {
+  const subaccount_id = await resolveAiMessageCaller(req);
+  if (!subaccount_id) return res.status(401).json({ message: 'Não autorizado.' });
+
   const { conversation_id, message } = req.body || {};
   if (!conversation_id || !message) {
     return res.status(400).json({ message: 'conversation_id e message são obrigatórios.' });
   }
 
   try {
+    // O filtro por subaccount_id é a segunda metade da correção: sem ele,
+    // um token válido de uma subconta escreveria na conversa de outra.
     const { rows: conv } = await pool.query(
-      `SELECT id FROM conversations WHERE id = $1 LIMIT 1`, [conversation_id]
+      `SELECT id FROM conversations WHERE id = $1 AND subaccount_id = $2 LIMIT 1`,
+      [conversation_id, subaccount_id]
     );
     if (!conv.length) return res.status(404).json({ message: 'Conversa não encontrada.' });
 
@@ -4416,7 +4452,7 @@ app.post('/api/ai-message', async (req, res) => {
     res.status(201).json({ message_id: msg.id });
   } catch (err) {
     console.error('[ai-message] erro:', err.message, '| conversation_id:', conversation_id);
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: 'Erro interno.' });
   }
 });
 
