@@ -423,6 +423,97 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
   }
 })();
 
+// Prompt inicial de um agente novo. Segue o template da seção 5 do
+// skill-favx.md (CONTEXTO → IDENTIDADE → ABERTURA → COMUNICAÇÃO → FLUXO →
+// LIMITES → QUANDO NÃO RESPONDER → OBJETIVO FINAL), incluindo o marcador
+// [SEM RESPOSTA] — sem ele a IA tenta responder educadamente até a um "ok"
+// do cliente, o que soa robótico e polui a conversa.
+// Os trechos entre colchetes são para o usuário preencher na tela.
+function defaultAgentPrompt(subaccountName) {
+  const empresa = (subaccountName || 'a empresa').trim();
+  return `# CONTEXTO
+Você atende os clientes da ${empresa} pelo WhatsApp.
+
+# IDENTIDADE
+Você é [nome do agente], atendente da ${empresa}. [Descreva em uma frase o que
+a empresa faz e para quem.] Nunca pareça um robô.
+
+# ABERTURA
+Apenas na primeira mensagem da conversa, apresente-se assim:
+"[mensagem de abertura, ex: Oi! Aqui é a [nome] da ${empresa} 😊 Como posso te ajudar?]"
+Nas mensagens seguintes, não se apresente de novo.
+
+# COMUNICAÇÃO
+- Tom humano e próximo, sem formalidade excessiva.
+- Mensagens curtas, no máximo 4 linhas. Nunca textão.
+- No máximo 1 pergunta por mensagem.
+
+# FLUXO DE ATENDIMENTO
+1. Cumprimente. 2. Entenda a solicitação. 3. Confirme o entendimento.
+4. Resolva quando possível. 5. Escale para um humano quando necessário.
+6. Confirme o próximo passo antes de encerrar.
+
+# LIMITES
+Você NÃO pode: fechar negócio, prometer prazos, conceder descontos nem
+confirmar preços sem validação. [Ajuste conforme a operação.] Nesses casos,
+diga que vai confirmar com a equipe e que retorna em seguida.
+
+# QUANDO NÃO RESPONDER
+Se a mensagem não exigir resposta (um "ok", um emoji, uma confirmação
+simples), responda exatamente:
+[SEM RESPOSTA]
+
+# OBJETIVO FINAL
+Toda conversa deve terminar em um destes resultados: dúvida resolvida,
+atendimento encaminhado a um humano, ou próximo passo agendado.`;
+}
+
+;(async function initSubaccountAgents() {
+  try {
+    // Marca qual agente é o "da subconta". O índice parcial garante no
+    // máximo um padrão por subconta, deixando a porta aberta para agentes
+    // adicionais no futuro sem precisar migrar nada.
+    await pool.query(`ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_agents_one_default
+                      ON ai_agents (subaccount_id) WHERE is_default`);
+
+    // Backfill: subcontas criadas antes desta feature também ganham a sua IA.
+    const { rows } = await pool.query(
+      `SELECT s.id, s.name FROM subaccounts s
+       WHERE NOT EXISTS (
+         SELECT 1 FROM ai_agents a WHERE a.subaccount_id = s.id AND a.is_default
+       )`
+    );
+    for (const sub of rows) await ensureSubaccountAgent(sub.id, sub.name);
+    if (rows.length) console.log(`[init] IA padrão criada para ${rows.length} subconta(s)`);
+  } catch (err) {
+    console.error('[init] subaccount agents:', err.message);
+  }
+})();
+
+// Garante que a subconta tenha a sua IA. Idempotente: o ON CONFLICT cobre a
+// corrida entre o backfill do boot e uma criação simultânea de subconta.
+async function ensureSubaccountAgent(subaccount_id, subaccountName, created_by = null) {
+  const { rows } = await pool.query(
+    `INSERT INTO ai_agents (subaccount_id, name, description, model, system_prompt, is_default, is_active, created_by)
+     VALUES ($1, $2, $3, $4, $5, TRUE, FALSE, $6)
+     ON CONFLICT DO NOTHING
+     RETURNING *`,
+    [subaccount_id,
+     `IA de ${(subaccountName || 'atendimento').trim()}`,
+     'Agente de atendimento da subconta. Edite o prompt em Modo desenvolvedor.',
+     'claude-sonnet-4-6',
+     defaultAgentPrompt(subaccountName),
+     created_by]
+  );
+  if (rows.length) return rows[0];
+  // Já existia — devolve o atual.
+  const { rows: existing } = await pool.query(
+    `SELECT * FROM ai_agents WHERE subaccount_id = $1 AND is_default LIMIT 1`, [subaccount_id]
+  );
+  return existing[0] || null;
+}
+
 ;(async function initAiEventTables() {
   try {
     // Registro de ações das IAs — alimenta o Painel da IA.
@@ -2248,6 +2339,59 @@ app.post('/api/agents', auth, async (req, res) => {
   }
 });
 
+// A IA da subconta. Cria sob demanda para nunca retornar 404 — uma subconta
+// sempre tem a sua IA, mesmo que o backfill do boot não a tenha alcançado.
+app.get('/api/agents/default', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows: sub } = await pool.query(`SELECT name FROM subaccounts WHERE id = $1`, [subaccount_id]);
+    const agent = await ensureSubaccountAgent(subaccount_id, sub[0]?.name);
+    if (!agent) return res.status(404).json({ message: 'Subconta não encontrada.' });
+    res.json(agent);
+  } catch (err) {
+    console.error('[agents default GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// Edição do agente. É por aqui que o prompt é alterado dentro do CRM.
+// temperature não é exposto de propósito: os modelos atuais rejeitam esse
+// parâmetro com erro 400, então deixá-lo editável criaria uma armadilha.
+app.put('/api/agents/:id', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { name, description, system_prompt, model, max_tokens, is_active } = req.body;
+
+  if (name !== undefined && !String(name).trim())
+    return res.status(400).json({ message: 'Nome não pode ficar vazio.' });
+  if (system_prompt !== undefined && String(system_prompt).length > 100000)
+    return res.status(400).json({ message: 'Prompt excede o limite de 100.000 caracteres.' });
+  const tokens = max_tokens === undefined || max_tokens === null ? null : parseInt(max_tokens, 10);
+  if (tokens !== null && (isNaN(tokens) || tokens < 1 || tokens > 128000))
+    return res.status(400).json({ message: 'max_tokens deve ficar entre 1 e 128000.' });
+
+  try {
+    const { rows } = await pool.query(
+      `UPDATE ai_agents SET
+         name          = COALESCE($1, name),
+         description   = COALESCE($2, description),
+         system_prompt = COALESCE($3, system_prompt),
+         model         = COALESCE($4, model),
+         max_tokens    = COALESCE($5, max_tokens),
+         is_active     = COALESCE($6, is_active),
+         updated_at    = NOW()
+       WHERE id = $7 AND subaccount_id = $8
+       RETURNING *`,
+      [name?.trim() || null, description ?? null, system_prompt ?? null,
+       model?.trim() || null, tokens, is_active ?? null, req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Agente não encontrado.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[agents PUT]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 app.put('/api/agents/:id/toggle', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   try {
@@ -3005,6 +3149,12 @@ app.post('/api/subaccounts', auth, requireAdmin, async (req, res) => {
        VALUES ($1, $2, $3, $4) RETURNING *`,
       [account_id, name, slug.toLowerCase().replace(/\s+/g, '-'), timezone || 'America/Sao_Paulo']
     );
+    // Toda subconta nasce com a sua própria IA (inativa, com o prompt padrão
+    // pronto para ser editado em Modo desenvolvedor). Falhar aqui não pode
+    // impedir a criação da subconta — o backfill do boot e o GET
+    // /api/agents/default cobrem o caso.
+    ensureSubaccountAgent(rows[0].id, rows[0].name, req.user.sub)
+      .catch(e => console.error('[subaccount agent]', e.message));
     res.status(201).json(rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ message: 'Slug já em uso nesta conta.' });

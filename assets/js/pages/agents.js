@@ -36,6 +36,9 @@ window.pageAgents = function (webhooks) {
     <button id="tabWebhooks" class="agents-tab active" style="padding:8px 18px;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--color-accent);border-bottom:2px solid var(--color-accent);margin-bottom:-1px">
       Webhooks
     </button>
+    <button id="tabAi" class="agents-tab" style="padding:8px 18px;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--color-text-3);border-bottom:2px solid transparent;margin-bottom:-1px">
+      IA da subconta
+    </button>
     <button id="tabOffice" class="agents-tab" style="padding:8px 18px;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--color-text-3);border-bottom:2px solid transparent;margin-bottom:-1px">
       🏢 Escritório Virtual
     </button>
@@ -76,6 +79,13 @@ window.pageAgents = function (webhooks) {
   </div>
 
   </div><!-- /panelWebhooks -->
+
+  <!-- PAINEL IA DA SUBCONTA -->
+  <div id="panelAi" style="display:none">
+    <div style="max-width:760px" id="aiAgentBody">
+      <div class="dash-load-state"><div class="dash-load-spin"></div><span>Carregando...</span></div>
+    </div>
+  </div>
 
   <!-- PAINEL ESCRITÓRIO -->
   <div id="panelOffice" style="display:none">
@@ -329,6 +339,118 @@ function openDeactivateConfirm() {
   });
 }
 
+// ── IA da subconta ────────────────────────────────────────────
+// Cada subconta tem a sua IA (criada automaticamente). Aqui o prompt dela é
+// editado dentro do próprio CRM, sem precisar mexer no banco.
+
+const _AI_MODELS = [
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+  { id: 'claude-sonnet-5',   label: 'Claude Sonnet 5' },
+  { id: 'claude-opus-5',     label: 'Claude Opus 5' },
+  { id: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5' },
+];
+
+function _aiEscape(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, ch =>
+    ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
+}
+
+async function loadAiAgentPanel() {
+  const body = document.getElementById('aiAgentBody');
+  if (!body) return;
+  let agent;
+  try {
+    agent = await apiFetch('/api/agents/default');
+  } catch (err) {
+    body.innerHTML = `<div class="widget-error" style="padding:24px 0">
+      <i data-lucide="alert-circle" style="width:14px;height:14px"></i> ${_aiEscape(err.message)}</div>`;
+    lucide.createIcons();
+    return;
+  }
+
+  const models = _AI_MODELS.some(m => m.id === agent.model)
+    ? _AI_MODELS
+    : [..._AI_MODELS, { id: agent.model, label: agent.model }];
+
+  body.innerHTML = `
+    <div class="card" style="padding:20px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:18px">
+        <div>
+          <div style="font-size:15px;font-weight:700;color:var(--color-text-1)">${_aiEscape(agent.name)}</div>
+          <div style="font-size:12px;color:var(--color-text-3);margin-top:3px">
+            Esta é a IA desta subconta. O prompt define como ela conversa com seus clientes.
+          </div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0">
+          <input type="checkbox" id="aiActive" ${agent.is_active ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer">
+          Ativa
+        </label>
+      </div>
+
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+        <div style="flex:2;min-width:220px">
+          <label class="settings-label" style="display:block;margin-bottom:6px">Nome</label>
+          <input id="aiName" class="settings-input" style="width:100%" value="${_aiEscape(agent.name)}">
+        </div>
+        <div style="flex:1;min-width:180px">
+          <label class="settings-label" style="display:block;margin-bottom:6px">Modelo</label>
+          <select id="aiModel" class="settings-input" style="width:100%">
+            ${models.map(m => `<option value="${_aiEscape(m.id)}" ${m.id === agent.model ? 'selected' : ''}>${_aiEscape(m.label)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+
+      <label class="settings-label" style="display:block;margin-bottom:6px">
+        Prompt do sistema
+        <span style="font-weight:400;color:var(--color-text-3)">— substitua os trechos entre colchetes</span>
+      </label>
+      <textarea id="aiPrompt" class="settings-input" rows="22"
+        style="width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.6;resize:vertical">${_aiEscape(agent.system_prompt)}</textarea>
+      <div style="font-size:11px;color:var(--color-text-3);margin-top:6px">
+        Mantenha o bloco <code>[SEM RESPOSTA]</code>: é o que faz a IA ficar calada quando a
+        mensagem não pede resposta (um "ok", um emoji), em vez de responder a tudo.
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:18px;flex-wrap:wrap">
+        <span id="aiSaveMsg" style="font-size:12px;color:var(--color-text-3)"></span>
+        <button class="btn btn-primary btn-sm" id="aiSave" style="gap:6px">
+          <i data-lucide="check" style="width:13px;height:13px"></i> Salvar
+        </button>
+      </div>
+    </div>`;
+  lucide.createIcons();
+
+  document.getElementById('aiSave').addEventListener('click', async () => {
+    const btn = document.getElementById('aiSave');
+    const msg = document.getElementById('aiSaveMsg');
+    const name = document.getElementById('aiName').value.trim();
+    if (!name) { msg.textContent = 'O nome não pode ficar vazio.'; msg.style.color = 'var(--color-red)'; return; }
+
+    btn.disabled = true;
+    msg.style.color = 'var(--color-text-3)';
+    msg.textContent = 'Salvando...';
+    try {
+      await apiFetch(`/api/agents/${agent.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          name,
+          model:         document.getElementById('aiModel').value,
+          system_prompt: document.getElementById('aiPrompt').value,
+          is_active:     document.getElementById('aiActive').checked,
+        }),
+      });
+      msg.style.color = 'var(--color-green)';
+      msg.textContent = 'Salvo.';
+      setTimeout(() => { msg.textContent = ''; }, 2500);
+    } catch (err) {
+      msg.style.color = 'var(--color-red)';
+      msg.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 async function reloadAgentsPage() {
   const content = document.getElementById('pageContent');
   if (!content) return;
@@ -340,30 +462,41 @@ async function reloadAgentsPage() {
 
 window.initAgents = function (webhooks) {
   // ── Troca de abas ────────────────────────────────────
-  const tabWebhooks = document.getElementById('tabWebhooks');
-  const tabOffice   = document.getElementById('tabOffice');
-  const panelWH     = document.getElementById('panelWebhooks');
-  const panelOff    = document.getElementById('panelOffice');
+  const TABS = {
+    webhooks: { tab: 'tabWebhooks', panel: 'panelWebhooks' },
+    ai:       { tab: 'tabAi',       panel: 'panelAi' },
+    office:   { tab: 'tabOffice',   panel: 'panelOffice' },
+  };
+  let _aiLoaded = false;
 
-  function switchTab(tab) {
-    const isOffice = tab === 'office';
-    tabWebhooks.style.color       = isOffice ? 'var(--color-text-3)' : 'var(--color-accent)';
-    tabWebhooks.style.borderColor = isOffice ? 'transparent'          : 'var(--color-accent)';
-    tabOffice.style.color         = isOffice ? 'var(--color-accent)' : 'var(--color-text-3)';
-    tabOffice.style.borderColor   = isOffice ? 'var(--color-accent)' : 'transparent';
-    panelWH.style.display  = isOffice ? 'none' : '';
-    panelOff.style.display = isOffice ? '' : 'none';
-    if (isOffice) {
+  function switchTab(active) {
+    for (const [key, ids] of Object.entries(TABS)) {
+      const isActive = key === active;
+      const tabEl   = document.getElementById(ids.tab);
+      const panelEl = document.getElementById(ids.panel);
+      if (tabEl) {
+        tabEl.style.color       = isActive ? 'var(--color-accent)' : 'var(--color-text-3)';
+        tabEl.style.borderColor = isActive ? 'var(--color-accent)' : 'transparent';
+      }
+      if (panelEl) panelEl.style.display = isActive ? '' : 'none';
+    }
+
+    if (active === 'office') {
       const u = decodeToken?.() || {};
       const initials = ((u.name || u.email || 'EU').split(' ').map(p => p[0]).join('').slice(0, 2)).toUpperCase();
       window.initOffice?.({ webhooks: Array.isArray(webhooks) ? webhooks : [], userInitials: initials });
     } else {
       window.unloadOffice?.();
     }
+
+    // Carrega a IA só na primeira vez que a aba é aberta — evita uma
+    // requisição a mais em quem só usa webhooks.
+    if (active === 'ai' && !_aiLoaded) { _aiLoaded = true; loadAiAgentPanel(); }
   }
 
-  tabWebhooks?.addEventListener('click', () => switchTab('webhooks'));
-  tabOffice?.addEventListener('click',   () => switchTab('office'));
+  document.getElementById('tabWebhooks')?.addEventListener('click', () => switchTab('webhooks'));
+  document.getElementById('tabAi')?.addEventListener('click',       () => switchTab('ai'));
+  document.getElementById('tabOffice')?.addEventListener('click',   () => switchTab('office'));
 
   // Mostra "Configurações avançadas" (criar/editar webhooks) para o papel
   // Desenvolvedor (super_admin) — antes travado num único e-mail fixo, o
