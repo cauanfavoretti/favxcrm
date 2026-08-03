@@ -604,6 +604,18 @@ function aiCostUsd(model, usage) {
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_agents_one_default
                       ON ai_agents (subaccount_id) WHERE is_default`);
 
+    // O default da coluna vinha de quando o projeto mirava modelos Claude.
+    // Hoje o provedor é a OpenAI: um agente inserido sem modelo explícito
+    // nasceria com um ID que o SDK não sabe chamar. Alinha ao padrão atual.
+    // ALTER ... SET DEFAULT não aceita parâmetro vinculado, e AI_DEFAULT_MODEL
+    // pode vir de variável de ambiente — então valida o formato antes de
+    // interpolar, em vez de confiar na origem.
+    if (/^[a-zA-Z0-9._-]{1,60}$/.test(AI_DEFAULT_MODEL)) {
+      await pool.query(`ALTER TABLE ai_agents ALTER COLUMN model SET DEFAULT '${AI_DEFAULT_MODEL}'`);
+    } else {
+      console.warn(`[init] OPENAI_MODEL com formato inesperado, default da coluna mantido: ${AI_DEFAULT_MODEL}`);
+    }
+
     // Backfill: subcontas criadas antes desta feature também ganham a sua IA.
     const { rows } = await pool.query(
       `SELECT s.id, s.name FROM subaccounts s
