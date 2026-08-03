@@ -37,7 +37,7 @@ window.pageAgents = function (webhooks) {
       Webhooks
     </button>
     <button id="tabAi" class="agents-tab" style="padding:8px 18px;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--color-text-3);border-bottom:2px solid transparent;margin-bottom:-1px">
-      IA da subconta
+      Nexus Chat AI
     </button>
     <button id="tabOffice" class="agents-tab" style="padding:8px 18px;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--color-text-3);border-bottom:2px solid transparent;margin-bottom:-1px">
       🏢 Escritório Virtual
@@ -377,7 +377,7 @@ async function loadAiAgentPanel() {
         <div>
           <div style="font-size:15px;font-weight:700;color:var(--color-text-1)">${_aiEscape(agent.name)}</div>
           <div style="font-size:12px;color:var(--color-text-3);margin-top:3px">
-            Esta é a IA desta subconta. O prompt define como ela conversa com seus clientes.
+            A IA de atendimento desta subconta. O prompt define como ela conversa com seus clientes.
           </div>
         </div>
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0">

@@ -438,6 +438,7 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
   }
 })();
 
+const AI_AGENT_NAME      = 'Nexus Chat AI'; // nome do produto, igual em toda subconta
 const AI_DEFAULT_MODEL   = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const AI_HISTORY_LIMIT   = 20;    // mensagens de contexto enviadas ao modelo
 const AI_HUMAN_PAUSE_MIN = 30;    // minutos de silêncio após um humano responder
@@ -716,7 +717,7 @@ async function ensureSubaccountAgent(subaccount_id, subaccountName, created_by =
      ON CONFLICT DO NOTHING
      RETURNING *`,
     [subaccount_id,
-     `IA de ${(subaccountName || 'atendimento').trim()}`,
+     AI_AGENT_NAME,
      'Agente de atendimento da subconta. Edite o prompt em Modo desenvolvedor.',
      AI_DEFAULT_MODEL,
      defaultAgentPrompt(subaccountName),
