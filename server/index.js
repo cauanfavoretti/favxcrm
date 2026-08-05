@@ -5321,7 +5321,10 @@ async function resyncAllWebhooks() {
 const DOC_BUCKET     = process.env.SUPABASE_DOCS_BUCKET || 'documentos';
 const SUPABASE_URL   = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const SUPABASE_KEY   = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const DOC_MAX_BYTES  = 100 * 1024 * 1024; // 100 MB por arquivo
+// Teto usado só para recusar cedo, com mensagem clara, antes de assinar a URL.
+// O limite que vale de verdade é o do projeto no Supabase (50 MB no plano
+// free) — por isso o padrão fica alinhado a ele em vez de acima.
+const DOC_MAX_BYTES  = Number(process.env.SUPABASE_DOCS_MAX_MB || 50) * 1024 * 1024;
 const DOC_LINK_TTL   = 300;               // segundos de validade do link assinado
 
 if (!SUPABASE_URL || !SUPABASE_KEY)
@@ -5364,10 +5367,14 @@ async function ensureDocBucket() {
     await storageFetch(`/bucket/${DOC_BUCKET}`);
   } catch {
     try {
+      // Sem file_size_limit de propósito: o bucket herda o limite global do
+      // projeto. Declarar um valor acima desse teto faz o Supabase recusar a
+      // criação inteira com "object exceeded the maximum allowed size", o que
+      // derruba todo upload — inclusive de arquivos pequenos.
       await storageFetch('/bucket', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: DOC_BUCKET, name: DOC_BUCKET, public: false, file_size_limit: DOC_MAX_BYTES }),
+        body: JSON.stringify({ id: DOC_BUCKET, name: DOC_BUCKET, public: false }),
       });
     } catch (e) {
       if (!/exist/i.test(e.message)) throw e;

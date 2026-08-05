@@ -391,9 +391,14 @@ function _docPutFile(url, file, onProgress) {
     xhr.upload.onprogress = e => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
     };
-    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300)
-      ? resolve()
-      : reject(new Error(`Envio recusado pelo armazenamento (HTTP ${xhr.status}).`));
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) return resolve();
+      // O armazenamento explica a recusa no corpo (tamanho, tipo, permissão).
+      // Sem isso sobra só o número do status, que não diz o que fazer.
+      let detail = '';
+      try { detail = JSON.parse(xhr.responseText)?.message || ''; } catch {}
+      reject(new Error(`Envio recusado pelo armazenamento (HTTP ${xhr.status})${detail ? ': ' + detail : '.'}`));
+    };
     xhr.onerror = () => reject(new Error('Falha de rede durante o envio.'));
     xhr.send(file);
   });
