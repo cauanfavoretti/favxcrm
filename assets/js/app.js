@@ -34,6 +34,7 @@ const PAGE_MAP = {
   'contacts':     { load: window.loadContacts,     render: window.pageContacts,     init: window.initContacts,     label: 'Contatos' },
   'conversations':{ load: window.loadConversations,render: window.pageConversations,init: window.initConversations,label: 'Conversas' },
   'funnels':      { load: window.loadFunnels,      render: window.pageFunnels,      init: window.initFunnels,      label: 'Funis' },
+  'documents':    { load: window.loadDocuments,    render: window.pageDocuments,    init: window.initDocuments,    label: 'Documentos' },
   'agents':       { load: window.loadAgents,       render: window.pageAgents,       init: window.initAgents,       label: 'Modo desenvolvedor' },
   'ai-dashboard': { load: null,                    render: window.pageAiDashboard,  init: window.initAiDashboard,  label: 'Painel da IA' },
   'automations':  { load: window.loadAutomations,  render: window.pageAutomations,  init: window.initAutomations,  label: 'Automações' },

@@ -5310,6 +5310,505 @@ async function resyncAllWebhooks() {
   }
 }
 
+// ============================================================
+// DOCUMENTOS
+// ============================================================
+
+// Os bytes ficam no Supabase Storage, não no Postgres: o banco guarda só o
+// caminho. O upload e o download vão direto do navegador para o Storage por
+// URL assinada — nunca passam pela Vercel, que corta requisições acima de
+// ~4,5 MB. A chave service_role fica só no servidor.
+const DOC_BUCKET     = process.env.SUPABASE_DOCS_BUCKET || 'documentos';
+const SUPABASE_URL   = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+const SUPABASE_KEY   = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const DOC_MAX_BYTES  = 100 * 1024 * 1024; // 100 MB por arquivo
+const DOC_LINK_TTL   = 300;               // segundos de validade do link assinado
+
+if (!SUPABASE_URL || !SUPABASE_KEY)
+  console.warn('[docs] SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY ausentes — a página Documentos não vai aceitar uploads.');
+
+async function storageFetch(path, options = {}) {
+  const res = await fetch(`${SUPABASE_URL}/storage/v1${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      apikey: SUPABASE_KEY,
+      ...(options.headers || {}),
+    },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.message || body.error || `Storage HTTP ${res.status}`);
+  return body;
+}
+
+// O bucket é criado na primeira necessidade. `_bucketReady` sobrevive entre
+// invocações da mesma instância serverless, então isso não é um round-trip
+// extra em toda requisição.
+let _bucketReady = false;
+async function ensureDocBucket() {
+  if (_bucketReady) return;
+  try {
+    await storageFetch(`/bucket/${DOC_BUCKET}`);
+  } catch {
+    try {
+      await storageFetch('/bucket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: DOC_BUCKET, name: DOC_BUCKET, public: false, file_size_limit: DOC_MAX_BYTES }),
+      });
+    } catch (e) {
+      if (!/exist/i.test(e.message)) throw e;
+    }
+  }
+  _bucketReady = true;
+}
+
+function docStorageGuard(_req, res, next) {
+  if (!SUPABASE_URL || !SUPABASE_KEY)
+    return res.status(503).json({ message: 'Armazenamento de documentos não configurado no servidor.' });
+  next();
+}
+
+// Nomes vêm do usuário e podem conter barras, o que quebraria o caminho no
+// Storage. O caminho real nunca usa o nome — só o UUID —, mas o nome exibido
+// também é normalizado para não confundir a interface.
+function cleanDocName(name, fallback = 'arquivo') {
+  const clean = String(name || '').replace(/[\/\\]+/g, '-').replace(/\s+/g, ' ').trim();
+  return clean.slice(0, 300) || fallback;
+}
+
+function docExt(name) {
+  const m = String(name || '').match(/\.([a-zA-Z0-9]{1,10})$/);
+  return m ? '.' + m[1].toLowerCase() : '';
+}
+
+// Um documento restrito só aparece para quem foi atribuído, para quem o
+// enviou e para o super_admin. Os parâmetros entram na ordem [role, user_id].
+const DOC_VISIBLE_SQL = `(
+  $ROLE$ = 'super_admin'
+  OR d.visibility = 'all'
+  OR d.created_by = $UID$
+  OR EXISTS (SELECT 1 FROM document_access a WHERE a.document_id = d.id AND a.user_id = $UID$)
+)`;
+
+function docVisibleClause(startIdx) {
+  return DOC_VISIBLE_SQL
+    .replace(/\$ROLE\$/g, `$${startIdx}`)
+    .replace(/\$UID\$/g,  `$${startIdx + 1}`);
+}
+
+(async function initDocuments() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS document_folders (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        subaccount_id UUID NOT NULL REFERENCES subaccounts(id) ON DELETE CASCADE,
+        parent_id     UUID REFERENCES document_folders(id) ON DELETE CASCADE,
+        name          VARCHAR(200) NOT NULL,
+        created_by    UUID,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_doc_folders_sub ON document_folders (subaccount_id, parent_id)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS documents (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        subaccount_id UUID NOT NULL REFERENCES subaccounts(id) ON DELETE CASCADE,
+        folder_id     UUID REFERENCES document_folders(id) ON DELETE CASCADE,
+        name          VARCHAR(300) NOT NULL,
+        storage_path  TEXT NOT NULL,
+        mime_type     VARCHAR(200),
+        size_bytes    BIGINT NOT NULL DEFAULT 0,
+        visibility    VARCHAR(20) NOT NULL DEFAULT 'all',
+        status        VARCHAR(20) NOT NULL DEFAULT 'pending',
+        created_by    UUID,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_sub ON documents (subaccount_id, folder_id)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS document_access (
+        document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        PRIMARY KEY (document_id, user_id)
+      )
+    `);
+  } catch (e) {
+    console.warn('[docs] migração:', e.message);
+  }
+})();
+
+// ---- Listagem: pastas + documentos de um nível, com trilha de navegação ----
+app.get('/api/documents', auth, async (req, res) => {
+  const { subaccount_id, sub: uid, role } = req.user;
+  const folderId = req.query.folder_id || null;
+  const search   = (req.query.search || '').trim();
+  try {
+    if (folderId) {
+      const { rows } = await pool.query(
+        `SELECT id FROM document_folders WHERE id = $1 AND subaccount_id = $2 LIMIT 1`,
+        [folderId, subaccount_id]
+      );
+      if (!rows[0]) return res.status(404).json({ message: 'Pasta não encontrada.' });
+    }
+
+    // Busca varre a subconta inteira; sem busca, mostra só o nível atual.
+    const folderCond = search
+      ? ``
+      : (folderId ? `AND f.parent_id = $2` : `AND f.parent_id IS NULL`);
+    const folderParams = search ? [subaccount_id, `%${search}%`] : (folderId ? [subaccount_id, folderId] : [subaccount_id]);
+
+    const { rows: folders } = await pool.query(
+      `SELECT f.id, f.name, f.parent_id, f.created_at,
+              (SELECT COUNT(*) FROM document_folders c WHERE c.parent_id = f.id) AS folder_count,
+              (SELECT COUNT(*) FROM documents dd WHERE dd.folder_id = f.id AND dd.status = 'ready') AS file_count
+         FROM document_folders f
+        WHERE f.subaccount_id = $1 ${folderCond} ${search ? `AND f.name ILIKE $2` : ''}
+        ORDER BY f.name ASC`,
+      folderParams
+    );
+
+    const params = [subaccount_id];
+    let where = `d.subaccount_id = $1 AND d.status = 'ready'`;
+    if (search) {
+      params.push(`%${search}%`);
+      where += ` AND d.name ILIKE $${params.length}`;
+    } else if (folderId) {
+      params.push(folderId);
+      where += ` AND d.folder_id = $${params.length}`;
+    } else {
+      where += ` AND d.folder_id IS NULL`;
+    }
+    params.push(role, uid);
+    where += ` AND ${docVisibleClause(params.length - 1)}`;
+
+    const { rows: documents } = await pool.query(
+      `SELECT d.id, d.name, d.folder_id, d.mime_type, d.size_bytes, d.visibility,
+              d.created_at, d.updated_at, d.created_by,
+              u.name AS created_by_name,
+              COALESCE(
+                (SELECT json_agg(json_build_object('id', au.id, 'name', au.name))
+                   FROM document_access a JOIN users au ON au.id = a.user_id
+                  WHERE a.document_id = d.id), '[]'
+              ) AS assigned_users
+         FROM documents d
+         LEFT JOIN users u ON u.id = d.created_by
+        WHERE ${where}
+        ORDER BY d.created_at DESC`,
+      params
+    );
+
+    // Trilha: sobe até a raiz a partir da pasta atual.
+    let breadcrumb = [];
+    if (folderId) {
+      const { rows } = await pool.query(
+        `WITH RECURSIVE trail AS (
+           SELECT id, name, parent_id, 0 AS depth FROM document_folders WHERE id = $1
+           UNION ALL
+           SELECT f.id, f.name, f.parent_id, t.depth + 1
+             FROM document_folders f JOIN trail t ON f.id = t.parent_id
+         )
+         SELECT id, name FROM trail ORDER BY depth DESC`,
+        [folderId]
+      );
+      breadcrumb = rows;
+    }
+
+    res.json({ folder_id: folderId, breadcrumb, folders, documents, can_manage: ['admin', 'super_admin'].includes(role) });
+  } catch (err) {
+    console.error('[documents GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// ---- Todas as pastas da subconta (para o seletor de "mover") ----
+app.get('/api/document-folders', auth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, parent_id FROM document_folders WHERE subaccount_id = $1 ORDER BY name ASC`,
+      [req.user.subaccount_id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[document-folders GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.post('/api/document-folders', auth, async (req, res) => {
+  const { subaccount_id, sub: uid } = req.user;
+  const name = cleanDocName(req.body?.name, '').slice(0, 200);
+  const parentId = req.body?.parent_id || null;
+  if (!name) return res.status(400).json({ message: 'Nome da pasta é obrigatório.' });
+  try {
+    if (parentId) {
+      const { rows } = await pool.query(
+        `SELECT id FROM document_folders WHERE id = $1 AND subaccount_id = $2 LIMIT 1`, [parentId, subaccount_id]);
+      if (!rows[0]) return res.status(404).json({ message: 'Pasta de destino não encontrada.' });
+    }
+    const { rows } = await pool.query(
+      `INSERT INTO document_folders (subaccount_id, parent_id, name, created_by)
+       VALUES ($1, $2, $3, $4) RETURNING id, name, parent_id, created_at`,
+      [subaccount_id, parentId, name, uid]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error('[document-folders POST]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.patch('/api/document-folders/:id', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { id } = req.params;
+  const hasName   = req.body?.name !== undefined;
+  const hasParent = req.body?.parent_id !== undefined;
+  const name      = hasName ? cleanDocName(req.body.name, '').slice(0, 200) : null;
+  const parentId  = hasParent ? (req.body.parent_id || null) : undefined;
+  if (hasName && !name) return res.status(400).json({ message: 'Nome da pasta é obrigatório.' });
+  try {
+    if (parentId) {
+      if (parentId === id) return res.status(400).json({ message: 'Uma pasta não pode conter a si mesma.' });
+      // Mover uma pasta para dentro da própria descendência criaria um ciclo
+      // órfão: o ramo inteiro sumiria da árvore.
+      const { rows: desc } = await pool.query(
+        `WITH RECURSIVE sub AS (
+           SELECT id FROM document_folders WHERE id = $1
+           UNION ALL
+           SELECT f.id FROM document_folders f JOIN sub s ON f.parent_id = s.id
+         ) SELECT id FROM sub WHERE id = $2`,
+        [id, parentId]
+      );
+      if (desc[0]) return res.status(400).json({ message: 'Não é possível mover uma pasta para dentro dela mesma.' });
+
+      const { rows } = await pool.query(
+        `SELECT id FROM document_folders WHERE id = $1 AND subaccount_id = $2 LIMIT 1`, [parentId, subaccount_id]);
+      if (!rows[0]) return res.status(404).json({ message: 'Pasta de destino não encontrada.' });
+    }
+    const { rows } = await pool.query(
+      `UPDATE document_folders
+          SET name      = COALESCE($3, name),
+              parent_id = CASE WHEN $5 THEN $4 ELSE parent_id END,
+              updated_at = NOW()
+        WHERE id = $1 AND subaccount_id = $2
+        RETURNING id, name, parent_id`,
+      [id, subaccount_id, hasName ? name : null, parentId === undefined ? null : parentId, hasParent]
+    );
+    if (!rows[0]) return res.status(404).json({ message: 'Pasta não encontrada.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[document-folders PATCH]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.delete('/api/document-folders/:id', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { id } = req.params;
+  try {
+    const { rows: own } = await pool.query(
+      `SELECT id FROM document_folders WHERE id = $1 AND subaccount_id = $2 LIMIT 1`, [id, subaccount_id]);
+    if (!own[0]) return res.status(404).json({ message: 'Pasta não encontrada.' });
+
+    // ON DELETE CASCADE apaga as linhas dos documentos, mas não os bytes no
+    // Storage — eles precisam ser removidos antes, ou ficam órfãos pagos.
+    const { rows: paths } = await pool.query(
+      `WITH RECURSIVE sub AS (
+         SELECT id FROM document_folders WHERE id = $1
+         UNION ALL
+         SELECT f.id FROM document_folders f JOIN sub s ON f.parent_id = s.id
+       )
+       SELECT storage_path FROM documents WHERE folder_id IN (SELECT id FROM sub)`,
+      [id]
+    );
+    if (paths.length && SUPABASE_URL && SUPABASE_KEY) {
+      await storageFetch(`/object/${DOC_BUCKET}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefixes: paths.map(p => p.storage_path) }),
+      }).catch(e => console.warn('[docs] remoção no storage:', e.message));
+    }
+    await pool.query(`DELETE FROM document_folders WHERE id = $1 AND subaccount_id = $2`, [id, subaccount_id]);
+    res.json({ deleted: true, files_removed: paths.length });
+  } catch (err) {
+    console.error('[document-folders DELETE]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// ---- Upload: o servidor só assina a URL; os bytes vão do navegador ao Storage ----
+app.post('/api/documents/upload-url', auth, docStorageGuard, async (req, res) => {
+  const { subaccount_id, sub: uid } = req.user;
+  const name     = cleanDocName(req.body?.name, '');
+  const folderId = req.body?.folder_id || null;
+  const size     = Number(req.body?.size_bytes) || 0;
+  const mime     = String(req.body?.mime_type || 'application/octet-stream').slice(0, 200);
+  if (!name) return res.status(400).json({ message: 'Nome do arquivo é obrigatório.' });
+  if (size > DOC_MAX_BYTES)
+    return res.status(413).json({ message: `Arquivo acima do limite de ${Math.round(DOC_MAX_BYTES / 1024 / 1024)} MB.` });
+  try {
+    if (folderId) {
+      const { rows } = await pool.query(
+        `SELECT id FROM document_folders WHERE id = $1 AND subaccount_id = $2 LIMIT 1`, [folderId, subaccount_id]);
+      if (!rows[0]) return res.status(404).json({ message: 'Pasta não encontrada.' });
+    }
+    await ensureDocBucket();
+
+    const docId = crypto.randomUUID();
+    const path  = `${subaccount_id}/${docId}${docExt(name)}`;
+
+    // Fica 'pending' até o navegador confirmar o envio. Linha pendente não
+    // aparece na listagem, então um upload interrompido não vira item quebrado.
+    await pool.query(
+      `INSERT INTO documents (id, subaccount_id, folder_id, name, storage_path, mime_type, size_bytes, created_by, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')`,
+      [docId, subaccount_id, folderId, name, path, mime, size, uid]
+    );
+
+    const signed = await storageFetch(`/object/upload/sign/${DOC_BUCKET}/${path}`, { method: 'POST' });
+    res.status(201).json({
+      document_id: docId,
+      upload_url:  `${SUPABASE_URL}/storage/v1${signed.url}`,
+    });
+  } catch (err) {
+    console.error('[documents upload-url]', err.message);
+    res.status(500).json({ message: 'Não foi possível preparar o envio.' });
+  }
+});
+
+app.post('/api/documents/:id/confirm', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE documents SET status = 'ready', updated_at = NOW()
+        WHERE id = $1 AND subaccount_id = $2 AND status = 'pending'
+        RETURNING id, name, folder_id, mime_type, size_bytes, visibility, created_at`,
+      [req.params.id, subaccount_id]
+    );
+    if (!rows[0]) return res.status(404).json({ message: 'Documento não encontrado.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[documents confirm]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// ---- Link assinado de curta duração para abrir ou baixar ----
+app.get('/api/documents/:id/link', auth, docStorageGuard, async (req, res) => {
+  const { subaccount_id, sub: uid, role } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `SELECT d.id, d.name, d.storage_path, d.mime_type
+         FROM documents d
+        WHERE d.id = $1 AND d.subaccount_id = $2 AND d.status = 'ready'
+          AND ${docVisibleClause(3)}
+        LIMIT 1`,
+      [req.params.id, subaccount_id, role, uid]
+    );
+    if (!rows[0]) return res.status(404).json({ message: 'Documento não encontrado.' });
+
+    const body = { expiresIn: DOC_LINK_TTL };
+    if (req.query.download === '1') body.download = rows[0].name;
+    const signed = await storageFetch(`/object/sign/${DOC_BUCKET}/${rows[0].storage_path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    res.json({ url: `${SUPABASE_URL}/storage/v1${signed.signedURL}`, name: rows[0].name, mime_type: rows[0].mime_type });
+  } catch (err) {
+    console.error('[documents link]', err.message);
+    res.status(500).json({ message: 'Não foi possível gerar o link.' });
+  }
+});
+
+// ---- Renomear, mover e definir quem enxerga ----
+app.patch('/api/documents/:id', auth, async (req, res) => {
+  const { subaccount_id, sub: uid, role } = req.user;
+  const { id } = req.params;
+  const isManager = ['admin', 'super_admin'].includes(role);
+
+  const hasName       = req.body?.name !== undefined;
+  const hasFolder     = req.body?.folder_id !== undefined;
+  const hasVisibility = req.body?.visibility !== undefined;
+  const name          = hasName ? cleanDocName(req.body.name, '') : null;
+  const folderId      = hasFolder ? (req.body.folder_id || null) : null;
+  const visibility    = hasVisibility ? (req.body.visibility === 'restricted' ? 'restricted' : 'all') : null;
+  const assigned      = Array.isArray(req.body?.assigned_user_ids) ? req.body.assigned_user_ids : null;
+
+  if (hasName && !name) return res.status(400).json({ message: 'Nome é obrigatório.' });
+  if ((hasVisibility || assigned) && !isManager)
+    return res.status(403).json({ message: 'Apenas administradores definem o acesso a um documento.' });
+
+  try {
+    const { rows: cur } = await pool.query(
+      `SELECT d.id FROM documents d
+        WHERE d.id = $1 AND d.subaccount_id = $2 AND ${docVisibleClause(3)} LIMIT 1`,
+      [id, subaccount_id, role, uid]
+    );
+    if (!cur[0]) return res.status(404).json({ message: 'Documento não encontrado.' });
+
+    if (folderId) {
+      const { rows } = await pool.query(
+        `SELECT id FROM document_folders WHERE id = $1 AND subaccount_id = $2 LIMIT 1`, [folderId, subaccount_id]);
+      if (!rows[0]) return res.status(404).json({ message: 'Pasta de destino não encontrada.' });
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE documents
+          SET name       = COALESCE($3, name),
+              folder_id  = CASE WHEN $5 THEN $4 ELSE folder_id END,
+              visibility = COALESCE($6, visibility),
+              updated_at = NOW()
+        WHERE id = $1 AND subaccount_id = $2
+        RETURNING id, name, folder_id, visibility`,
+      [id, subaccount_id, hasName ? name : null, folderId, hasFolder, visibility]
+    );
+
+    if (assigned) {
+      // Só usuários da própria subconta podem receber acesso.
+      await pool.query(`DELETE FROM document_access WHERE document_id = $1`, [id]);
+      if (assigned.length) {
+        await pool.query(
+          `INSERT INTO document_access (document_id, user_id)
+           SELECT $1, u.id FROM users u WHERE u.id = ANY($2::uuid[]) AND u.subaccount_id = $3
+           ON CONFLICT DO NOTHING`,
+          [id, assigned, subaccount_id]
+        );
+      }
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[documents PATCH]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.delete('/api/documents/:id', auth, async (req, res) => {
+  const { subaccount_id, sub: uid, role } = req.user;
+  try {
+    const { rows } = await pool.query(
+      `SELECT d.id, d.storage_path FROM documents d
+        WHERE d.id = $1 AND d.subaccount_id = $2 AND ${docVisibleClause(3)} LIMIT 1`,
+      [req.params.id, subaccount_id, role, uid]
+    );
+    if (!rows[0]) return res.status(404).json({ message: 'Documento não encontrado.' });
+
+    if (SUPABASE_URL && SUPABASE_KEY) {
+      await storageFetch(`/object/${DOC_BUCKET}/${rows[0].storage_path}`, { method: 'DELETE' })
+        .catch(e => console.warn('[docs] remoção no storage:', e.message));
+    }
+    await pool.query(`DELETE FROM documents WHERE id = $1 AND subaccount_id = $2`, [req.params.id, subaccount_id]);
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('[documents DELETE]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 if (require.main === module) {
   app.listen(PORT, () => console.log(`[FAVX CRM API] Rodando em http://localhost:${PORT}`));
 }
