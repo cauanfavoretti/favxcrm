@@ -5347,7 +5347,10 @@ async function storageFetch(path, options = {}) {
     },
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.message || body.error || `Storage HTTP ${res.status}`);
+  if (!res.ok) {
+    const detail = body.message || body.error || body.msg || '';
+    throw new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''} (${path.split('?')[0]})`);
+  }
   return body;
 }
 
@@ -5692,7 +5695,11 @@ app.post('/api/documents/upload-url', auth, docStorageGuard, async (req, res) =>
     });
   } catch (err) {
     console.error('[documents upload-url]', err.message);
-    res.status(500).json({ message: 'Não foi possível preparar o envio.' });
+    // A causa vem do Supabase e quase sempre é de configuração (URL errada,
+    // chave sem permissão, bucket bloqueado). Engoli-la numa mensagem genérica
+    // obriga a caçar o log da Vercel para descobrir algo que o admin resolve
+    // sozinho. A rota é autenticada e restrita à subconta.
+    res.status(500).json({ message: `Não foi possível preparar o envio. Armazenamento respondeu: ${err.message}` });
   }
 });
 
