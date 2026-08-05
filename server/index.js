@@ -5327,12 +5327,22 @@ const DOC_LINK_TTL   = 300;               // segundos de validade do link assina
 if (!SUPABASE_URL || !SUPABASE_KEY)
   console.warn('[docs] SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY ausentes — a página Documentos não vai aceitar uploads.');
 
+// O Supabase tem dois formatos de chave secreta e eles não se autenticam do
+// mesmo jeito. A legada (`service_role`, um JWT que começa com "eyJ") vai no
+// Authorization: Bearer. A nova (`sb_secret_…`) NÃO é um JWT e é recusada
+// nesse header — ela só vale em `apikey`. Aceitar as duas evita que a
+// migração do Supabase, que vai remover as legadas, quebre o upload.
+function storageAuthHeaders() {
+  return SUPABASE_KEY.startsWith('sb_')
+    ? { apikey: SUPABASE_KEY }
+    : { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY };
+}
+
 async function storageFetch(path, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/storage/v1${path}`, {
     ...options,
     headers: {
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      apikey: SUPABASE_KEY,
+      ...storageAuthHeaders(),
       ...(options.headers || {}),
     },
   });
