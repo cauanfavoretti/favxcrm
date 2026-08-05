@@ -9,6 +9,14 @@ let docsState = {
   allFolders: [],
 };
 
+// Delegado no documento: a bandeja é redesenhada a cada atualização da lista,
+// então um listener preso ao botão se perderia.
+document.addEventListener('click', e => {
+  if (!e.target.closest?.('.doc-tray-close')) return;
+  const tray = document.getElementById('docUploadTray');
+  if (tray) { tray.innerHTML = ''; tray.hidden = true; }
+});
+
 function _docEsc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -142,7 +150,9 @@ window.pageDocuments = function(data) {
       <div class="doc-empty-title">${searching ? 'Nada encontrado' : 'Esta pasta está vazia'}</div>
       <div class="doc-empty-sub">${searching
         ? 'Nenhuma pasta ou documento com esse nome.'
-        : 'Arraste arquivos para cá ou use o botão Enviar arquivos. PDF, Word, Excel, PowerPoint, imagens e outros.'}</div>
+        : d.storage_ready === false
+          ? 'Crie pastas normalmente. O envio de arquivos volta assim que o armazenamento for configurado no servidor.'
+          : 'Arraste arquivos para cá ou use o botão Enviar arquivos. PDF, Word, Excel, PowerPoint, imagens e outros.'}</div>
     </div>` : '';
 
   return `
@@ -158,13 +168,25 @@ window.pageDocuments = function(data) {
       <button class="btn btn-secondary btn-sm" id="btnNewFolder">
         <i data-lucide="folder-plus" style="width:14px;height:14px"></i> Nova pasta
       </button>
-      <button class="btn btn-primary btn-sm" id="btnUploadDoc">
+      <button class="btn btn-primary btn-sm" id="btnUploadDoc"
+        ${d.storage_ready === false ? 'disabled title="Armazenamento não configurado no servidor."' : ''}>
         <i data-lucide="upload" style="width:14px;height:14px"></i> Enviar arquivos
       </button>
     </div>
   </div>
 
   <input type="file" id="docFileInput" multiple hidden />
+
+  ${d.storage_ready === false ? `
+  <div class="doc-warn">
+    <i data-lucide="alert-triangle"></i>
+    <div>
+      <strong>O envio de arquivos está desligado.</strong>
+      O armazenamento não foi configurado no servidor. Pastas funcionam normalmente, mas nenhum
+      arquivo pode ser enviado até que as variáveis <code>SUPABASE_URL</code> e
+      <code>SUPABASE_SERVICE_ROLE_KEY</code> sejam definidas no ambiente e o projeto redeployado.
+    </div>
+  </div>` : ''}
 
   <div class="card" style="padding:0">
     <div style="display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--color-border);flex-wrap:wrap">
@@ -270,6 +292,7 @@ window.initDocuments = function() {
   });
   grid.addEventListener('drop', e => {
     if (!e.dataTransfer?.files?.length) return;
+    if (docsState.data?.storage_ready === false) { e.preventDefault(); dragDepth = 0; overlay.classList.remove('active'); return; }
     e.preventDefault();
     dragDepth = 0;
     overlay.classList.remove('active');
@@ -311,6 +334,13 @@ async function _docsRefresh({ keepFocus = false } = {}) {
 function _docTrayRow(id, name) {
   const tray = document.getElementById('docUploadTray');
   tray.hidden = false;
+  if (!tray.querySelector('.doc-tray-head')) {
+    const head = document.createElement('div');
+    head.className = 'doc-tray-head';
+    head.innerHTML = `<span>Enviando arquivos</span>
+      <button class="doc-tray-close" title="Fechar"><i data-lucide="x"></i></button>`;
+    tray.appendChild(head);
+  }
   const row = document.createElement('div');
   row.className = 'doc-tray-row';
   row.id = `up_${id}`;
@@ -328,14 +358,27 @@ function _docTrayRow(id, name) {
 
 function _docTrayDone(row, ok, msg) {
   row.querySelector('.doc-tray-pct').textContent = ok ? 'Enviado' : 'Falhou';
-  row.querySelector('.doc-tray-pct').style.color = ok ? 'var(--color-green, #16a34a)' : 'var(--color-red)';
-  row.querySelector('.doc-tray-bar span').style.background = ok ? 'var(--color-green, #16a34a)' : 'var(--color-red)';
-  if (!ok && msg) row.querySelector('.doc-tray-name').title = msg;
+  row.querySelector('.doc-tray-pct').style.color = ok ? 'var(--color-green)' : 'var(--color-red)';
+  row.querySelector('.doc-tray-bar span').style.background = ok ? 'var(--color-green)' : 'var(--color-red)';
+
+  if (!ok && msg) {
+    // O motivo da falha tem que ficar na tela. Escondê-lo num tooltip fez um
+    // upload bloqueado por configuração parecer um defeito sem explicação.
+    const bar = row.querySelector('.doc-tray-bar');
+    const err = document.createElement('div');
+    err.className = 'doc-tray-err';
+    err.textContent = msg;
+    bar.replaceWith(err);
+  }
+
+  // A linha com erro fica até o usuário fechar a bandeja; só as bem-sucedidas
+  // somem sozinhas.
+  if (!ok) return;
   setTimeout(() => {
     row.remove();
     const tray = document.getElementById('docUploadTray');
-    if (tray && !tray.children.length) tray.hidden = true;
-  }, ok ? 2000 : 6000);
+    if (tray && !tray.querySelector('.doc-tray-row')) tray.hidden = true;
+  }, 2000);
 }
 
 // O PUT vai direto do navegador para o Supabase Storage com uma URL assinada

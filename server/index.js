@@ -5518,7 +5518,13 @@ app.get('/api/documents', auth, async (req, res) => {
       breadcrumb = rows;
     }
 
-    res.json({ folder_id: folderId, breadcrumb, folders, documents, can_manage: ['admin', 'super_admin'].includes(role) });
+    res.json({
+      folder_id: folderId, breadcrumb, folders, documents,
+      can_manage: ['admin', 'super_admin'].includes(role),
+      // A página avisa antes de o usuário tentar enviar, em vez de deixar o
+      // upload falhar sem explicação.
+      storage_ready: Boolean(SUPABASE_URL && SUPABASE_KEY),
+    });
   } catch (err) {
     console.error('[documents GET]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
