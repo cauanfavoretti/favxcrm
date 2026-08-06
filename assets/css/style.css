@@ -3356,7 +3356,9 @@ tbody tr:hover { background: var(--color-surface-2); }
 /* ── Canvas: fundo preto com halos de luz sutis + grade de pontos ── */
 .auto-canvas-wrap {
   flex: 1;
-  overflow: auto;
+  /* hidden, não auto: a vista é controlada por transform. Com rolagem nativa
+     ligada as duas competiriam pelo mesmo gesto. */
+  overflow: hidden;
   position: relative;
   background-color: var(--ab-bg);
   background-image:
@@ -4350,3 +4352,79 @@ tbody tr:hover { background: var(--color-surface-2); }
   cursor: pointer;
 }
 .auto-tag-opt:hover { background: rgba(255, 255, 255, 0.06); }
+
+/* ── Canvas das automações: pan e zoom ── */
+
+.auto-canvas {
+  /* A origem no canto é o que faz translate+scale se comportar como câmera:
+     com o padrão (centro), ampliar desloca o conteúdo sozinho. */
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.auto-canvas-wrap { cursor: grab; }
+.auto-canvas-wrap.auto-panning { cursor: grabbing; }
+/* Enquanto arrasta a vista, o cursor não pode virar seleção de texto ao
+   passar por cima dos nomes dos nodes. */
+.auto-canvas-wrap.auto-panning * { cursor: grabbing !important; user-select: none; }
+.auto-node { cursor: grab; }
+
+.auto-zoom-bar {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--ab-surface);
+  border: 1px solid var(--ab-border-2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.auto-zoom-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  cursor: pointer;
+  color: var(--ab-text-2);
+  transition: background 0.12s, color 0.12s;
+}
+.auto-zoom-btn:hover { background: var(--ab-surface-2); color: var(--ab-text-1); }
+.auto-zoom-btn i { width: 15px; height: 15px; }
+.auto-zoom-level {
+  min-width: 52px;
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  cursor: pointer;
+  color: var(--ab-text-1);
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.auto-zoom-level:hover { background: var(--ab-surface-2); }
+.auto-zoom-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--ab-border-2);
+  margin: 0 3px;
+}
+
+.auto-canvas-tip {
+  position: absolute;
+  left: 16px;
+  bottom: 58px;
+  z-index: 5;
+  font-size: 11px;
+  color: var(--ab-text-3);
+  pointer-events: none;
+  opacity: 0.75;
+}

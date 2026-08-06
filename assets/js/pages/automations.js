@@ -55,6 +55,17 @@ let _autoPipelines    = [];
 let _autoUsers        = [];
 let _autoTags         = [];
 
+// Câmera do canvas. A rolagem nativa foi trocada por translate+scale: com
+// scrollLeft não dá para aplicar zoom, porque transform não altera a área
+// rolável e o conteúdo ampliado ficaria inalcançável.
+const AUTO_ZOOM_MIN  = 0.3;
+const AUTO_ZOOM_MAX  = 2;
+const AUTO_ZOOM_STEP = 0.15;
+const AUTO_CANVAS_W  = 2600;
+const AUTO_CANVAS_H  = 1700;
+let _autoView = { x: 0, y: 0, zoom: 1 };
+let _autoPan  = null;
+
 // Uma tag pode ter sido apagada depois de configurada no fluxo; nesse caso
 // mostra o id abreviado em vez de sumir com a referência silenciosamente.
 function _autoTagNames(ids) {
@@ -189,6 +200,7 @@ async function _autoReloadList() {
 function _autoOpenNew() {
   _autoCurrent = { id: null, name: 'Nova automação', description: '', graph: { nodes: [], edges: [] } };
   _autoSelectedNode = null;
+  _autoView = { x: 0, y: 0, zoom: 1 };
   _autoMountBuilder();
 }
 
@@ -201,6 +213,7 @@ async function _autoOpenEdit(id) {
     graph: automation.graph && automation.graph.nodes ? automation.graph : { nodes: [], edges: [] },
   };
   _autoSelectedNode = null;
+  _autoView = { x: 0, y: 0, zoom: 1 };
   _autoMountBuilder();
 }
 
@@ -228,6 +241,8 @@ function _autoRefreshBuilder() {
 }
 
 async function _autoCloseBuilder() {
+  document.removeEventListener('keydown', _autoOnKeyView);
+  _autoOnPanEnd();
   document.getElementById('autoBuilderOverlay')?.remove();
   await _autoReloadList();
 }
@@ -339,6 +354,14 @@ function _autoBuilderHtml() {
           <svg class="auto-edges" id="autoEdgesSvg"></svg>
           ${!hasNodes ? `<div class="auto-canvas-empty-hint"><i data-lucide="mouse-pointer-click" style="width:16px;height:16px;flex-shrink:0"></i> Clique em "+ Adicionar" para escolher um gatilho e começar o fluxo.</div>` : ''}
         </div>
+        <div class="auto-zoom-bar">
+          <button class="auto-zoom-btn" id="btnAutoZoomOut" title="Diminuir (tecla −)"><i data-lucide="minus"></i></button>
+          <button class="auto-zoom-level" id="autoZoomLabel" title="Voltar a 100% (tecla 0)">100%</button>
+          <button class="auto-zoom-btn" id="btnAutoZoomIn" title="Ampliar (tecla +)"><i data-lucide="plus"></i></button>
+          <span class="auto-zoom-sep"></span>
+          <button class="auto-zoom-btn" id="btnAutoFit" title="Enquadrar o fluxo (tecla 1)"><i data-lucide="maximize"></i></button>
+        </div>
+        <div class="auto-canvas-tip">Arraste o fundo para mover · roda para deslocar · Ctrl+roda para ampliar</div>
       </div>
     </div>
   </div>`;
@@ -374,18 +397,189 @@ function _autoInitBuilder() {
     _autoTags = Array.isArray(tags) ? tags : [];
   });
 
+  const wrap = document.getElementById('autoCanvasWrap');
+  wrap?.addEventListener('mousedown', _autoStartPan);
+  // passive:false porque o handler chama preventDefault para impedir o zoom
+  // da página no Ctrl+roda.
+  wrap?.addEventListener('wheel', _autoOnWheel, { passive: false });
+  // Botão do meio cola o texto no Linux e abre o autoscroll no Windows.
+  wrap?.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });
+
+  document.getElementById('btnAutoZoomIn') ?.addEventListener('click', () => _autoZoomBy(AUTO_ZOOM_STEP));
+  document.getElementById('btnAutoZoomOut')?.addEventListener('click', () => _autoZoomBy(-AUTO_ZOOM_STEP));
+  document.getElementById('autoZoomLabel') ?.addEventListener('click', _autoResetView);
+  document.getElementById('btnAutoFit')    ?.addEventListener('click', _autoFitView);
+
+  // Um só listener global, trocado a cada montagem em vez de acumulado.
+  document.removeEventListener('keydown', _autoOnKeyView);
+  document.addEventListener('keydown', _autoOnKeyView);
+
   _autoRenderNodes();
   _autoRedrawEdges();
+  _autoApplyView();
 }
 
 function _autoDirty() { return _autoCurrent.graph.nodes.length > 0; }
 
+// ── BUILDER: pan e zoom ───────────────────────────────────────
+
+function _autoApplyView() {
+  const canvas = document.getElementById('autoCanvas');
+  if (!canvas) return;
+  const { x, y, zoom } = _autoView;
+  canvas.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
+  const label = document.getElementById('autoZoomLabel');
+  if (label) label.textContent = Math.round(zoom * 100) + '%';
+}
+
+// Impede que o fluxo seja arrastado inteiramente para fora da tela.
+function _autoClampView() {
+  const wrap = document.getElementById('autoCanvasWrap');
+  if (!wrap) return;
+  const margin = 160;
+  const w = AUTO_CANVAS_W * _autoView.zoom;
+  const h = AUTO_CANVAS_H * _autoView.zoom;
+  _autoView.x = Math.min(wrap.clientWidth  - margin, Math.max(margin - w, _autoView.x));
+  _autoView.y = Math.min(wrap.clientHeight - margin, Math.max(margin - h, _autoView.y));
+}
+
+// Converte um ponto da tela para as coordenadas do canvas, que é o sistema
+// em que as posições dos nodes e as arestas são guardadas.
+function _autoToCanvas(clientX, clientY) {
+  const wrap = document.getElementById('autoCanvasWrap');
+  const r = wrap.getBoundingClientRect();
+  return {
+    x: (clientX - r.left - _autoView.x) / _autoView.zoom,
+    y: (clientY - r.top  - _autoView.y) / _autoView.zoom,
+  };
+}
+
+// Amplia mantendo fixo o ponto indicado (centro da tela nos botões, cursor na
+// roda) — sem isso o conteúdo escapa da vista a cada passo de zoom.
+function _autoZoomAt(nextZoom, clientX, clientY) {
+  const wrap = document.getElementById('autoCanvasWrap');
+  if (!wrap) return;
+  const r = wrap.getBoundingClientRect();
+  const z = Math.min(AUTO_ZOOM_MAX, Math.max(AUTO_ZOOM_MIN, nextZoom));
+  if (z === _autoView.zoom) return;
+
+  const px = (clientX ?? r.left + r.width / 2) - r.left;
+  const py = (clientY ?? r.top + r.height / 2) - r.top;
+  const cx = (px - _autoView.x) / _autoView.zoom;
+  const cy = (py - _autoView.y) / _autoView.zoom;
+
+  _autoView.zoom = z;
+  _autoView.x = px - cx * z;
+  _autoView.y = py - cy * z;
+  _autoClampView();
+  _autoApplyView();
+}
+
+function _autoZoomBy(delta) { _autoZoomAt(_autoView.zoom + delta); }
+
+function _autoResetView() {
+  _autoView = { x: 0, y: 0, zoom: 1 };
+  _autoApplyView();
+}
+
+// Enquadra todos os nodes na área visível.
+function _autoFitView() {
+  const wrap  = document.getElementById('autoCanvasWrap');
+  const nodes = _autoCurrent?.graph?.nodes || [];
+  if (!wrap || !nodes.length) return _autoResetView();
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  nodes.forEach(n => {
+    const el = _autoNodeEls[n.id];
+    const w = el?.offsetWidth || 220;
+    const h = el?.offsetHeight || 60;
+    minX = Math.min(minX, n.position.x);
+    minY = Math.min(minY, n.position.y);
+    maxX = Math.max(maxX, n.position.x + w);
+    maxY = Math.max(maxY, n.position.y + h);
+  });
+
+  const pad = 60;
+  const zoom = Math.min(
+    AUTO_ZOOM_MAX,
+    Math.max(AUTO_ZOOM_MIN,
+      Math.min((wrap.clientWidth - pad * 2) / (maxX - minX), (wrap.clientHeight - pad * 2) / (maxY - minY))));
+
+  _autoView.zoom = zoom;
+  _autoView.x = (wrap.clientWidth  - (maxX - minX) * zoom) / 2 - minX * zoom;
+  _autoView.y = (wrap.clientHeight - (maxY - minY) * zoom) / 2 - minY * zoom;
+  _autoApplyView();
+}
+
+function _autoStartPan(e) {
+  // Botão do meio arrasta de qualquer lugar; o esquerdo só no vazio, para não
+  // atrapalhar arrastar node, criar conexão ou apagar aresta.
+  // A barra de zoom fica dentro da área do canvas; sem excluí-la, clicar em
+  // "+" também iniciaria o arraste da vista.
+  const onBlank = !e.target.closest('.auto-node') && !e.target.closest('.auto-port')
+               && !e.target.closest('[data-edge-del]') && !e.target.closest('.auto-edge-hit')
+               && !e.target.closest('.auto-zoom-bar');
+  if (e.button !== 1 && !(e.button === 0 && onBlank)) return;
+  e.preventDefault();
+  _autoPan = { startX: e.clientX, startY: e.clientY, origX: _autoView.x, origY: _autoView.y, moved: false };
+  document.getElementById('autoCanvasWrap')?.classList.add('auto-panning');
+  document.addEventListener('mousemove', _autoOnPanMove);
+  document.addEventListener('mouseup', _autoOnPanEnd);
+}
+function _autoOnPanMove(e) {
+  if (!_autoPan) return;
+  const dx = e.clientX - _autoPan.startX;
+  const dy = e.clientY - _autoPan.startY;
+  if (Math.abs(dx) > 2 || Math.abs(dy) > 2) _autoPan.moved = true;
+  _autoView.x = _autoPan.origX + dx;
+  _autoView.y = _autoPan.origY + dy;
+  _autoClampView();
+  _autoApplyView();
+}
+function _autoOnPanEnd() {
+  _autoPan = null;
+  document.getElementById('autoCanvasWrap')?.classList.remove('auto-panning');
+  document.removeEventListener('mousemove', _autoOnPanMove);
+  document.removeEventListener('mouseup', _autoOnPanEnd);
+}
+
+function _autoOnWheel(e) {
+  // Ctrl/⌘ + roda amplia; roda sozinha desloca a vista, que é o papel que a
+  // rolagem nativa cumpria antes.
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    _autoZoomAt(_autoView.zoom - Math.sign(e.deltaY) * AUTO_ZOOM_STEP, e.clientX, e.clientY);
+    return;
+  }
+  e.preventDefault();
+  _autoView.x -= e.deltaX;
+  _autoView.y -= e.deltaY;
+  _autoClampView();
+  _autoApplyView();
+}
+
+function _autoOnKeyView(e) {
+  if (!document.getElementById('autoBuilderOverlay')) return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (e.key === '+' || e.key === '=') { e.preventDefault(); _autoZoomBy(AUTO_ZOOM_STEP); }
+  else if (e.key === '-' || e.key === '_') { e.preventDefault(); _autoZoomBy(-AUTO_ZOOM_STEP); }
+  else if (e.key === '0') { e.preventDefault(); _autoResetView(); }
+  else if (e.key === '1') { e.preventDefault(); _autoFitView(); }
+}
+
 // ── BUILDER: node CRUD ───────────────────────────────────────
 
 function _autoNextPosition() {
-  const wrap = document.getElementById('autoCanvasWrap');
-  const baseX = (wrap?.scrollLeft || 0) + 80;
-  const baseY = (wrap?.scrollTop || 0) + 60;
+  // Canto superior esquerdo do que está visível agora, em coordenadas do
+  // canvas — o node novo nasce à vista mesmo com a tela deslocada ou ampliada.
+  const origin = document.getElementById('autoCanvasWrap')
+    ? _autoToCanvas(
+        document.getElementById('autoCanvasWrap').getBoundingClientRect().left,
+        document.getElementById('autoCanvasWrap').getBoundingClientRect().top)
+    : { x: 0, y: 0 };
+  const baseX = Math.max(0, origin.x) + 80;
+  const baseY = Math.max(0, origin.y) + 60;
   const n = _autoCurrent.graph.nodes.length;
   return { x: baseX + (n % 4) * 30, y: baseY + Math.floor(n / 4) * 30 + (n * 18) % 160 };
 }
@@ -650,8 +844,11 @@ function _autoOnNodeDragMove(e) {
   if (!_autoDrag) return;
   const node = _autoCurrent.graph.nodes.find(n => n.id === _autoDrag.nodeId);
   if (!node) return;
-  node.position.x = Math.max(0, _autoDrag.origX + (e.clientX - _autoDrag.startX));
-  node.position.y = Math.max(0, _autoDrag.origY + (e.clientY - _autoDrag.startY));
+  // O deslocamento do mouse é em pixels de tela; as posições são do canvas.
+  // Sem dividir pelo zoom, o node desliza mais rápido que o cursor quando
+  // ampliado e mais devagar quando reduzido.
+  node.position.x = Math.max(0, _autoDrag.origX + (e.clientX - _autoDrag.startX) / _autoView.zoom);
+  node.position.y = Math.max(0, _autoDrag.origY + (e.clientY - _autoDrag.startY) / _autoView.zoom);
   const el = _autoNodeEls[node.id];
   if (el) { el.style.left = node.position.x + 'px'; el.style.top = node.position.y + 'px'; }
   _autoRedrawEdges();
@@ -666,21 +863,16 @@ function _autoOnNodeDragEnd() {
 
 function _autoStartConnect(e, nodeId, handle) {
   e.preventDefault();
-  const wrap = document.getElementById('autoCanvasWrap');
-  const wrapRect = wrap.getBoundingClientRect();
-  _autoConnect = {
-    sourceId: nodeId, handle: handle || 'default',
-    x: e.clientX - wrapRect.left + wrap.scrollLeft, y: e.clientY - wrapRect.top + wrap.scrollTop,
-  };
+  const p = _autoToCanvas(e.clientX, e.clientY);
+  _autoConnect = { sourceId: nodeId, handle: handle || 'default', x: p.x, y: p.y };
   document.addEventListener('mousemove', _autoOnConnectMove);
   document.addEventListener('mouseup', _autoOnConnectCancel);
 }
 function _autoOnConnectMove(e) {
   if (!_autoConnect) return;
-  const wrap = document.getElementById('autoCanvasWrap');
-  const wrapRect = wrap.getBoundingClientRect();
-  _autoConnect.x = e.clientX - wrapRect.left + wrap.scrollLeft;
-  _autoConnect.y = e.clientY - wrapRect.top + wrap.scrollTop;
+  const p = _autoToCanvas(e.clientX, e.clientY);
+  _autoConnect.x = p.x;
+  _autoConnect.y = p.y;
   _autoRedrawEdges();
 }
 function _autoOnConnectCancel() {
