@@ -1,12 +1,23 @@
-let contactsState = { page: 1, limit: 20, search: '', status: 'all', total: 0 };
+let contactsState = { page: 1, limit: 20, search: '', status: 'all', tagId: '', total: 0 };
+let _contactTags = [];
 let _ncCfDefs = [];
 
+function _ctEsc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 window.loadContacts = async function() {
-  const { page, limit, search, status } = contactsState;
+  const { page, limit, search, status, tagId } = contactsState;
   const params = new URLSearchParams({ page, limit });
   if (search) params.set('search', search);
   if (status && status !== 'all') params.set('status', status);
-  const res = await apiFetch(`/api/contacts?${params}`);
+  if (tagId) params.set('tag_id', tagId);
+  const [res, tags] = await Promise.all([
+    apiFetch(`/api/contacts?${params}`),
+    apiFetch('/api/contact-tags').catch(() => []),
+  ]);
+  _contactTags = tags || [];
   if (res) contactsState.total = res.total;
   return res;
 };
@@ -100,7 +111,15 @@ window.pageContacts = function(data) {
         <i data-lucide="search"></i>
         <input type="text" id="contactSearch" placeholder="Buscar contatos..." value="${contactsState.search}" />
       </div>
-      <div style="display:flex;gap:6px;margin-left:auto">
+      <div style="display:flex;align-items:center;gap:6px;margin-left:auto;flex-wrap:wrap">
+        <select id="contactTagFilter" title="Filtrar por tag"
+          style="padding:6px 10px;border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:12px;background:var(--color-surface);color:var(--color-text-1);max-width:190px">
+          <option value="">Todas as tags</option>
+          ${_contactTags.map(t => `<option value="${t.id}" ${contactsState.tagId === t.id ? 'selected' : ''}>${_ctEsc(t.name)} (${t.contact_count ?? 0})</option>`).join('')}
+        </select>
+        <button class="btn btn-ghost btn-sm" id="btnManageTags" title="Gerenciar tags" style="padding:5px 8px">
+          <i data-lucide="tags" style="width:14px;height:14px"></i>
+        </button>
         ${['all','lead','customer','churned'].map(s => {
           const labels = {all:'Todos',lead:'Leads',customer:'Clientes',churned:'Inativos'};
           const active = contactsState.status === s;
@@ -129,7 +148,10 @@ window.pageContacts = function(data) {
             <td>
               <div style="display:flex;align-items:center;gap:10px">
                 <div class="avatar">${c.name[0].toUpperCase()}</div>
-                <span style="font-weight:600;color:var(--color-text-1)">${c.name}</span>
+                <div style="min-width:0">
+                  <span style="font-weight:600;color:var(--color-text-1)">${c.name}</span>
+                  ${window.favxTagChips(c.tags)}
+                </div>
               </div>
             </td>
             <td>${c.phone || '—'}</td>
@@ -144,6 +166,9 @@ window.pageContacts = function(data) {
               </button>
               <button class="btn btn-ghost btn-sm btn-open-funnel" data-id="${c.id}" data-name="${c.name}" style="padding:4px 8px" title="Ver oportunidades">
                 <i data-lucide="filter" style="width:14px;height:14px;color:var(--color-text-2)"></i>
+              </button>
+              <button class="btn btn-ghost btn-sm btn-tag-contact" data-id="${c.id}" data-name="${c.name}" style="padding:4px 8px" title="Tags">
+                <i data-lucide="tag" style="width:14px;height:14px;color:var(--color-text-2)"></i>
               </button>
               <button class="btn btn-ghost btn-sm btn-assign-contact" data-id="${c.id}" data-name="${c.name}" style="padding:4px 8px" title="Responsável e seguidores">
                 <i data-lucide="user-check" style="width:14px;height:14px;color:var(--color-text-2)"></i>
@@ -294,6 +319,23 @@ window.initContacts = function() {
   // Deletar contato
   document.querySelectorAll('.btn-delete-contact').forEach(btn => {
     btn.addEventListener('click', () => openDeleteContactModal(btn.dataset.id, btn.dataset.name));
+  });
+
+  document.getElementById('contactTagFilter')?.addEventListener('change', e => {
+    contactsState.tagId = e.target.value;
+    contactsState.page  = 1;
+    navigateTo('contacts');
+  });
+
+  document.getElementById('btnManageTags')?.addEventListener('click', () => {
+    window.favxOpenTagManager({ onChange: () => navigateTo('contacts') });
+  });
+
+  document.querySelectorAll('.btn-tag-contact').forEach(btn => {
+    btn.addEventListener('click', () => window.favxOpenContactTags({
+      contactId: btn.dataset.id, contactName: btn.dataset.name,
+      onChange: () => navigateTo('contacts'),
+    }));
   });
 
   document.querySelectorAll('.btn-assign-contact').forEach(btn => {

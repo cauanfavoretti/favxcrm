@@ -1739,6 +1739,117 @@ app.delete('/api/message-templates/:id', auth, async (req, res) => {
 // CONTACTS
 // ============================================================
 
+// ============================================================
+// TAGS DE CONTATO
+// ============================================================
+
+const TAG_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+app.get('/api/contact-tags', auth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT t.id, t.name, t.color,
+              (SELECT COUNT(*) FROM contact_tag_map m WHERE m.tag_id = t.id)::int AS contact_count
+         FROM contact_tags t
+        WHERE t.subaccount_id = $1
+        ORDER BY t.name ASC`,
+      [req.user.subaccount_id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[contact-tags GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.post('/api/contact-tags', auth, async (req, res) => {
+  const name  = String(req.body?.name || '').trim().slice(0, 60);
+  const color = TAG_COLOR_RE.test(req.body?.color) ? req.body.color : '#6B7280';
+  if (!name) return res.status(400).json({ message: 'Nome da tag é obrigatório.' });
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO contact_tags (subaccount_id, name, color) VALUES ($1, $2, $3)
+       RETURNING id, name, color, 0 AS contact_count`,
+      [req.user.subaccount_id, name, color]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ message: 'Já existe uma tag com esse nome.' });
+    console.error('[contact-tags POST]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.put('/api/contact-tags/:id', auth, async (req, res) => {
+  const hasName  = req.body?.name !== undefined;
+  const name     = hasName ? String(req.body.name).trim().slice(0, 60) : null;
+  const color    = TAG_COLOR_RE.test(req.body?.color) ? req.body.color : null;
+  if (hasName && !name) return res.status(400).json({ message: 'Nome da tag é obrigatório.' });
+  try {
+    const { rows } = await pool.query(
+      `UPDATE contact_tags SET name = COALESCE($3, name), color = COALESCE($4, color)
+        WHERE id = $1 AND subaccount_id = $2
+        RETURNING id, name, color`,
+      [req.params.id, req.user.subaccount_id, name, color]
+    );
+    if (!rows[0]) return res.status(404).json({ message: 'Tag não encontrada.' });
+    res.json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ message: 'Já existe uma tag com esse nome.' });
+    console.error('[contact-tags PUT]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.delete('/api/contact-tags/:id', auth, async (req, res) => {
+  try {
+    // contact_tag_map cascateia: apagar a tag a remove de todos os contatos.
+    const { rowCount } = await pool.query(
+      `DELETE FROM contact_tags WHERE id = $1 AND subaccount_id = $2`,
+      [req.params.id, req.user.subaccount_id]
+    );
+    if (!rowCount) return res.status(404).json({ message: 'Tag não encontrada.' });
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('[contact-tags DELETE]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// Substitui a lista completa de tags de um contato.
+app.put('/api/contacts/:id/tags', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const tagIds = Array.isArray(req.body?.tag_ids) ? req.body.tag_ids : null;
+  if (!tagIds) return res.status(400).json({ message: 'tag_ids deve ser um array.' });
+  try {
+    const guard = [req.params.id, subaccount_id];
+    const scoped = scopeClause('contacts', 'contacts', await userDataScope(req), guard);
+    const { rows } = await pool.query(
+      `SELECT id FROM contacts WHERE id = $1 AND subaccount_id = $2${scoped} LIMIT 1`, guard);
+    if (!rows[0]) return res.status(404).json({ message: 'Contato não encontrado.' });
+
+    await pool.query(`DELETE FROM contact_tag_map WHERE contact_id = $1`, [req.params.id]);
+    if (tagIds.length) {
+      // O SELECT filtra por subconta: uma tag de outra subconta é ignorada
+      // em vez de vazar para cá.
+      await pool.query(
+        `INSERT INTO contact_tag_map (contact_id, tag_id)
+         SELECT $1, t.id FROM contact_tags t WHERE t.id = ANY($2::uuid[]) AND t.subaccount_id = $3
+         ON CONFLICT DO NOTHING`,
+        [req.params.id, tagIds, subaccount_id]
+      );
+    }
+    const { rows: tags } = await pool.query(
+      `SELECT t.id, t.name, t.color FROM contact_tag_map m
+         JOIN contact_tags t ON t.id = m.tag_id
+        WHERE m.contact_id = $1 ORDER BY t.name ASC`, [req.params.id]);
+    res.json({ tags });
+  } catch (err) {
+    console.error('[contact tags PUT]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 app.get('/api/contacts', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   const scope = await userDataScope(req);
@@ -1747,25 +1858,36 @@ app.get('/api/contacts', auth, async (req, res) => {
   const offset = (page - 1) * limit;
   const search = (req.query.search || '').trim();
   const status = req.query.status || '';
+  const tagId  = req.query.tag_id || '';
 
   try {
-    let where    = 'WHERE subaccount_id = $1';
+    let where    = 'WHERE contacts.subaccount_id = $1';
     const params = [subaccount_id];
 
     if (search) {
       params.push(`%${search}%`);
-      where += ` AND (name ILIKE $${params.length} OR email ILIKE $${params.length} OR phone ILIKE $${params.length})`;
+      where += ` AND (contacts.name ILIKE $${params.length} OR contacts.email ILIKE $${params.length} OR contacts.phone ILIKE $${params.length})`;
     }
     if (status && status !== 'all') {
       params.push(status);
-      where += ` AND status = $${params.length}`;
+      where += ` AND contacts.status = $${params.length}`;
+    }
+    if (tagId) {
+      params.push(tagId);
+      where += ` AND EXISTS (SELECT 1 FROM contact_tag_map m WHERE m.contact_id = contacts.id AND m.tag_id = $${params.length})`;
     }
     where += scopeClause('contacts', 'contacts', scope, params);
 
     const [data, total] = await Promise.all([
       pool.query(
-        `SELECT id, name, email, phone, company, source, status, created_at
-         FROM contacts ${where} ORDER BY created_at DESC
+        `SELECT contacts.id, contacts.name, contacts.email, contacts.phone, contacts.company,
+                contacts.source, contacts.status, contacts.created_at,
+                COALESCE((
+                  SELECT json_agg(json_build_object('id', t.id, 'name', t.name, 'color', t.color) ORDER BY t.name)
+                    FROM contact_tag_map m JOIN contact_tags t ON t.id = m.tag_id
+                   WHERE m.contact_id = contacts.id
+                ), '[]') AS tags
+         FROM contacts ${where} ORDER BY contacts.created_at DESC
          LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
         [...params, limit, offset]
       ),
@@ -1786,9 +1908,15 @@ app.get('/api/contacts/:id', auth, async (req, res) => {
   const scoped = scopeClause('contacts', 'contacts', scope, params);
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, email, phone, company, position, source, status,
-              assigned_to, notes, custom_fields, created_at, updated_at
-       FROM contacts WHERE id = $1 AND subaccount_id = $2${scoped}`,
+      `SELECT contacts.id, contacts.name, contacts.email, contacts.phone, contacts.company,
+              contacts.position, contacts.source, contacts.status, contacts.assigned_to,
+              contacts.notes, contacts.custom_fields, contacts.created_at, contacts.updated_at,
+              COALESCE((
+                SELECT json_agg(json_build_object('id', t.id, 'name', t.name, 'color', t.color) ORDER BY t.name)
+                  FROM contact_tag_map m JOIN contact_tags t ON t.id = m.tag_id
+                 WHERE m.contact_id = contacts.id
+              ), '[]') AS tags
+       FROM contacts WHERE contacts.id = $1 AND contacts.subaccount_id = $2${scoped}`,
       params
     );
     if (!rows.length) return res.status(404).json({ message: 'Contato não encontrado.' });
@@ -2865,6 +2993,7 @@ const AUTOMATION_TRIGGERS = [
 const AUTOMATION_NODE_TYPES = [
   'whatsapp_send_message', 'pipeline_create', 'opportunity_search',
   'opportunity_update', 'timer', 'if_else', 'split',
+  'contact_tag_add', 'contact_tag_remove', 'contact_has_tag',
 ];
 
 function _autoGetPath(obj, path) {
@@ -3110,6 +3239,61 @@ const AUTOMATION_NODE_EXECUTORS = {
       default:               result = String(actual ?? '') === String(expected); break;
     }
     return { output: result ? 'true' : 'false', patch: { result } };
+  },
+
+  // Aplica tags ao contato da run. Idempotente: reaplicar uma tag já
+  // presente não gera erro nem duplicata.
+  contact_tag_add: async (node, { subaccount_id, run }) => {
+    const contactId = run.contact_id;
+    if (!contactId) throw new Error('Este fluxo não tem um contato associado para aplicar a tag.');
+    const tagIds = Array.isArray(node.config?.tag_ids) ? node.config.tag_ids : [];
+    if (!tagIds.length) throw new Error('O node "Aplicar tag" está sem nenhuma tag selecionada.');
+
+    const { rows } = await pool.query(
+      `INSERT INTO contact_tag_map (contact_id, tag_id)
+       SELECT $1, t.id FROM contact_tags t WHERE t.id = ANY($2::uuid[]) AND t.subaccount_id = $3
+       ON CONFLICT DO NOTHING
+       RETURNING tag_id`,
+      [contactId, tagIds, subaccount_id]
+    );
+    return { output: 'default', patch: { tags_added: rows.length } };
+  },
+
+  contact_tag_remove: async (node, { subaccount_id, run }) => {
+    const contactId = run.contact_id;
+    if (!contactId) throw new Error('Este fluxo não tem um contato associado para remover a tag.');
+    const tagIds = Array.isArray(node.config?.tag_ids) ? node.config.tag_ids : [];
+    if (!tagIds.length) throw new Error('O node "Remover tag" está sem nenhuma tag selecionada.');
+
+    const { rows } = await pool.query(
+      `DELETE FROM contact_tag_map m
+        USING contact_tags t
+        WHERE m.tag_id = t.id AND m.contact_id = $1
+          AND t.id = ANY($2::uuid[]) AND t.subaccount_id = $3
+        RETURNING m.tag_id`,
+      [contactId, tagIds, subaccount_id]
+    );
+    return { output: 'default', patch: { tags_removed: rows.length } };
+  },
+
+  // Ramifica conforme o contato tenha (ou não) as tags escolhidas.
+  // match 'any' = ao menos uma; 'all' = todas.
+  contact_has_tag: async (node, { subaccount_id, run }) => {
+    const contactId = run.contact_id;
+    if (!contactId) throw new Error('Este fluxo não tem um contato associado para checar a tag.');
+    const tagIds = Array.isArray(node.config?.tag_ids) ? node.config.tag_ids : [];
+    if (!tagIds.length) throw new Error('O node "Tem a tag?" está sem nenhuma tag selecionada.');
+    const match = node.config?.match === 'all' ? 'all' : 'any';
+
+    const { rows } = await pool.query(
+      `SELECT COUNT(DISTINCT m.tag_id)::int AS hits
+         FROM contact_tag_map m JOIN contact_tags t ON t.id = m.tag_id
+        WHERE m.contact_id = $1 AND t.id = ANY($2::uuid[]) AND t.subaccount_id = $3`,
+      [contactId, tagIds, subaccount_id]
+    );
+    const hits = rows[0]?.hits || 0;
+    const result = match === 'all' ? hits >= tagIds.length : hits > 0;
+    return { output: result ? 'true' : 'false', patch: { result, hits } };
   },
 
   // Passa adiante sem efeito — existe para deixar explícito, no canvas, o
@@ -5640,6 +5824,32 @@ function docVisibleClause(startIdx) {
     .replace(/\$UID\$/g,  `$${startIdx + 1}`);
 }
 
+(async function initContactTags() {
+  try {
+    // As tabelas já existem no banco atual; o bloco cobre instalações novas.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS contact_tags (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        subaccount_id UUID NOT NULL REFERENCES subaccounts(id) ON DELETE CASCADE,
+        name          VARCHAR(60) NOT NULL,
+        color         VARCHAR(20) NOT NULL DEFAULT '#6B7280',
+        UNIQUE (subaccount_id, name)
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS contact_tag_map (
+        contact_id UUID NOT NULL REFERENCES contacts(id)     ON DELETE CASCADE,
+        tag_id     UUID NOT NULL REFERENCES contact_tags(id) ON DELETE CASCADE,
+        PRIMARY KEY (contact_id, tag_id)
+      )
+    `);
+    // Filtrar contatos por tag varre o mapa pelo lado da tag.
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_contact_tag_map_tag ON contact_tag_map(tag_id)`);
+  } catch (e) {
+    console.warn('[tags] migração:', e.message);
+  }
+})();
+
 (async function initDataScope() {
   try {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS data_scope VARCHAR(10) NOT NULL DEFAULT 'all'`);
@@ -6116,6 +6326,7 @@ let _resyncDone = false;
 // A Vercel consome o app como export padrão do módulo. As funções abaixo
 // ficam penduradas nele apenas para permitir teste direto, sem trocar o
 // formato do export (trocá-lo quebraria o deploy).
+app.automationExecutors = AUTOMATION_NODE_EXECUTORS;
 app.generateAiReply = generateAiReply;
 app.aiCostUsd       = aiCostUsd;
 app.defaultAgentPrompt = defaultAgentPrompt;

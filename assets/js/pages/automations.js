@@ -29,9 +29,18 @@ const AUTO_NODE_DEFS = {
   opportunity_search:    { label: 'Procurar Oportunidade',  icon: 'search',         ...AUTO_COLORS.blue },
   opportunity_update:    { label: 'Atualizar Oportunidade', icon: 'pencil',         ...AUTO_COLORS.blue },
   timer:                 { label: 'Timer',                  icon: 'clock',          ...AUTO_COLORS.orange },
+  contact_tag_add:       { label: 'Aplicar tag',           icon: 'tag',            ...AUTO_COLORS.blue },
+  contact_tag_remove:    { label: 'Remover tag',           icon: 'tag',            ...AUTO_COLORS.orange },
   if_else:                { label: 'If / Else',              icon: 'git-branch',     ...AUTO_COLORS.red },
+  contact_has_tag:        { label: 'Tem a tag?',             icon: 'tags',           ...AUTO_COLORS.red },
   split:                  { label: 'Split',                  icon: 'split',          ...AUTO_COLORS.purple },
 };
+
+// Nodes que se ramificam em duas saídas (SIM/NÃO). Precisam da forma de
+// losango e de duas portas, e não só o If/Else.
+function _autoIsBranch(node) {
+  return !node.isTrigger && (node.type === 'if_else' || node.type === 'contact_has_tag');
+}
 
 const AUTO_STAGE_COLORS = ['#3b82f6','#f97316','#a855f7','#ef4444','#3b82f6','#f97316','#a855f7'];
 
@@ -44,6 +53,16 @@ let _autoConnect      = null;
 let _autoIdSeq        = 0;
 let _autoPipelines    = [];
 let _autoUsers        = [];
+let _autoTags         = [];
+
+// Uma tag pode ter sido apagada depois de configurada no fluxo; nesse caso
+// mostra o id abreviado em vez de sumir com a referência silenciosamente.
+function _autoTagNames(ids) {
+  return (Array.isArray(ids) ? ids : []).map(id => {
+    const t = _autoTags.find(x => x.id === id);
+    return t ? t.name : `(tag removida ${String(id).slice(0, 6)})`;
+  });
+}
 
 function _autoNewId(prefix) { return `${prefix}_${Date.now().toString(36)}${(_autoIdSeq++).toString(36)}`; }
 function _autoEsc(s) { return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -348,9 +367,11 @@ function _autoInitBuilder() {
   Promise.all([
     apiFetch('/api/pipelines').catch(() => []),
     apiFetch('/api/conversations/members').catch(() => []),
-  ]).then(([pipelines, users]) => {
+    apiFetch('/api/contact-tags').catch(() => []),
+  ]).then(([pipelines, users, tags]) => {
     _autoPipelines = Array.isArray(pipelines) ? pipelines : [];
     _autoUsers = Array.isArray(users) ? users : [];
+    _autoTags = Array.isArray(tags) ? tags : [];
   });
 
   _autoRenderNodes();
@@ -533,6 +554,16 @@ function _autoNodeSummary(node) {
     }
     case 'timer': return c.amount ? `Aguardar ${c.amount} ${({minutes:'min',hours:'h',days:'dias'})[c.unit || 'minutes']}` : 'Configure o tempo…';
     case 'if_else': return c.field ? `SE ${c.field} ${c.operator || 'eq'} "${c.value ?? ''}"` : 'Configure a condição…';
+    case 'contact_tag_add':
+    case 'contact_tag_remove': {
+      const names = _autoTagNames(c.tag_ids);
+      return names.length ? names.join(', ') : 'Selecione as tags…';
+    }
+    case 'contact_has_tag': {
+      const names = _autoTagNames(c.tag_ids);
+      if (!names.length) return 'Selecione as tags…';
+      return `${c.match === 'all' ? 'Tem todas' : 'Tem alguma'}: ${names.join(', ')}`;
+    }
     case 'split': return 'Executa todos os caminhos conectados em paralelo';
     default: return '';
   }
@@ -552,8 +583,8 @@ function _autoRenderNodes() {
     const glow  = node.isTrigger ? AUTO_TRIGGER_GLOW  : def.glow;
     // Formas: padrão (quadrado), If/Else (losango) e Timer (círculo) —
     // só ações têm forma especial; gatilhos são sempre quadrados.
-    const shape = !node.isTrigger && node.type === 'if_else' ? 'if'
-                : !node.isTrigger && node.type === 'timer'   ? 'timer'
+    const shape = _autoIsBranch(node) ? 'if'
+                : !node.isTrigger && node.type === 'timer' ? 'timer'
                 : null;
     const el = document.createElement('div');
     el.className = 'auto-node' + (node.isTrigger ? ' auto-node-trigger' : '') + (shape ? ` auto-node-${shape}` : '') + (_autoSelectedNode === node.id ? ' auto-node-selected' : '');
@@ -568,7 +599,7 @@ function _autoRenderNodes() {
       <div class="auto-node-badge" style="background:${color};box-shadow:0 0 12px ${glow}"><i data-lucide="${def?.icon || 'circle'}" style="width:18px;height:18px"></i></div>
       <div class="auto-node-name">${_autoEsc(title)}</div>
       ${!node.isTrigger ? `<div class="auto-port auto-port-in" data-port-in="${node.id}"></div>` : ''}
-      ${node.type === 'if_else' ? `
+      ${_autoIsBranch(node) ? `
         <div class="auto-port auto-port-out auto-port-true" data-port-out="${node.id}" data-handle="true" title="SIM"></div>
         <div class="auto-port auto-port-out auto-port-false" data-port-out="${node.id}" data-handle="false" title="NÃO"></div>
       ` : `<div class="auto-port auto-port-out" data-port-out="${node.id}" data-handle="default"></div>`}
@@ -916,6 +947,34 @@ function _autoNodeConfigHtml(node) {
         </div>
         <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">A retomada depende de uma tarefa agendada (cron) — pode levar alguns minutos além do tempo configurado.</p>
       </div>`;
+  } else if (node.type === 'contact_tag_add' || node.type === 'contact_tag_remove' || node.type === 'contact_has_tag') {
+    const chosen = new Set(Array.isArray(c.tag_ids) ? c.tag_ids : []);
+    const verb = node.type === 'contact_tag_add' ? 'aplicadas ao'
+               : node.type === 'contact_tag_remove' ? 'removidas do' : 'checadas no';
+    fields = `
+      <p style="font-size:12px;color:var(--ab-text-3);line-height:1.5;margin-bottom:12px">
+        Tags ${verb} contato do fluxo. O gatilho precisa envolver um contato.
+      </p>
+      <div class="settings-field">
+        <label class="settings-label">TAGS *</label>
+        ${_autoTags.length ? `
+        <div class="auto-tag-picker">
+          ${_autoTags.map(t => `
+            <label class="auto-tag-opt">
+              <input type="checkbox" class="cfgTagBox" value="${_autoEsc(t.id)}" ${chosen.has(t.id) ? 'checked' : ''} />
+              <span class="tag-chip" style="--tag:${/^#[0-9a-fA-F]{6}$/.test(t.color || '') ? t.color : '#6B7280'}">${_autoEsc(t.name)}</span>
+            </label>`).join('')}
+        </div>` : `
+        <p style="font-size:12px;color:var(--ab-text-3)">
+          Nenhuma tag criada ainda. Crie em Contatos → ícone de tags.
+        </p>`}
+      </div>
+      ${node.type === 'contact_has_tag' ? `
+      <div class="settings-field">
+        <label class="settings-label">CRITÉRIO</label>
+        ${_sel2('cfgMatch', [['any','Tem ao menos uma das tags'],['all','Tem todas as tags']], c.match || 'any')}
+        <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">Saída SIM quando o critério bate; NÃO caso contrário.</p>
+      </div>` : ''}`;
   } else if (node.type === 'if_else') {
     fields = `
       <div class="settings-field">
@@ -1002,6 +1061,12 @@ function _autoBindConfigInputs(node, panel) {
   } else if (node.type === 'timer') {
     panel.querySelector('#cfgAmount')?.addEventListener('input', e => set('amount', parseInt(e.target.value) || 1));
     panel.querySelector('#cfgUnit')?.addEventListener('change', e => set('unit', e.target.value));
+  } else if (node.type === 'contact_tag_add' || node.type === 'contact_tag_remove' || node.type === 'contact_has_tag') {
+    const boxes = panel.querySelectorAll('.cfgTagBox');
+    boxes.forEach(b => b.addEventListener('change', () => {
+      set('tag_ids', [...boxes].filter(x => x.checked).map(x => x.value));
+    }));
+    panel.querySelector('#cfgMatch')?.addEventListener('change', e => set('match', e.target.value));
   } else if (node.type === 'if_else') {
     panel.querySelector('#cfgField')?.addEventListener('input', e => set('field', e.target.value));
     panel.querySelector('#cfgOperator')?.addEventListener('change', e => set('operator', e.target.value));
