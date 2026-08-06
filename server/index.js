@@ -2032,22 +2032,44 @@ app.delete('/api/contacts/:id', auth, async (req, res) => {
 app.get('/api/conversations', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   const { contact_id } = req.query;
+  const search = (req.query.search || '').trim();
   const scope = await userDataScope(req);
   try {
     const params = [subaccount_id];
     let where = 'WHERE cv.subaccount_id = $1';
     if (contact_id) { params.push(contact_id); where += ` AND cv.contact_id = $${params.length}`; }
+
+    // A busca cobre o contato e o conteúdo das mensagens. O EXISTS é o que
+    // permite achar a conversa por uma palavra dita dentro dela, sem
+    // multiplicar as linhas como um JOIN faria.
+    let matchSql = '';
+    if (search) {
+      params.push(`%${search}%`);
+      const p = `$${params.length}`;
+      where += ` AND (c.name ILIKE ${p} OR c.phone ILIKE ${p}
+                  OR EXISTS (SELECT 1 FROM messages m
+                              WHERE m.conversation_id = cv.id AND m.content ILIKE ${p}))`;
+      // Traz o trecho da mensagem que casou, para a lista mostrar o porquê
+      // do resultado em vez de só o nome do contato.
+      matchSql = `,
+        (SELECT json_build_object(
+                  'content', m.content, 'direction', m.direction, 'sent_at', m.sent_at)
+           FROM messages m
+          WHERE m.conversation_id = cv.id AND m.content ILIKE ${p}
+          ORDER BY m.sent_at DESC NULLS LAST LIMIT 1) AS match_message`;
+    }
+
     where += scopeClause('conversations', 'cv', scope, params);
     const { rows } = await pool.query(
       `SELECT cv.id, cv.status, cv.unread_count, cv.last_message_at, cv.channel, cv.contact_id,
               cv.assigned_to, c.name AS contact_name, c.phone AS contact_phone,
-              u.name AS owner_name
+              u.name AS owner_name${matchSql}
        FROM conversations cv
        JOIN contacts c ON c.id = cv.contact_id
        LEFT JOIN users u ON u.id = cv.assigned_to
        ${where}
        ORDER BY cv.last_message_at DESC NULLS LAST, cv.created_at DESC
-       LIMIT 60`,
+       LIMIT ${search ? 200 : 60}`,
       params
     );
     res.json(rows);

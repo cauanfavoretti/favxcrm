@@ -18,6 +18,36 @@ const CHAT_SLASH_COMMANDS = [
   { trigger: 'm', name: 'Modelos', icon: 'file-text', desc: 'Inserir um modelo salvo — /m (nome)' },
 ];
 
+let _convSearch = '';
+
+// Destaca o termo dentro do trecho já escapado. A marcação entra depois do
+// escape para o realce não virar uma porta de HTML injetado.
+function _convHighlight(text, term) {
+  const safe = _convEsc(text);
+  if (!term) return safe;
+  const re = new RegExp('(' + term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+  return safe.replace(re, '<mark class="conv-hl">$1</mark>');
+}
+
+// Recorta em volta do termo. A linha da lista é estreita e corta com
+// reticências no CSS, então um trecho longo esconderia justamente a palavra
+// procurada. Poucos caracteres antes dela, o bastante para dar contexto sem
+// empurrar o realce para fora da vista.
+const CONV_SNIPPET_WIDTH = 48;
+const CONV_SNIPPET_LEAD  = 12;
+
+function _convSnippet(content, term, width = CONV_SNIPPET_WIDTH) {
+  const text = String(content || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  const i = term ? text.toLowerCase().indexOf(term.toLowerCase()) : -1;
+  // O recorte depende de onde o termo está, não do tamanho do texto: quem
+  // corta é a largura da linha, então uma mensagem curta com a palavra no
+  // fim também precisa ser deslocada.
+  const start = i > CONV_SNIPPET_LEAD ? i - CONV_SNIPPET_LEAD : 0;
+  const end   = Math.min(text.length, start + width);
+  return (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
+}
+
 const _CONV_FILTERS = [
   { id: 'todas',     label: 'Todas'     },
   { id: 'abertas',   label: 'Abertas'   },
@@ -42,8 +72,11 @@ function _convItemHtml(c) {
         ${waBadge}
       </div>
       <div class="conv-info">
-        <div class="conv-name">${c.contact_name || 'Desconhecido'}</div>
-        <div class="conv-preview">${c.contact_phone || c.channel || '—'}</div>
+        <div class="conv-name">${_convHighlight(c.contact_name || 'Desconhecido', _convSearch)}</div>
+        <div class="conv-preview"${c.match_message?.content ? ` title="${_convEsc(c.match_message.content)}"` : ''}>${c.match_message?.content
+          ? `<i data-lucide="${c.match_message.direction === 'inbound' ? 'corner-down-left' : 'corner-up-right'}" class="conv-preview-icon"></i>` +
+            _convHighlight(_convSnippet(c.match_message.content, _convSearch), _convSearch)
+          : _convEsc(c.contact_phone || c.channel || '—')}</div>
       </div>
       <div class="conv-meta">
         <div class="conv-time">${c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—'}</div>
@@ -61,11 +94,13 @@ function _renderConvList() {
   if (!list) return;
   const scroll = list.scrollTop;
   const filtered = _convData.filter(_convMatchesFilter);
-  const emptyMsg = {
-    todas:     'Nenhuma conversa ainda.',
-    abertas:   'Nenhuma conversa aberta.',
-    nao_lidas: 'Nenhuma conversa não lida.',
-  }[_convFilter];
+  const emptyMsg = _convSearch
+    ? `Nenhuma conversa com "${_convEsc(_convSearch)}".`
+    : {
+        todas:     'Nenhuma conversa ainda.',
+        abertas:   'Nenhuma conversa aberta.',
+        nao_lidas: 'Nenhuma conversa não lida.',
+      }[_convFilter];
   list.innerHTML = filtered.length === 0
     ? `<div style="padding:24px;text-align:center;color:var(--color-text-3);font-size:13px">${emptyMsg}</div>`
     : filtered.map(_convItemHtml).join('');
@@ -156,7 +191,8 @@ function openImageLightbox(src) {
 window.openImageLightbox = openImageLightbox;
 
 window.loadConversations = async function() {
-  return await apiFetch('/api/conversations');
+  const q = _convSearch ? `?search=${encodeURIComponent(_convSearch)}` : '';
+  return await apiFetch(`/api/conversations${q}`);
 };
 
 window.pageConversations = function(data) {
@@ -191,7 +227,10 @@ window.pageConversations = function(data) {
       <div class="conv-sidebar-header">
         <div class="search-wrapper">
           <i data-lucide="search"></i>
-          <input type="text" placeholder="Buscar conversa..." />
+          <input type="text" id="convSearchInput" placeholder="Buscar por nome ou palavra dita..." value="${_convEsc(_convSearch)}" />
+          <button class="conv-search-clear" id="convSearchClear" ${_convSearch ? '' : 'hidden'} title="Limpar busca">
+            <i data-lucide="x"></i>
+          </button>
         </div>
       </div>
       <div class="conv-tabs">
@@ -199,7 +238,8 @@ window.pageConversations = function(data) {
       </div>
       <div class="conv-list" id="convList">
         ${filtered.length === 0
-          ? `<div style="padding:24px;text-align:center;color:var(--color-text-3);font-size:13px">Nenhuma conversa ainda.</div>`
+          ? `<div style="padding:24px;text-align:center;color:var(--color-text-3);font-size:13px">${
+              _convSearch ? `Nenhuma conversa com "${_convEsc(_convSearch)}".` : 'Nenhuma conversa ainda.'}</div>`
           : filtered.map(_convItemHtml).join('')}
       </div>
     </div>
@@ -1227,7 +1267,9 @@ async function loadAndRenderChat(convId, conv) {
   // Poll sidebar conv list every 5s — atualiza dados e re-renderiza (com filtro)
   _pollListInterval = setInterval(async () => {
     try {
-      const fresh = await apiFetch('/api/conversations');
+      // Respeita a busca em curso: recarregar sem o termo devolveria a lista
+      // inteira e desfaria o filtro enquanto a pessoa lê o resultado.
+      const fresh = await window.loadConversations();
       if (!Array.isArray(fresh)) return;
       if (_convSignature(fresh) === _convSignature(_convData)) return; // nada mudou
       _convData = fresh;
@@ -1525,6 +1567,47 @@ window.initConversations = function(data) {
     const tplView = document.getElementById('templatesView');
     if (tplView) renderTemplatesView(tplView);
   }
+
+  // Busca por nome, telefone ou palavra dita dentro da conversa
+  const searchInput = document.getElementById('convSearchInput');
+  const searchClear = document.getElementById('convSearchClear');
+  let searchTimer;
+
+  async function runConvSearch(term) {
+    _convSearch = term;
+    if (searchClear) searchClear.hidden = !term;
+    const list = document.getElementById('convList');
+    if (list) list.setAttribute('aria-busy', 'true');
+    try {
+      const fresh = await window.loadConversations();
+      _convData = Array.isArray(fresh) ? fresh : [];
+      _renderConvList();
+    } catch (err) {
+      console.error('[conversations] busca:', err.message);
+    } finally {
+      list?.removeAttribute('aria-busy');
+    }
+  }
+
+  searchInput?.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    // A busca varre o conteúdo das mensagens no servidor; sem o atraso seria
+    // uma varredura por tecla digitada.
+    searchTimer = setTimeout(() => runConvSearch(searchInput.value.trim()), 350);
+  });
+  searchInput?.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && searchInput.value) {
+      clearTimeout(searchTimer);
+      searchInput.value = '';
+      runConvSearch('');
+    }
+  });
+  searchClear?.addEventListener('click', () => {
+    clearTimeout(searchTimer);
+    if (searchInput) searchInput.value = '';
+    runConvSearch('');
+    searchInput?.focus();
+  });
 
   // Filtros (Todas | Abertas | Não Lidas)
   document.querySelectorAll('.conv-tab').forEach(tab => {

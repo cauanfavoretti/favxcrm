@@ -4428,3 +4428,41 @@ tbody tr:hover { background: var(--color-surface-2); }
   pointer-events: none;
   opacity: 0.75;
 }
+
+/* ── Busca em conversas ── */
+
+/* O botão vive dentro de .search-wrapper, que não era posicionado — sem isso
+   o absolute se ancorava na página e o ✕ ia parar fora do campo. */
+.conv-sidebar-header .search-wrapper { position: relative; padding-right: 30px; }
+
+.conv-search-clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 5px;
+  color: var(--color-text-3);
+  display: flex;
+}
+.conv-search-clear[hidden] { display: none; }
+.conv-search-clear:hover { background: var(--color-surface-2); color: var(--color-text-1); }
+.conv-search-clear i { width: 13px; height: 13px; }
+
+.conv-hl {
+  background: color-mix(in srgb, var(--color-accent) 26%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+.conv-preview-icon {
+  width: 11px;
+  height: 11px;
+  vertical-align: -1px;
+  margin-right: 3px;
+  opacity: 0.65;
+}
+.conv-list[aria-busy="true"] { opacity: 0.55; transition: opacity 0.15s; }
