@@ -10,6 +10,10 @@ const AUTO_TRIGGER_DEFS = {
   opportunity_stage_changed:  { label: 'Oportunidade mudou de etapa', icon: 'move-right',      desc: 'Quando a oportunidade muda de etapa no funil' },
   opportunity_status_changed: { label: 'Status da oportunidade mudou',icon: 'flag',            desc: 'Quando é marcada como aberta, ganha ou perdida' },
   contact_assigned:           { label: 'Usuário atribuído ao contato',icon: 'user-check',      desc: 'Quando um usuário passa a ser responsável pelo contato' },
+  contact_created:            { label: 'Contato criado',              icon: 'user-plus',       desc: 'Quando um contato entra no CRM, à mão ou pela primeira mensagem no WhatsApp' },
+  contact_status_changed:     { label: 'Status do contato mudou',     icon: 'repeat',          desc: 'Quando o contato passa a lead, cliente ou inativo' },
+  contact_tag_added:          { label: 'Tag aplicada',                icon: 'tag',             desc: 'Quando uma tag é colocada no contato' },
+  contact_tag_removed:        { label: 'Tag removida',                icon: 'tag',             desc: 'Quando uma tag sai do contato' },
 };
 // Paleta do workflow: azul, laranja, vermelho, roxo — cada cor com um
 // tom de glow correspondente, usado nos badges de ícone e nas bordas
@@ -29,6 +33,11 @@ const AUTO_NODE_DEFS = {
   opportunity_search:    { label: 'Procurar Oportunidade',  icon: 'search',         ...AUTO_COLORS.blue },
   opportunity_update:    { label: 'Atualizar Oportunidade', icon: 'pencil',         ...AUTO_COLORS.blue },
   timer:                 { label: 'Timer',                  icon: 'clock',          ...AUTO_COLORS.orange },
+  opportunity_create:    { label: 'Criar oportunidade',    icon: 'plus-circle',    ...AUTO_COLORS.blue },
+  webhook_out:           { label: 'Chamar URL externa',    icon: 'send',           ...AUTO_COLORS.blue },
+  internal_notification: { label: 'Avisar um usuário',     icon: 'bell',           ...AUTO_COLORS.blue },
+  contact_assign:        { label: 'Definir responsável',   icon: 'user-check',     ...AUTO_COLORS.blue },
+  contact_update:        { label: 'Atualizar contato',     icon: 'user-cog',       ...AUTO_COLORS.blue },
   contact_tag_add:       { label: 'Aplicar tag',           icon: 'tag',            ...AUTO_COLORS.blue },
   contact_tag_remove:    { label: 'Remover tag',           icon: 'tag',            ...AUTO_COLORS.orange },
   if_else:                { label: 'If / Else',              icon: 'git-branch',     ...AUTO_COLORS.red },
@@ -722,6 +731,16 @@ function _autoNodeSummary(node) {
   if (node.isTrigger) {
     const d = AUTO_TRIGGER_DEFS[node.triggerType];
     const parts = [];
+    if (node.triggerType === 'contact_status_changed' && node.config?.to_status) {
+      parts.push(`→ ${({lead:'Lead',customer:'Cliente',churned:'Inativo'})[node.config.to_status]}`);
+    }
+    if ((node.triggerType === 'contact_tag_added' || node.triggerType === 'contact_tag_removed')
+        && node.config?.tag_ids?.length) {
+      parts.push(_autoTagNames(node.config.tag_ids).join(', '));
+    }
+    if (node.triggerType === 'contact_created' && node.config?.origin) {
+      parts.push(node.config.origin === 'whatsapp' ? 'só pelo WhatsApp' : 'só cadastrado à mão');
+    }
     if (node.triggerType === 'opportunity_stage_changed') {
       const p = _autoPipelines.find(p => p.id === node.config?.pipeline_id);
       const s = p?.stages?.find(s => s.id === node.config?.to_stage_id);
@@ -757,6 +776,34 @@ function _autoNodeSummary(node) {
       const names = _autoTagNames(c.tag_ids);
       if (!names.length) return 'Selecione as tags…';
       return `${c.match === 'all' ? 'Tem todas' : 'Tem alguma'}: ${names.join(', ')}`;
+    }
+    case 'opportunity_create': {
+      const p = _autoPipelines.find(x => x.id === c.pipeline_id);
+      if (!p) return 'Escolha o funil…';
+      const st = (p.stages || []).find(x => x.id === c.stage_id);
+      return `${p.name}${st ? ' · ' + st.name : ' · primeira etapa'}${c.value ? ' · R$ ' + c.value : ''}`;
+    }
+    case 'webhook_out': return c.url ? `${c.method || 'POST'} ${String(c.url).slice(0, 60)}` : 'Informe a URL…';
+    case 'internal_notification': {
+      if (c.target === 'owner') return 'Avisa o responsável pelo contato';
+      const n = (c.user_ids || []).length;
+      return n ? `Avisa ${n} usuário${n > 1 ? 's' : ''}` : 'Escolha quem avisar…';
+    }
+    case 'contact_assign': {
+      if (c.mode === 'unassign') return 'Deixa sem responsável';
+      if (c.mode === 'balanced') return 'Distribui para quem tem menos contatos';
+      const u = _autoUsers.find(x => x.id === c.user_id);
+      return u ? `Responsável: ${u.name}` : 'Escolha o responsável…';
+    }
+    case 'contact_update': {
+      const f = c.fields || {};
+      const bits = [];
+      if (f.status) bits.push('status');
+      if (f.source) bits.push('origem');
+      if (f.company) bits.push('empresa');
+      if (f.name) bits.push('nome');
+      if (f.custom_fields && Object.keys(f.custom_fields).length) bits.push('personalizados');
+      return bits.length ? `Atualiza: ${bits.join(', ')}` : 'Configure os campos…';
     }
     case 'split': return 'Executa todos os caminhos conectados em paralelo';
     default: return '';
@@ -1012,7 +1059,39 @@ function _autoTriggerConfigHtml(node) {
   const def = AUTO_TRIGGER_DEFS[node.triggerType];
   let fields = `<p style="font-size:12px;color:var(--ab-text-3);line-height:1.5;margin-bottom:14px">${def.desc}</p>`;
 
-  if (node.triggerType === 'opportunity_stage_changed') {
+  if (node.triggerType === 'contact_created') {
+    fields += `
+      <div class="settings-field">
+        <label class="settings-label">ORIGEM (opcional)</label>
+        ${_sel2('cfgOrigin', [['manual','Cadastrado à mão'],['whatsapp','Primeira mensagem no WhatsApp']], node.config?.origin || '', 'Qualquer origem')}
+      </div>`;
+  } else if (node.triggerType === 'contact_status_changed') {
+    const ST = [['lead','Lead'],['customer','Cliente'],['churned','Inativo']];
+    fields += `
+      <div class="settings-field">
+        <label class="settings-label">DE (opcional)</label>
+        ${_sel2('cfgFromStatus', ST, node.config?.from_status || '', 'Qualquer status')}
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">PARA (opcional)</label>
+        ${_sel2('cfgToStatus', ST, node.config?.to_status || '', 'Qualquer status')}
+      </div>`;
+  } else if (node.triggerType === 'contact_tag_added' || node.triggerType === 'contact_tag_removed') {
+    const chosen = new Set(Array.isArray(node.config?.tag_ids) ? node.config.tag_ids : []);
+    fields += `
+      <div class="settings-field">
+        <label class="settings-label">TAGS (opcional)</label>
+        ${_autoTags.length ? `
+        <div class="auto-tag-picker">
+          ${_autoTags.map(t => `
+            <label class="auto-tag-opt">
+              <input type="checkbox" class="cfgTagBox" value="${_autoEsc(t.id)}" ${chosen.has(t.id) ? 'checked' : ''} />
+              <span class="tag-chip" style="--tag:${/^#[0-9a-fA-F]{6}$/.test(t.color || '') ? t.color : '#6B7280'}">${_autoEsc(t.name)}</span>
+            </label>`).join('')}
+        </div>` : `<p style="font-size:12px;color:var(--ab-text-3)">Nenhuma tag criada ainda.</p>`}
+        <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">Sem nada marcado, vale para qualquer tag.</p>
+      </div>`;
+  } else if (node.triggerType === 'opportunity_stage_changed') {
     const pid = node.config?.pipeline_id || '';
     const pipeline = _autoPipelines.find(p => p.id === pid);
     fields += `
@@ -1139,6 +1218,118 @@ function _autoNodeConfigHtml(node) {
         </div>
         <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">A retomada depende de uma tarefa agendada (cron) — pode levar alguns minutos além do tempo configurado.</p>
       </div>`;
+  } else if (node.type === 'opportunity_create') {
+    const pid = c.pipeline_id || '';
+    const pipeline = _autoPipelines.find(p => p.id === pid);
+    fields = `
+      <p style="font-size:12px;color:var(--ab-text-3);line-height:1.5;margin-bottom:12px">
+        Abre uma oportunidade para o contato do fluxo. O gatilho precisa envolver um contato.
+      </p>
+      <div class="settings-field">
+        <label class="settings-label">FUNIL *</label>
+        ${_sel2('cfgOppPipeline', _autoPipelines.map(p => [p.id, p.name]), pid, 'Escolha o funil')}
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">ETAPA</label>
+        ${_sel2('cfgOppStage', (pipeline?.stages || []).map(st => [st.id, st.name]), c.stage_id || '', 'Primeira etapa do funil')}
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">TÍTULO</label>
+        <input type="text" id="cfgOppTitle" class="settings-input" value="${_autoEsc(c.title || '')}" placeholder="Ex: Proposta para {{trigger.contact.name}}" />
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">VALOR (opcional)</label>
+        <input type="text" id="cfgOppValue" class="settings-input" value="${_autoEsc(c.value ?? '')}" placeholder="Ex: 1500,00" />
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">ORIGEM (opcional)</label>
+        ${_sel2('cfgOppSource', [['whatsapp','WhatsApp'],['instagram','Instagram'],['site','Site'],['email','E-mail'],['indicacao','Indicação'],['manual','Manual']], c.source || '', 'Não informada')}
+      </div>`;
+  } else if (node.type === 'webhook_out') {
+    fields = `
+      <p style="font-size:12px;color:var(--ab-text-3);line-height:1.5;margin-bottom:12px">
+        Envia os dados do fluxo para um endereço externo. Endereços da rede interna são recusados.
+      </p>
+      <div class="settings-field">
+        <label class="settings-label">URL *</label>
+        <input type="text" id="cfgWhUrl" class="settings-input" value="${_autoEsc(c.url || '')}" placeholder="https://exemplo.com/webhook" />
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">MÉTODO</label>
+        ${_sel2('cfgWhMethod', [['POST','POST'],['PUT','PUT'],['PATCH','PATCH'],['GET','GET']], c.method || 'POST')}
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">AUTORIZAÇÃO (opcional)</label>
+        <input type="text" id="cfgWhAuth" class="settings-input" value="${_autoEsc(c.auth_header || '')}" placeholder="Bearer sua-chave" />
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">CORPO (opcional)</label>
+        <textarea id="cfgWhBody" class="settings-input" rows="5" style="font-family:ui-monospace,monospace;font-size:12px" placeholder='{"nome": "{{trigger.contact.name}}"}'>${_autoEsc(c.body || '')}</textarea>
+        <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">Em branco, manda o contexto inteiro do fluxo em JSON.</p>
+      </div>`;
+  } else if (node.type === 'internal_notification') {
+    const chosen = new Set(Array.isArray(c.user_ids) ? c.user_ids : []);
+    const isOwner = c.target === 'owner';
+    fields = `
+      <div class="settings-field">
+        <label class="settings-label">QUEM RECEBE</label>
+        ${_sel2('cfgNotifTarget', [['users','Usuários escolhidos'],['owner','Responsável pelo contato']], c.target || 'users')}
+      </div>
+      <div class="settings-field" id="cfgNotifUsersWrap" ${isOwner ? 'style="display:none"' : ''}>
+        <label class="settings-label">USUÁRIOS</label>
+        <div class="auto-tag-picker">
+          ${_autoUsers.map(u => `
+            <label class="auto-tag-opt">
+              <input type="checkbox" class="cfgNotifUser" value="${_autoEsc(u.id)}" ${chosen.has(u.id) ? 'checked' : ''} />
+              <span style="font-size:12.5px">${_autoEsc(u.name)}</span>
+            </label>`).join('') || '<p style="font-size:12px;color:var(--ab-text-3)">Nenhum usuário na subconta.</p>'}
+        </div>
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">TÍTULO</label>
+        <input type="text" id="cfgNotifTitle" class="settings-input" value="${_autoEsc(c.title || '')}" placeholder="Ex: Novo lead" />
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">MENSAGEM</label>
+        <textarea id="cfgNotifBody" class="settings-input" rows="3">${_autoEsc(c.body || '')}</textarea>
+      </div>`;
+  } else if (node.type === 'contact_assign') {
+    const mode = c.mode || 'user';
+    fields = `
+      <div class="settings-field">
+        <label class="settings-label">COMO ESCOLHER</label>
+        ${_sel2('cfgAssignMode', [['user','Um usuário específico'],['balanced','Quem tem menos contatos'],['unassign','Deixar sem responsável']], mode)}
+      </div>
+      <div class="settings-field" id="cfgAssignUserWrap" ${mode === 'user' ? '' : 'style="display:none"'}>
+        <label class="settings-label">RESPONSÁVEL *</label>
+        ${_sel2('cfgAssignUser', _autoUsers.map(u => [u.id, u.name]), c.user_id || '', 'Escolha o usuário')}
+      </div>
+      <div class="settings-field">
+        <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ab-text-2);cursor:pointer">
+          <input type="checkbox" id="cfgAssignConv" ${c.also_conversation ? 'checked' : ''} />
+          Atribuir também a conversa aberta
+        </label>
+      </div>`;
+  } else if (node.type === 'contact_update') {
+    const f = c.fields || {};
+    fields = `
+      <div class="settings-field">
+        <label class="settings-label">STATUS</label>
+        ${_sel2('cfgCuStatus', [['lead','Lead'],['customer','Cliente'],['churned','Inativo']], f.status || '', 'Não alterar')}
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">ORIGEM</label>
+        <input type="text" id="cfgCuSource" class="settings-input" value="${_autoEsc(f.source || '')}" placeholder="Não alterar" />
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">EMPRESA</label>
+        <input type="text" id="cfgCuCompany" class="settings-input" value="${_autoEsc(f.company || '')}" placeholder="Não alterar" />
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">ANOTAÇÃO</label>
+        <textarea id="cfgCuNotes" class="settings-input" rows="3" placeholder="Não alterar">${_autoEsc(f.notes || '')}</textarea>
+      </div>
+      <p style="font-size:11px;color:var(--ab-text-3)">Campo em branco fica como está. Aceita {{variáveis}} do fluxo.</p>`;
   } else if (node.type === 'contact_tag_add' || node.type === 'contact_tag_remove' || node.type === 'contact_has_tag') {
     const chosen = new Set(Array.isArray(c.tag_ids) ? c.tag_ids : []);
     const verb = node.type === 'contact_tag_add' ? 'aplicadas ao'
@@ -1208,6 +1399,11 @@ function _autoBindConfigInputs(node, panel) {
     panel.querySelector('#cfgStage')?.addEventListener('change', e => set('to_stage_id', e.target.value || null));
     panel.querySelector('#cfgToStatus')?.addEventListener('change', e => set('to_status', e.target.value || null));
     panel.querySelector('#cfgUserId')?.addEventListener('change', e => set('user_id', e.target.value || null));
+    panel.querySelector('#cfgOrigin')?.addEventListener('change', e => set('origin', e.target.value || null));
+    panel.querySelector('#cfgFromStatus')?.addEventListener('change', e => set('from_status', e.target.value || null));
+    const trigTags = panel.querySelectorAll('.cfgTagBox');
+    trigTags.forEach(b => b.addEventListener('change', () =>
+      set('tag_ids', [...trigTags].filter(x => x.checked).map(x => x.value))));
     panel.querySelector('#cfgCopyWebhook')?.addEventListener('click', () => {
       const input = panel.querySelector('input[readonly]');
       input?.select(); document.execCommand('copy');
@@ -1253,6 +1449,44 @@ function _autoBindConfigInputs(node, panel) {
   } else if (node.type === 'timer') {
     panel.querySelector('#cfgAmount')?.addEventListener('input', e => set('amount', parseInt(e.target.value) || 1));
     panel.querySelector('#cfgUnit')?.addEventListener('change', e => set('unit', e.target.value));
+  } else if (node.type === 'opportunity_create') {
+    // Trocar o funil invalida a etapa escolhida; redesenhar recarrega a lista.
+    panel.querySelector('#cfgOppPipeline')?.addEventListener('change', e => {
+      set('pipeline_id', e.target.value || null);
+      set('stage_id', null);
+      _autoRenderConfigPanel();
+    });
+    panel.querySelector('#cfgOppStage') ?.addEventListener('change', e => set('stage_id', e.target.value || null));
+    panel.querySelector('#cfgOppTitle') ?.addEventListener('input',  e => set('title', e.target.value));
+    panel.querySelector('#cfgOppValue') ?.addEventListener('input',  e => set('value', e.target.value));
+    panel.querySelector('#cfgOppSource')?.addEventListener('change', e => set('source', e.target.value || null));
+  } else if (node.type === 'webhook_out') {
+    panel.querySelector('#cfgWhUrl')   ?.addEventListener('input',  e => set('url', e.target.value));
+    panel.querySelector('#cfgWhMethod')?.addEventListener('change', e => set('method', e.target.value));
+    panel.querySelector('#cfgWhAuth')  ?.addEventListener('input',  e => set('auth_header', e.target.value));
+    panel.querySelector('#cfgWhBody')  ?.addEventListener('input',  e => set('body', e.target.value));
+  } else if (node.type === 'internal_notification') {
+    panel.querySelector('#cfgNotifTarget')?.addEventListener('change', e => {
+      set('target', e.target.value);
+      panel.querySelector('#cfgNotifUsersWrap').style.display = e.target.value === 'owner' ? 'none' : '';
+    });
+    const notifUsers = panel.querySelectorAll('.cfgNotifUser');
+    notifUsers.forEach(b => b.addEventListener('change', () =>
+      set('user_ids', [...notifUsers].filter(x => x.checked).map(x => x.value))));
+    panel.querySelector('#cfgNotifTitle')?.addEventListener('input', e => set('title', e.target.value));
+    panel.querySelector('#cfgNotifBody') ?.addEventListener('input', e => set('body', e.target.value));
+  } else if (node.type === 'contact_assign') {
+    panel.querySelector('#cfgAssignMode')?.addEventListener('change', e => {
+      set('mode', e.target.value);
+      panel.querySelector('#cfgAssignUserWrap').style.display = e.target.value === 'user' ? '' : 'none';
+    });
+    panel.querySelector('#cfgAssignUser')?.addEventListener('change', e => set('user_id', e.target.value || null));
+    panel.querySelector('#cfgAssignConv')?.addEventListener('change', e => set('also_conversation', e.target.checked));
+  } else if (node.type === 'contact_update') {
+    panel.querySelector('#cfgCuStatus') ?.addEventListener('change', e => set('fields.status', e.target.value || null));
+    panel.querySelector('#cfgCuSource') ?.addEventListener('input',  e => set('fields.source', e.target.value));
+    panel.querySelector('#cfgCuCompany')?.addEventListener('input',  e => set('fields.company', e.target.value));
+    panel.querySelector('#cfgCuNotes')  ?.addEventListener('input',  e => set('fields.notes', e.target.value));
   } else if (node.type === 'contact_tag_add' || node.type === 'contact_tag_remove' || node.type === 'contact_has_tag') {
     const boxes = panel.querySelectorAll('.cfgTagBox');
     boxes.forEach(b => b.addEventListener('change', () => {

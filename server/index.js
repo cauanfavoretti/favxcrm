@@ -890,6 +890,7 @@ async function ensureSubaccountAgent(subaccount_id, subaccountName, created_by =
         finished_at      TIMESTAMPTZ
       )`);
     await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS opportunity_id UUID REFERENCES opportunities(id) ON DELETE CASCADE`);
+    await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS depth INT NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS current_node_id VARCHAR(80)`);
     await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS context JSONB NOT NULL DEFAULT '{}'`);
     await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ`);
@@ -1745,6 +1746,24 @@ app.delete('/api/message-templates/:id', auth, async (req, res) => {
 
 const TAG_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
+// Dispara os gatilhos de tag a partir do que de fato mudou. As listas vêm do
+// RETURNING das próprias consultas, então reaplicar uma tag que o contato já
+// tinha não dispara nada — o que corta o laço mais comum entre dois fluxos.
+async function fireTagChanges(subaccount_id, contact_id, added, removed, depth = 0) {
+  if (!added?.length && !removed?.length) return;
+  const { rows: cRows } = await pool.query(
+    `SELECT id, name, phone, email, status FROM contacts WHERE id = $1`, [contact_id]);
+  const contact = cRows[0] || null;
+  for (const tag of added || []) {
+    await fireAutomations(subaccount_id, 'contact_tag_added', { contact, tag },
+      { contact_id, depth }).catch(e => console.error('[fire contact_tag_added]', e.message));
+  }
+  for (const tag of removed || []) {
+    await fireAutomations(subaccount_id, 'contact_tag_removed', { contact, tag },
+      { contact_id, depth }).catch(e => console.error('[fire contact_tag_removed]', e.message));
+  }
+}
+
 app.get('/api/contact-tags', auth, async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -1828,6 +1847,10 @@ app.put('/api/contacts/:id/tags', auth, async (req, res) => {
       `SELECT id FROM contacts WHERE id = $1 AND subaccount_id = $2${scoped} LIMIT 1`, guard);
     if (!rows[0]) return res.status(404).json({ message: 'Contato não encontrado.' });
 
+    const { rows: antes } = await pool.query(
+      `SELECT t.id, t.name, t.color FROM contact_tag_map m
+         JOIN contact_tags t ON t.id = m.tag_id WHERE m.contact_id = $1`, [req.params.id]);
+
     await pool.query(`DELETE FROM contact_tag_map WHERE contact_id = $1`, [req.params.id]);
     if (tagIds.length) {
       // O SELECT filtra por subconta: uma tag de outra subconta é ignorada
@@ -1844,6 +1867,14 @@ app.put('/api/contacts/:id/tags', auth, async (req, res) => {
          JOIN contact_tags t ON t.id = m.tag_id
         WHERE m.contact_id = $1 ORDER BY t.name ASC`, [req.params.id]);
     res.json({ tags });
+
+    const antesIds  = new Set(antes.map(t => t.id));
+    const depoisIds = new Set(tags.map(t => t.id));
+    await fireTagChanges(
+      subaccount_id, req.params.id,
+      tags.filter(t => !antesIds.has(t.id)),
+      antes.filter(t => !depoisIds.has(t.id)),
+    ).catch(e => console.error('[fireTagChanges]', e.message));
   } catch (err) {
     console.error('[contact tags PUT]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
@@ -1940,6 +1971,9 @@ app.post('/api/contacts', auth, async (req, res) => {
        JSON.stringify(custom_fields || {})]
     );
     res.status(201).json(rows[0]);
+
+    await fireAutomations(subaccount_id, 'contact_created', { contact: rows[0], origin: 'manual' },
+      { contact_id: rows[0].id }).catch(e => console.error('[fire contact_created]', e.message));
   } catch (err) {
     console.error('[contacts POST]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
@@ -1955,9 +1989,8 @@ app.put('/api/contacts/:id', auth, async (req, res) => {
     const guardParams = [req.params.id, subaccount_id];
     const guardScope  = scopeClause('contacts', 'contacts', await userDataScope(req), guardParams);
     const { rows: before } = await pool.query(
-      `SELECT assigned_to FROM contacts WHERE id = $1 AND subaccount_id = $2${guardScope}`, guardParams
+      `SELECT assigned_to, status FROM contacts WHERE id = $1 AND subaccount_id = $2${guardScope}`, guardParams
     );
-    if (!before.length) return res.status(404).json({ message: 'Contato não encontrado.' });
     if (!before.length) return res.status(404).json({ message: 'Contato não encontrado.' });
 
     const { rows } = await pool.query(
@@ -1982,6 +2015,12 @@ app.put('/api/contacts/:id', auth, async (req, res) => {
       await fireAutomations(subaccount_id, 'contact_assigned', {
         contact: rows[0], assigned_to, user: userRows[0] || null,
       }, { contact_id: rows[0].id }).catch(e => console.error('[fireAutomations contact_assigned]', e.message));
+    }
+
+    if (status && status !== before[0].status) {
+      await fireAutomations(subaccount_id, 'contact_status_changed', {
+        contact: rows[0], from_status: before[0].status, to_status: rows[0].status,
+      }, { contact_id: rows[0].id }).catch(e => console.error('[fire contact_status_changed]', e.message));
     }
   } catch (err) {
     console.error('[contacts PUT]', err.message);
@@ -3011,11 +3050,14 @@ app.put('/api/agents/:id/toggle', auth, async (req, res) => {
 const AUTOMATION_TRIGGERS = [
   'contact_replied', 'webhook', 'user_replied', 'opportunity_created',
   'opportunity_stage_changed', 'opportunity_status_changed', 'contact_assigned',
+  'contact_created', 'contact_status_changed', 'contact_tag_added', 'contact_tag_removed',
 ];
 const AUTOMATION_NODE_TYPES = [
   'whatsapp_send_message', 'pipeline_create', 'opportunity_search',
   'opportunity_update', 'timer', 'if_else', 'split',
   'contact_tag_add', 'contact_tag_remove', 'contact_has_tag',
+  'opportunity_create', 'webhook_out', 'internal_notification',
+  'contact_assign', 'contact_update',
 ];
 
 function _autoGetPath(obj, path) {
@@ -3271,6 +3313,8 @@ const AUTOMATION_NODE_EXECUTORS = {
     const tagIds = Array.isArray(node.config?.tag_ids) ? node.config.tag_ids : [];
     if (!tagIds.length) throw new Error('O node "Aplicar tag" está sem nenhuma tag selecionada.');
 
+    // RETURNING traz só o que entrou de fato: reaplicar uma tag existente não
+    // dispara o gatilho, e é isso que impede o laço mais comum.
     const { rows } = await pool.query(
       `INSERT INTO contact_tag_map (contact_id, tag_id)
        SELECT $1, t.id FROM contact_tags t WHERE t.id = ANY($2::uuid[]) AND t.subaccount_id = $3
@@ -3278,6 +3322,12 @@ const AUTOMATION_NODE_EXECUTORS = {
        RETURNING tag_id`,
       [contactId, tagIds, subaccount_id]
     );
+    if (rows.length) {
+      const { rows: info } = await pool.query(
+        `SELECT id, name, color FROM contact_tags WHERE id = ANY($1::uuid[])`, [rows.map(r => r.tag_id)]);
+      await fireTagChanges(subaccount_id, contactId, info, [], run.depth)
+        .catch(e => console.error('[fireTagChanges add]', e.message));
+    }
     return { output: 'default', patch: { tags_added: rows.length } };
   },
 
@@ -3295,6 +3345,12 @@ const AUTOMATION_NODE_EXECUTORS = {
         RETURNING m.tag_id`,
       [contactId, tagIds, subaccount_id]
     );
+    if (rows.length) {
+      const { rows: info } = await pool.query(
+        `SELECT id, name, color FROM contact_tags WHERE id = ANY($1::uuid[])`, [rows.map(r => r.tag_id)]);
+      await fireTagChanges(subaccount_id, contactId, [], info, run.depth)
+        .catch(e => console.error('[fireTagChanges remove]', e.message));
+    }
     return { output: 'default', patch: { tags_removed: rows.length } };
   },
 
@@ -3316,6 +3372,202 @@ const AUTOMATION_NODE_EXECUTORS = {
     const hits = rows[0]?.hits || 0;
     const result = match === 'all' ? hits >= tagIds.length : hits > 0;
     return { output: result ? 'true' : 'false', patch: { result, hits } };
+  },
+
+  // Cria uma oportunidade para o contato da run. Existia procurar e atualizar,
+  // mas não criar — sem isso "cliente respondeu → abrir negociação" não era
+  // montável no canvas.
+  opportunity_create: async (node, { context, subaccount_id, run }) => {
+    const contactId = run.contact_id;
+    if (!contactId) throw new Error('Este fluxo não tem um contato associado para abrir a oportunidade.');
+    const c = node.config || {};
+    if (!c.pipeline_id) throw new Error('O node "Criar oportunidade" precisa de um funil.');
+
+    // A etapa precisa pertencer ao funil escolhido; se não vier, usa a primeira.
+    const { rows: st } = await pool.query(
+      `SELECT id FROM pipeline_stages
+        WHERE pipeline_id = $1 AND ($2::uuid IS NULL OR id = $2)
+        ORDER BY position ASC LIMIT 1`,
+      [c.pipeline_id, c.stage_id || null]
+    );
+    if (!st[0]) throw new Error('Etapa não encontrada no funil escolhido.');
+
+    const title = autoInterpolate(c.title || '', context).trim()
+      || `Oportunidade de ${context?.trigger?.contact?.name || 'contato'}`;
+    const rawValue = autoInterpolate(String(c.value ?? ''), context).replace(',', '.');
+    const value = rawValue !== '' && Number.isFinite(Number(rawValue)) ? Number(rawValue) : null;
+
+    const { rows } = await pool.query(
+      `INSERT INTO opportunities (subaccount_id, pipeline_id, stage_id, contact_id, title, value, status, custom_fields, assigned_to)
+       VALUES ($1,$2,$3,$4,$5,$6,'open',$7,$8) RETURNING *`,
+      [subaccount_id, c.pipeline_id, st[0].id, contactId, title.slice(0, 200), value,
+       JSON.stringify(c.source ? { source: c.source } : {}), c.assigned_to || null]
+    );
+
+    await fireAutomations(subaccount_id, 'opportunity_created',
+      { opportunity: rows[0], pipeline_id: rows[0].pipeline_id },
+      { contact_id: contactId, opportunity_id: rows[0].id, depth: run.depth }
+    ).catch(e => console.error('[fire opportunity_created]', e.message));
+
+    return { output: 'default', patch: { opportunity: rows[0] } };
+  },
+
+  // Envia os dados para uma URL externa. Um node que substitui uma integração
+  // dedicada por fluxo — n8n, planilha, ERP, o que for.
+  webhook_out: async (node, { context, subaccount_id, run }) => {
+    const c = node.config || {};
+    const url = autoInterpolate(c.url || '', context).trim();
+    if (!url) throw new Error('O node "Chamar URL externa" está sem URL.');
+    await assertPublicUrl(url);
+
+    const method = ['POST', 'PUT', 'PATCH', 'GET'].includes(c.method) ? c.method : 'POST';
+    const headers = { 'Content-Type': 'application/json' };
+    if (c.auth_header) headers.Authorization = autoInterpolate(c.auth_header, context);
+
+    // Sem corpo definido, manda o contexto acumulado — que é o que a pessoa
+    // quer na maioria das vezes e evita montar JSON à mão.
+    let body;
+    if (method !== 'GET') {
+      const raw = (c.body || '').trim();
+      if (raw) {
+        const filled = autoInterpolate(raw, context);
+        try { body = JSON.stringify(JSON.parse(filled)); }
+        catch { body = JSON.stringify({ text: filled }); }
+      } else {
+        body = JSON.stringify({ subaccount_id, run_id: run.id, contact_id: run.contact_id, context });
+      }
+    }
+
+    let resp, text = '';
+    try {
+      resp = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
+      text = await resp.text();
+    } catch (e) {
+      throw new Error(`Falha ao chamar a URL: ${e.message}`);
+    }
+    if (!resp.ok) throw new Error(`A URL respondeu ${resp.status}: ${text.slice(0, 200)}`);
+
+    let json = null;
+    try { json = JSON.parse(text); } catch {}
+    return { output: 'default', patch: { status: resp.status, response: json ?? text.slice(0, 2000) } };
+  },
+
+  // Cria uma notificação interna — mesmo sino e badge já usados pelas menções.
+  internal_notification: async (node, { context, subaccount_id, run }) => {
+    const c = node.config || {};
+    const title = autoInterpolate(c.title || 'Automação', context).slice(0, 200);
+    const body  = autoInterpolate(c.body || '', context).slice(0, 2000);
+
+    let userIds = Array.isArray(c.user_ids) ? c.user_ids : [];
+    if (c.target === 'owner') {
+      // Responsável pelo contato da run; sem responsável não há quem avisar.
+      const { rows } = await pool.query(
+        `SELECT assigned_to FROM contacts WHERE id = $1 AND subaccount_id = $2`, [run.contact_id, subaccount_id]);
+      userIds = rows[0]?.assigned_to ? [rows[0].assigned_to] : [];
+    }
+    if (!userIds.length) return { output: 'default', patch: { notified: 0 } };
+
+    const { rows } = await pool.query(
+      `INSERT INTO notifications (subaccount_id, user_id, type, title, body, entity_type, entity_id)
+       SELECT $1, u.id, 'automation', $2, $3, 'contact', $4
+         FROM users u WHERE u.id = ANY($5::uuid[]) AND u.subaccount_id = $1
+       RETURNING id`,
+      [subaccount_id, title, body, run.contact_id || null, userIds]
+    );
+    return { output: 'default', patch: { notified: rows.length } };
+  },
+
+  // Define o responsável pelo contato — e, opcionalmente, pela conversa aberta.
+  contact_assign: async (node, { subaccount_id, run }) => {
+    const contactId = run.contact_id;
+    if (!contactId) throw new Error('Este fluxo não tem um contato associado para atribuir.');
+    const c = node.config || {};
+    const mode = ['user', 'balanced', 'unassign'].includes(c.mode) ? c.mode : 'user';
+
+    let userId = null;
+    if (mode === 'user') {
+      if (!c.user_id) throw new Error('O node "Definir responsável" está sem usuário escolhido.');
+      const { rows } = await pool.query(
+        `SELECT id FROM users WHERE id = $1 AND subaccount_id = $2 AND is_active = TRUE`, [c.user_id, subaccount_id]);
+      if (!rows[0]) throw new Error('Usuário não pertence a esta subconta ou está inativo.');
+      userId = rows[0].id;
+    } else if (mode === 'balanced') {
+      // Menos carregado em vez de rodízio: não guarda estado e distribui melhor
+      // quando alguém entra ou sai da equipe.
+      const pool_ids = Array.isArray(c.user_ids) && c.user_ids.length ? c.user_ids : null;
+      const { rows } = await pool.query(
+        `SELECT u.id FROM users u
+          WHERE u.subaccount_id = $1 AND u.is_active = TRUE
+            AND ($2::uuid[] IS NULL OR u.id = ANY($2::uuid[]))
+          ORDER BY (SELECT COUNT(*) FROM contacts c WHERE c.assigned_to = u.id) ASC, u.created_at ASC
+          LIMIT 1`,
+        [subaccount_id, pool_ids]
+      );
+      if (!rows[0]) throw new Error('Nenhum usuário ativo disponível para receber o contato.');
+      userId = rows[0].id;
+    }
+
+    const { rows: upd } = await pool.query(
+      `UPDATE contacts SET assigned_to = $1, updated_at = NOW()
+        WHERE id = $2 AND subaccount_id = $3 RETURNING *`,
+      [userId, contactId, subaccount_id]);
+    if (!upd[0]) throw new Error('Contato não encontrado.');
+
+    if (c.also_conversation) {
+      await pool.query(
+        `UPDATE conversations SET assigned_to = $1 WHERE contact_id = $2 AND subaccount_id = $3 AND status = 'open'`,
+        [userId, contactId, subaccount_id]);
+    }
+
+    if (userId) {
+      const { rows: u } = await pool.query(`SELECT id, name FROM users WHERE id = $1`, [userId]);
+      await fireAutomations(subaccount_id, 'contact_assigned',
+        { contact: upd[0], assigned_to: userId, user: u[0] || null },
+        { contact_id: contactId, depth: run.depth }
+      ).catch(e => console.error('[fire contact_assigned]', e.message));
+    }
+    return { output: 'default', patch: { assigned_to: userId, contact: upd[0] } };
+  },
+
+  // Atualiza campos do contato, inclusive personalizados.
+  contact_update: async (node, { context, subaccount_id, run }) => {
+    const contactId = run.contact_id;
+    if (!contactId) throw new Error('Este fluxo não tem um contato associado para atualizar.');
+    const f = node.config?.fields || {};
+
+    const { rows: before } = await pool.query(
+      `SELECT status FROM contacts WHERE id = $1 AND subaccount_id = $2`, [contactId, subaccount_id]);
+    if (!before[0]) throw new Error('Contato não encontrado.');
+
+    const txt = v => (v === undefined || v === '' ? null : autoInterpolate(String(v), context));
+    const status = ['lead', 'customer', 'churned'].includes(f.status) ? f.status : null;
+
+    // Os personalizados entram por merge: escrever o objeto inteiro apagaria
+    // os campos que o fluxo não menciona.
+    const cf = f.custom_fields && typeof f.custom_fields === 'object'
+      ? Object.fromEntries(Object.entries(f.custom_fields).map(([k, v]) => [k, autoInterpolate(String(v ?? ''), context)]))
+      : null;
+
+    const { rows } = await pool.query(
+      `UPDATE contacts SET
+         name    = COALESCE($1, name),    email    = COALESCE($2, email),
+         company = COALESCE($3, company), position = COALESCE($4, position),
+         source  = COALESCE($5, source),  status   = COALESCE($6, status),
+         notes   = COALESCE($7, notes),
+         custom_fields = COALESCE(custom_fields, '{}'::jsonb) || COALESCE($8::jsonb, '{}'::jsonb),
+         updated_at = NOW()
+       WHERE id = $9 AND subaccount_id = $10 RETURNING *`,
+      [txt(f.name), txt(f.email), txt(f.company), txt(f.position), txt(f.source), status, txt(f.notes),
+       cf ? JSON.stringify(cf) : null, contactId, subaccount_id]
+    );
+
+    if (status && status !== before[0].status) {
+      await fireAutomations(subaccount_id, 'contact_status_changed',
+        { contact: rows[0], from_status: before[0].status, to_status: status },
+        { contact_id: contactId, depth: run.depth }
+      ).catch(e => console.error('[fire contact_status_changed]', e.message));
+    }
+    return { output: 'default', patch: { contact: rows[0] } };
   },
 
   // Passa adiante sem efeito — existe para deixar explícito, no canvas, o
@@ -3428,6 +3680,21 @@ function automationTriggerMatches(triggerType, config, seedContext) {
     if (config.pipeline_id && config.pipeline_id !== seedContext.opportunity?.pipeline_id) return false;
     return true;
   }
+  if (triggerType === 'contact_tag_added' || triggerType === 'contact_tag_removed') {
+    // Sem tag escolhida o gatilho vale para qualquer uma.
+    const ids = Array.isArray(config.tag_ids) ? config.tag_ids : [];
+    if (ids.length && !ids.includes(seedContext.tag?.id)) return false;
+    return true;
+  }
+  if (triggerType === 'contact_status_changed') {
+    if (config.to_status && config.to_status !== seedContext.to_status) return false;
+    if (config.from_status && config.from_status !== seedContext.from_status) return false;
+    return true;
+  }
+  if (triggerType === 'contact_created') {
+    if (config.origin && config.origin !== seedContext.origin) return false;
+    return true;
+  }
   if (triggerType === 'contact_assigned') {
     if (config.user_id && config.user_id !== seedContext.assigned_to) return false;
     return true;
@@ -3436,7 +3703,48 @@ function automationTriggerMatches(triggerType, config, seedContext) {
 }
 
 // Encontra automações ativas para o gatilho e dispara uma run para cada uma.
+// Um node que altera um dado dispara o gatilho daquele dado — aplicar tag
+// aciona "tag aplicada". Dois fluxos que se alimentam girariam para sempre.
+// A profundidade acompanha a corrente e a corta antes disso.
+const AUTOMATION_MAX_DEPTH = 5;
+
+// O servidor tem credenciais de banco e variáveis de ambiente; deixar um node
+// chamar qualquer endereço permitiria usá-lo como ponte para a rede interna e
+// para o serviço de metadados da nuvem. A checagem é feita no IP resolvido,
+// não no texto da URL, porque um domínio comum pode apontar para 127.0.0.1.
+function isPrivateAddress(ip) {
+  if (/^(::1|::ffff:127\.|fc|fd|fe80)/i.test(ip)) return true;
+  const m = ip.replace(/^::ffff:/i, '').match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return a === 0 || a === 10 || a === 127
+      || (a === 169 && b === 254)                 // metadados da nuvem
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168)
+      || (a === 100 && b >= 64 && b <= 127);      // CGNAT
+}
+
+async function assertPublicUrl(raw) {
+  let u;
+  try { u = new URL(raw); } catch { throw new Error('URL inválida.'); }
+  if (!['http:', 'https:'].includes(u.protocol))
+    throw new Error('Só endereços http ou https são aceitos.');
+  let addrs;
+  try {
+    addrs = await require('dns').promises.lookup(u.hostname, { all: true });
+  } catch {
+    throw new Error(`Não foi possível resolver o endereço ${u.hostname}.`);
+  }
+  if (addrs.some(a => isPrivateAddress(a.address)))
+    throw new Error('Endereços da rede interna não são permitidos.');
+}
+
 async function fireAutomations(subaccount_id, triggerType, seedContext, refs = {}) {
+  const depth = Number(refs.depth) || 0;
+  if (depth >= AUTOMATION_MAX_DEPTH) {
+    console.warn(`[fireAutomations] ${triggerType} ignorado: profundidade ${depth} atingiu o limite.`);
+    return;
+  }
   try {
     const { rows } = await pool.query(
       `SELECT id, graph FROM automations WHERE subaccount_id = $1 AND trigger_type = $2 AND is_active = TRUE`,
@@ -3452,9 +3760,10 @@ async function fireAutomations(subaccount_id, triggerType, seedContext, refs = {
       if (!firstTargets.length) continue;
 
       const { rows: ins } = await pool.query(
-        `INSERT INTO automation_runs (automation_id, contact_id, opportunity_id, status, current_node_id, context)
-         VALUES ($1,$2,$3,'running',$4,$5) RETURNING id`,
-        [a.id, refs.contact_id || null, refs.opportunity_id || null, firstTargets[0], JSON.stringify({ trigger: seedContext })]
+        `INSERT INTO automation_runs (automation_id, contact_id, opportunity_id, status, current_node_id, context, depth)
+         VALUES ($1,$2,$3,'running',$4,$5,$6) RETURNING id`,
+        [a.id, refs.contact_id || null, refs.opportunity_id || null, firstTargets[0],
+         JSON.stringify({ trigger: seedContext }), depth + 1]
       );
       await processAutomationStep(ins[0].id);
     }
@@ -4154,10 +4463,15 @@ async function processWaMsg(subaccount_id, instanceName, apiUrl, apiKey, data) {
     const displayPhone = '+' + phone;
     const contactName = (!fromMe && pushName) ? pushName : displayPhone;
     const { rows: newContact } = await pool.query(
-      `INSERT INTO contacts (subaccount_id, name, phone) VALUES ($1, $2, $3) RETURNING id`,
+      `INSERT INTO contacts (subaccount_id, name, phone) VALUES ($1, $2, $3) RETURNING *`,
       [subaccount_id, contactName, displayPhone]
     );
     contact_id = newContact[0].id;
+    // A maior parte dos contatos nasce aqui, não pelo formulário — sem este
+    // disparo o gatilho perderia justamente o caso principal.
+    await fireAutomations(subaccount_id, 'contact_created',
+      { contact: newContact[0], origin: 'whatsapp' },
+      { contact_id }).catch(e => console.error('[fire contact_created wa]', e.message));
   }
 
   if (!fromMe && pushName) {
