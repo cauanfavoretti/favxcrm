@@ -55,6 +55,69 @@ function auth(req, res, next) {
 }
 
 // ============================================================
+// ESCOPO DE DADOS POR USUÁRIO
+// ============================================================
+
+// users.data_scope vale 'all' (padrão) ou 'own'. Em 'own' o usuário enxerga
+// apenas o que está atribuído a ele, o que ele segue e o que não tem dono.
+// Registro atribuído a outra pessoa só aparece se ele for seguidor.
+//
+// Cada entidade aponta para sua tabela de seguidores. `tasks` não tem uma —
+// nela vale só dono/sem dono.
+const SCOPE_ENTITIES = {
+  contacts:      { followers: 'contact_followers',      fk: 'contact_id' },
+  opportunities: { followers: 'opportunity_followers',  fk: 'opportunity_id' },
+  conversations: { followers: 'conversation_followers', fk: 'conversation_id' },
+  tasks:         { followers: null,                     fk: null },
+};
+
+// O escopo é lido do banco, não do JWT: um token dura 1 dia e a mudança feita
+// pelo admin precisa valer antes disso. O cache evita uma consulta por
+// requisição sem deixar a alteração demorar — instâncias serverless são
+// reaproveitadas, então o Map sobrevive entre invocações.
+const SCOPE_CACHE_MS = 30000;
+const _scopeCache = new Map();
+
+function invalidateScopeCache(userId) { _scopeCache.delete(userId); }
+
+async function userDataScope(req) {
+  const userId = req.user?.sub || null;
+  if (!userId) return { restricted: false, userId: null };
+  // O super_admin opera a plataforma toda; restringi-lo inviabilizaria o suporte.
+  if (req.user.role === 'super_admin') return { restricted: false, userId };
+
+  const hit = _scopeCache.get(userId);
+  if (hit && hit.until > Date.now()) return { restricted: hit.restricted, userId };
+
+  let restricted = false;
+  try {
+    const { rows } = await pool.query(`SELECT data_scope FROM users WHERE id = $1 LIMIT 1`, [userId]);
+    restricted = rows[0]?.data_scope === 'own';
+  } catch (e) {
+    // Na dúvida não restringe: derrubar a leitura de todo mundo por uma falha
+    // de consulta seria pior que mostrar dados a quem já tinha acesso.
+    console.warn('[scope]', e.message);
+  }
+  _scopeCache.set(userId, { restricted, until: Date.now() + SCOPE_CACHE_MS });
+  return { restricted, userId };
+}
+
+// Devolve o trecho " AND (...)" a ser concatenado num WHERE já existente e
+// registra o parâmetro em `params`. Sem restrição devolve string vazia, então
+// pode ser aplicado incondicionalmente em qualquer consulta.
+function scopeClause(entity, alias, scope, params) {
+  if (!scope?.restricted) return '';
+  const e = SCOPE_ENTITIES[entity];
+  if (!e) throw new Error(`Entidade sem escopo definido: ${entity}`);
+  params.push(scope.userId);
+  const p = `$${params.length}`;
+  const mine = `${alias}.assigned_to IS NULL OR ${alias}.assigned_to = ${p}`;
+  if (!e.followers) return ` AND (${mine})`;
+  return ` AND (${mine} OR EXISTS (
+    SELECT 1 FROM ${e.followers} f WHERE f.${e.fk} = ${alias}.id AND f.user_id = ${p}))`;
+}
+
+// ============================================================
 // AUTH
 // ============================================================
 
@@ -160,12 +223,19 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
 app.get('/api/dashboard/stats', auth, async (req, res) => {
   const { subaccount_id } = req.user;
+  const scope = await userDataScope(req);
+  // Um array de parâmetros por consulta: scopeClause registra o id do usuário
+  // no array que recebe, então compartilhá-los duplicaria o parâmetro.
+  const pC = [subaccount_id], pV = [subaccount_id], pT = [subaccount_id];
+  const sC = scopeClause('contacts',      'contacts',      scope, pC);
+  const sV = scopeClause('conversations', 'conversations', scope, pV);
+  const sT = scopeClause('tasks',         'tasks',         scope, pT);
   try {
     const [contacts, conversations, agents, tasks] = await Promise.all([
-      pool.query('SELECT COUNT(*) FROM contacts WHERE subaccount_id = $1', [subaccount_id]),
-      pool.query("SELECT COUNT(*) FROM conversations WHERE subaccount_id = $1 AND status = 'open'", [subaccount_id]),
+      pool.query(`SELECT COUNT(*) FROM contacts WHERE subaccount_id = $1${sC}`, pC),
+      pool.query(`SELECT COUNT(*) FROM conversations WHERE subaccount_id = $1 AND status = 'open'${sV}`, pV),
       pool.query('SELECT COUNT(*) FROM ai_agents WHERE subaccount_id = $1 AND is_active = TRUE', [subaccount_id]),
-      pool.query("SELECT COUNT(*) FROM tasks WHERE subaccount_id = $1 AND status = 'pending'", [subaccount_id]),
+      pool.query(`SELECT COUNT(*) FROM tasks WHERE subaccount_id = $1 AND status = 'pending'${sT}`, pT),
     ]);
     res.json({
       contacts:             parseInt(contacts.rows[0].count),
@@ -181,6 +251,18 @@ app.get('/api/dashboard/stats', auth, async (req, res) => {
 
 app.get('/api/dashboard/advanced', auth, async (req, res) => {
   const { subaccount_id } = req.user;
+  const scope = await userDataScope(req);
+  // Nas consultas 2 e 3 o escopo entra no ON do LEFT JOIN, não no WHERE: no
+  // WHERE ele descartaria a etapa ou o funil inteiro quando nenhuma
+  // oportunidade fosse visível, em vez de mostrá-los zerados.
+  const p1 = [subaccount_id], p2 = [subaccount_id], p3 = [subaccount_id],
+        p4 = [subaccount_id], p5 = [subaccount_id], p6 = [subaccount_id];
+  const s1 = scopeClause('opportunities', 'opportunities', scope, p1);
+  const s2 = scopeClause('opportunities', 'o',             scope, p2);
+  const s3 = scopeClause('opportunities', 'o',             scope, p3);
+  const s4 = scopeClause('opportunities', 'o',             scope, p4);
+  const s5 = scopeClause('opportunities', 'o',             scope, p5);
+  const s6 = scopeClause('opportunities', 'opportunities', scope, p6);
   try {
     const [
       revenue,
@@ -200,8 +282,8 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
                AND updated_at <  date_trunc('month', NOW())), 0)                            AS won_last_month,
            COUNT(*) FILTER (WHERE updated_at >= date_trunc('month', NOW()))                 AS won_count_month
          FROM opportunities
-         WHERE subaccount_id = $1 AND status = 'won'`,
-        [subaccount_id]
+         WHERE subaccount_id = $1 AND status = 'won'${s1}`,
+        p1
       ),
 
       // 2. Funis — etapas com contagens (sem carregar as oportunidades completas)
@@ -212,10 +294,10 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
            COALESCE(SUM(o.value) FILTER (WHERE o.status = 'open'), 0) AS open_value
          FROM pipeline_stages ps
          JOIN pipelines p ON p.id = ps.pipeline_id AND p.subaccount_id = $1
-         LEFT JOIN opportunities o ON o.stage_id = ps.id
+         LEFT JOIN opportunities o ON o.stage_id = ps.id${s2}
          GROUP BY ps.id, ps.name, ps.position, ps.color, ps.pipeline_id
          ORDER BY ps.pipeline_id, ps.position ASC`,
-        [subaccount_id]
+        p2
       ),
 
       // 3. Funis — totais por pipeline (open/won/lost)
@@ -227,11 +309,11 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
            COUNT(o.id) FILTER (WHERE o.status = 'lost')  AS lost_count,
            COALESCE(SUM(o.value) FILTER (WHERE o.status = 'won'), 0) AS won_value
          FROM pipelines p
-         LEFT JOIN opportunities o ON o.pipeline_id = p.id
+         LEFT JOIN opportunities o ON o.pipeline_id = p.id${s3}
          WHERE p.subaccount_id = $1
          GROUP BY p.id, p.name, p.is_default
          ORDER BY p.created_at ASC`,
-        [subaccount_id]
+        p3
       ),
 
       // 4. Oportunidades por origem (via contato) — TODOS os status
@@ -241,10 +323,10 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
            COUNT(o.id) AS count
          FROM opportunities o
          JOIN contacts c ON c.id = o.contact_id
-         WHERE o.subaccount_id = $1
+         WHERE o.subaccount_id = $1${s4}
          GROUP BY source
          ORDER BY count DESC`,
-        [subaccount_id]
+        p4
       ),
 
       // 5. Oportunidades perdidas (últimas 30)
@@ -257,10 +339,10 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
          FROM opportunities o
          JOIN contacts c ON c.id = o.contact_id
          JOIN pipelines p ON p.id = o.pipeline_id
-         WHERE o.subaccount_id = $1 AND o.status = 'lost'
+         WHERE o.subaccount_id = $1 AND o.status = 'lost'${s5}
          ORDER BY o.updated_at DESC
          LIMIT 30`,
-        [subaccount_id]
+        p5
       ),
 
       // 6. Oportunidades perdidas agrupadas por motivo
@@ -271,10 +353,10 @@ app.get('/api/dashboard/advanced', auth, async (req, res) => {
            COUNT(*) AS count,
            COALESCE(SUM(value), 0) AS value
          FROM opportunities
-         WHERE subaccount_id = $1 AND status = 'lost'
+         WHERE subaccount_id = $1 AND status = 'lost'${s6}
          GROUP BY reason
          ORDER BY count DESC`,
-        [subaccount_id]
+        p6
       ),
     ]);
 
@@ -825,7 +907,10 @@ async function ensureSubaccountAgent(subaccount_id, subaccountName, created_by =
 // (executeWidgetQuery) e a listagem de registros do drill-down
 // (fetchWidgetRecords) — assim a lista exibida ao clicar no widget é
 // exatamente o conjunto de registros que o número do widget mede.
-function buildWidgetFilters(pillar, config, subaccount_id) {
+// `scope` entra aqui e não em cada consulta: assim o agregado do widget e a
+// lista do drill-down usam exatamente o mesmo filtro, sem chance de o número
+// contar registros que a lista esconde.
+function buildWidgetFilters(pillar, config, subaccount_id, scope) {
   const params = [subaccount_id];
   const wheres = [];
   function addParam(v) { params.push(v); return `$${params.length}`; }
@@ -943,11 +1028,18 @@ function buildWidgetFilters(pillar, config, subaccount_id) {
     throw new Error(`Unknown pillar: ${pillar}`);
   }
 
-  return { where: `WHERE ${wheres.join(' AND ')}`, params };
+  const SCOPE_TARGET = {
+    contacts:      ['contacts', 'contacts'],
+    funnels:       ['opportunities', 'o'],
+    conversations: ['conversations', 'conversations'],
+  }[pillar];
+  const scopeSql = scopeClause(SCOPE_TARGET[0], SCOPE_TARGET[1], scope, params);
+
+  return { where: `WHERE ${wheres.join(' AND ')}${scopeSql}`, params };
 }
 
-async function executeWidgetQuery(pillar, config, subaccount_id) {
-  const { where, params } = buildWidgetFilters(pillar, config, subaccount_id);
+async function executeWidgetQuery(pillar, config, subaccount_id, scope) {
+  const { where, params } = buildWidgetFilters(pillar, config, subaccount_id, scope);
   const { metric = 'count', group_by, sort = 'desc', limit = 50 } = config;
   const safeLimit = Math.min(Math.max(1, parseInt(limit) || 50), 100);
 
@@ -1060,8 +1152,8 @@ async function executeWidgetQuery(pillar, config, subaccount_id) {
 // Lista os registros que compõem o número do widget (drill-down ao clicar).
 // Usa exatamente o mesmo WHERE da consulta agregada, então a lista sempre
 // bate com o valor exibido.
-async function fetchWidgetRecords(pillar, config, subaccount_id, limit) {
-  const { where, params } = buildWidgetFilters(pillar, config, subaccount_id);
+async function fetchWidgetRecords(pillar, config, subaccount_id, limit, scope) {
+  const { where, params } = buildWidgetFilters(pillar, config, subaccount_id, scope);
   const safeLimit = Math.min(Math.max(1, parseInt(limit) || 200), 500);
 
   if (pillar === 'contacts') {
@@ -1318,7 +1410,7 @@ app.post('/api/dashboard-widgets/:id/data', auth, async (req, res) => {
       [req.params.id, subaccount_id]
     );
     if (!ws.length) return res.status(404).json({ message: 'Widget não encontrado.' });
-    const result = await executeWidgetQuery(ws[0].pillar, ws[0].config, subaccount_id);
+    const result = await executeWidgetQuery(ws[0].pillar, ws[0].config, subaccount_id, await userDataScope(req));
     res.json(result);
   } catch (err) {
     console.error('[widget/data]', err.message);
@@ -1337,7 +1429,7 @@ app.post('/api/dashboard-widgets/:id/records', auth, async (req, res) => {
       [req.params.id, subaccount_id]
     );
     if (!ws.length) return res.status(404).json({ message: 'Widget não encontrado.' });
-    const records = await fetchWidgetRecords(ws[0].pillar, ws[0].config, subaccount_id, req.body?.limit);
+    const records = await fetchWidgetRecords(ws[0].pillar, ws[0].config, subaccount_id, req.body?.limit, await userDataScope(req));
     res.json({ pillar: ws[0].pillar, title: ws[0].title, records });
   } catch (err) {
     console.error('[widget/records]', err.message);
@@ -1649,6 +1741,7 @@ app.delete('/api/message-templates/:id', auth, async (req, res) => {
 
 app.get('/api/contacts', auth, async (req, res) => {
   const { subaccount_id } = req.user;
+  const scope = await userDataScope(req);
   const page   = Math.max(1, parseInt(req.query.page)  || 1);
   const limit  = Math.min(100, parseInt(req.query.limit) || 20);
   const offset = (page - 1) * limit;
@@ -1667,6 +1760,7 @@ app.get('/api/contacts', auth, async (req, res) => {
       params.push(status);
       where += ` AND status = $${params.length}`;
     }
+    where += scopeClause('contacts', 'contacts', scope, params);
 
     const [data, total] = await Promise.all([
       pool.query(
@@ -1687,12 +1781,15 @@ app.get('/api/contacts', auth, async (req, res) => {
 
 app.get('/api/contacts/:id', auth, async (req, res) => {
   const { subaccount_id } = req.user;
+  const scope  = await userDataScope(req);
+  const params = [req.params.id, subaccount_id];
+  const scoped = scopeClause('contacts', 'contacts', scope, params);
   try {
     const { rows } = await pool.query(
       `SELECT id, name, email, phone, company, position, source, status,
               assigned_to, notes, custom_fields, created_at, updated_at
-       FROM contacts WHERE id = $1 AND subaccount_id = $2`,
-      [req.params.id, subaccount_id]
+       FROM contacts WHERE id = $1 AND subaccount_id = $2${scoped}`,
+      params
     );
     if (!rows.length) return res.status(404).json({ message: 'Contato não encontrado.' });
     res.json(rows[0]);
@@ -1725,9 +1822,14 @@ app.put('/api/contacts/:id', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   const { name, email, phone, company, source, status, notes, custom_fields, assigned_to } = req.body;
   try {
+    // Sem o escopo aqui, quem não pode ver o contato ainda conseguiria
+    // editá-lo sabendo o id.
+    const guardParams = [req.params.id, subaccount_id];
+    const guardScope  = scopeClause('contacts', 'contacts', await userDataScope(req), guardParams);
     const { rows: before } = await pool.query(
-      `SELECT assigned_to FROM contacts WHERE id = $1 AND subaccount_id = $2`, [req.params.id, subaccount_id]
+      `SELECT assigned_to FROM contacts WHERE id = $1 AND subaccount_id = $2${guardScope}`, guardParams
     );
+    if (!before.length) return res.status(404).json({ message: 'Contato não encontrado.' });
     if (!before.length) return res.status(404).json({ message: 'Contato não encontrado.' });
 
     const { rows } = await pool.query(
@@ -1761,14 +1863,16 @@ app.put('/api/contacts/:id', auth, async (req, res) => {
 
 app.delete('/api/contacts/:id', auth, async (req, res) => {
   const { subaccount_id } = req.user;
+  const delParams = [req.params.id, subaccount_id];
+  const delScope  = scopeClause('contacts', 'contacts', await userDataScope(req), delParams);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     // Verifica se o contato pertence à subconta
     const check = await client.query(
-      'SELECT id FROM contacts WHERE id = $1 AND subaccount_id = $2',
-      [req.params.id, subaccount_id]
+      `SELECT id FROM contacts WHERE id = $1 AND subaccount_id = $2${delScope}`,
+      delParams
     );
     if (!check.rowCount) {
       await client.query('ROLLBACK');
@@ -1800,10 +1904,12 @@ app.delete('/api/contacts/:id', auth, async (req, res) => {
 app.get('/api/conversations', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   const { contact_id } = req.query;
+  const scope = await userDataScope(req);
   try {
     const params = [subaccount_id];
     let where = 'WHERE cv.subaccount_id = $1';
     if (contact_id) { params.push(contact_id); where += ` AND cv.contact_id = $${params.length}`; }
+    where += scopeClause('conversations', 'cv', scope, params);
     const { rows } = await pool.query(
       `SELECT cv.id, cv.status, cv.unread_count, cv.last_message_at, cv.channel, cv.contact_id,
               cv.assigned_to, c.name AS contact_name, c.phone AS contact_phone,
@@ -1826,11 +1932,14 @@ app.get('/api/conversations', auth, async (req, res) => {
 // Quantidade de conversas não lidas (para o badge do menu lateral)
 app.get('/api/conversations/unread-count', auth, async (req, res) => {
   const { subaccount_id } = req.user;
+  const scope  = await userDataScope(req);
+  const params = [subaccount_id];
+  const scoped = scopeClause('conversations', 'conversations', scope, params);
   try {
     const { rows } = await pool.query(
       `SELECT COUNT(*)::int AS count FROM conversations
-       WHERE subaccount_id = $1 AND unread_count > 0`,
-      [subaccount_id]
+       WHERE subaccount_id = $1 AND unread_count > 0${scoped}`,
+      params
     );
     res.json({ count: rows[0]?.count || 0 });
   } catch (err) {
@@ -1874,10 +1983,12 @@ app.post('/api/conversations', auth, async (req, res) => {
 
 app.get('/api/conversations/:id/messages', auth, async (req, res) => {
   const { subaccount_id } = req.user;
+  const msgParams = [req.params.id, subaccount_id];
+  const msgScope  = scopeClause('conversations', 'conversations', await userDataScope(req), msgParams);
   try {
     const { rows: conv } = await pool.query(
-      'SELECT id FROM conversations WHERE id = $1 AND subaccount_id = $2',
-      [req.params.id, subaccount_id]
+      `SELECT id FROM conversations WHERE id = $1 AND subaccount_id = $2${msgScope}`,
+      msgParams
     );
     if (!conv.length) return res.status(404).json({ message: 'Conversa não encontrada.' });
 
@@ -1909,6 +2020,8 @@ app.get('/api/conversations/:id/messages', auth, async (req, res) => {
 
 app.post('/api/conversations/:id/messages', auth, async (req, res) => {
   const { subaccount_id, sub: user_id } = req.user;
+  const sendParams = [req.params.id, subaccount_id];
+  const sendScope  = scopeClause('conversations', 'cv', await userDataScope(req), sendParams);
   const { content, instance_id, is_internal, mention_ids, message_type, file_data } = req.body;
   const msgType = message_type || 'text';
   if (msgType === 'text' && !content) return res.status(400).json({ message: 'Conteúdo é obrigatório.' });
@@ -1921,8 +2034,8 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
        FROM conversations cv
        JOIN contacts c ON c.id = cv.contact_id
        LEFT JOIN users u ON u.id = cv.assigned_to
-       WHERE cv.id = $1 AND cv.subaccount_id = $2`,
-      [req.params.id, subaccount_id]
+       WHERE cv.id = $1 AND cv.subaccount_id = $2${sendScope}`,
+      sendParams
     );
     if (!conv.length) return res.status(404).json({ message: 'Conversa não encontrada.' });
 
@@ -2191,6 +2304,96 @@ app.put('/api/conversations/:id/followers', auth, async (req, res) => {
   }
 });
 
+// ---- Dono e seguidores de contatos e oportunidades ----
+// Mesmo contrato das rotas equivalentes de conversas, para a interface poder
+// tratar as três da mesma forma.
+
+// Só quem já enxerga o registro pode ler ou mexer na atribuição dele.
+async function assertScopedAccess(req, entity, table, id) {
+  const params = [id, req.user.subaccount_id];
+  const scoped = scopeClause(entity, table, await userDataScope(req), params);
+  const { rows } = await pool.query(
+    `SELECT id FROM ${table} WHERE id = $1 AND subaccount_id = $2${scoped} LIMIT 1`, params);
+  return Boolean(rows[0]);
+}
+
+function mountAssignmentRoutes({ path, entity, table, followers, fk, notFound }) {
+  app.get(`/api/${path}/:id/assignment`, auth, async (req, res) => {
+    try {
+      if (!await assertScopedAccess(req, entity, table, req.params.id))
+        return res.status(404).json({ message: notFound });
+
+      const [{ rows: own }, { rows: fol }] = await Promise.all([
+        pool.query(
+          `SELECT u.id, u.name, u.email FROM ${table} t
+             JOIN users u ON u.id = t.assigned_to WHERE t.id = $1`, [req.params.id]),
+        pool.query(
+          `SELECT u.id, u.name, u.email FROM ${followers} f
+             JOIN users u ON u.id = f.user_id WHERE f.${fk} = $1 ORDER BY f.added_at ASC`, [req.params.id]),
+      ]);
+      res.json({ owner: own[0] || null, followers: fol });
+    } catch (err) {
+      console.error(`[${path} assignment GET]`, err.message);
+      res.status(500).json({ message: 'Erro interno.' });
+    }
+  });
+
+  app.put(`/api/${path}/:id/owner`, auth, async (req, res) => {
+    const { subaccount_id } = req.user;
+    const { user_id } = req.body;
+    try {
+      if (!await assertScopedAccess(req, entity, table, req.params.id))
+        return res.status(404).json({ message: notFound });
+
+      // Atribuir a alguém de outra subconta vazaria o registro para fora dela.
+      if (user_id) {
+        const { rows } = await pool.query(
+          `SELECT id FROM users WHERE id = $1 AND subaccount_id = $2 LIMIT 1`, [user_id, subaccount_id]);
+        if (!rows[0]) return res.status(400).json({ message: 'Usuário não pertence a esta subconta.' });
+      }
+      await pool.query(
+        `UPDATE ${table} SET assigned_to = $1, updated_at = NOW() WHERE id = $2 AND subaccount_id = $3`,
+        [user_id || null, req.params.id, subaccount_id]);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error(`[${path} owner PUT]`, err.message);
+      res.status(500).json({ message: 'Erro interno.' });
+    }
+  });
+
+  app.put(`/api/${path}/:id/followers`, auth, async (req, res) => {
+    const { subaccount_id } = req.user;
+    const { user_ids } = req.body;
+    if (!Array.isArray(user_ids)) return res.status(400).json({ message: 'user_ids deve ser um array.' });
+    try {
+      if (!await assertScopedAccess(req, entity, table, req.params.id))
+        return res.status(404).json({ message: notFound });
+
+      await pool.query(`DELETE FROM ${followers} WHERE ${fk} = $1`, [req.params.id]);
+      if (user_ids.length) {
+        await pool.query(
+          `INSERT INTO ${followers} (${fk}, user_id)
+           SELECT $1, u.id FROM users u WHERE u.id = ANY($2::uuid[]) AND u.subaccount_id = $3
+           ON CONFLICT DO NOTHING`,
+          [req.params.id, user_ids, subaccount_id]);
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      console.error(`[${path} followers PUT]`, err.message);
+      res.status(500).json({ message: 'Erro interno.' });
+    }
+  });
+}
+
+mountAssignmentRoutes({
+  path: 'contacts', entity: 'contacts', table: 'contacts',
+  followers: 'contact_followers', fk: 'contact_id', notFound: 'Contato não encontrado.',
+});
+mountAssignmentRoutes({
+  path: 'opportunities', entity: 'opportunities', table: 'opportunities',
+  followers: 'opportunity_followers', fk: 'opportunity_id', notFound: 'Oportunidade não encontrada.',
+});
+
 // ============================================================
 // PIPELINES & OPPORTUNITIES
 // ============================================================
@@ -2201,6 +2404,7 @@ app.get('/api/pipelines', auth, async (req, res) => {
   // Permite visualizar as ganhas/perdidas, que antes ficavam invisíveis no
   // kanban embora contassem no dashboard.
   const statusFilter = ['open', 'won', 'lost'].includes(req.query.status) ? req.query.status : 'open';
+  const scope = await userDataScope(req);
   try {
     const { rows: pipelines } = await pool.query(
       'SELECT * FROM pipelines WHERE subaccount_id = $1 ORDER BY created_at ASC',
@@ -2212,19 +2416,23 @@ app.get('/api/pipelines', auth, async (req, res) => {
         [pipeline.id]
       );
       for (const stage of stages) {
+        // Os dois parâmetros são idênticos, então o mesmo array serve para a
+        // lista e para o total — o card e a soma da coluna nunca divergem.
+        const stageParams = [stage.id, statusFilter];
+        const stageScope  = scopeClause('opportunities', 'o', scope, stageParams);
         const [opps, agg] = await Promise.all([
           pool.query(
             `SELECT o.id, o.title, o.value, o.currency, o.status, o.lost_reason,
                     o.custom_fields, o.stage_id, o.pipeline_id, o.contact_id,
                     c.name AS contact_name, c.phone AS contact_phone, o.created_at
              FROM opportunities o JOIN contacts c ON c.id = o.contact_id
-             WHERE o.stage_id = $1 AND o.status = $2 ORDER BY o.created_at DESC`,
-            [stage.id, statusFilter]
+             WHERE o.stage_id = $1 AND o.status = $2${stageScope} ORDER BY o.created_at DESC`,
+            stageParams
           ),
           pool.query(
-            `SELECT COUNT(*), COALESCE(SUM(value), 0) AS total
-             FROM opportunities WHERE stage_id = $1 AND status = $2`,
-            [stage.id, statusFilter]
+            `SELECT COUNT(*), COALESCE(SUM(o.value), 0) AS total
+             FROM opportunities o WHERE o.stage_id = $1 AND o.status = $2${stageScope}`,
+            stageParams
           ),
         ]);
         stage.opportunities = opps.rows;
@@ -2383,7 +2591,10 @@ app.delete('/api/pipelines/:id', auth, async (req, res) => {
 });
 
 app.get('/api/contacts/:id/opportunities', auth, async (req, res) => {
+  const scope = await userDataScope(req);
   const { subaccount_id } = req.user;
+  const oppParams = [req.params.id, subaccount_id];
+  const oppScope  = scopeClause('opportunities', 'o', scope, oppParams);
   try {
     const { rows } = await pool.query(
       `SELECT o.id, o.title, o.value, o.currency, o.status, o.lost_reason,
@@ -2393,9 +2604,9 @@ app.get('/api/contacts/:id/opportunities', auth, async (req, res) => {
        FROM opportunities o
        JOIN pipelines p      ON p.id  = o.pipeline_id
        JOIN pipeline_stages ps ON ps.id = o.stage_id
-       WHERE o.contact_id = $1 AND o.subaccount_id = $2
+       WHERE o.contact_id = $1 AND o.subaccount_id = $2${oppScope}
        ORDER BY o.created_at DESC`,
-      [req.params.id, subaccount_id]
+      oppParams
     );
     res.json(rows);
   } catch (err) {
@@ -2429,10 +2640,12 @@ app.post('/api/opportunities', auth, async (req, res) => {
 app.put('/api/opportunities/:id', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   const { title, stage_id, pipeline_id, value, status, lost_reason, custom_fields } = req.body;
+  const oParams = [req.params.id, subaccount_id];
+  const oScope  = scopeClause('opportunities', 'opportunities', await userDataScope(req), oParams);
   try {
     const { rows: before } = await pool.query(
-      `SELECT stage_id, status, contact_id FROM opportunities WHERE id = $1 AND subaccount_id = $2`,
-      [req.params.id, subaccount_id]
+      `SELECT stage_id, status, contact_id FROM opportunities WHERE id = $1 AND subaccount_id = $2${oScope}`,
+      oParams
     );
     if (!before.length) return res.status(404).json({ message: 'Oportunidade não encontrada.' });
 
@@ -2477,10 +2690,12 @@ app.put('/api/opportunities/:id', auth, async (req, res) => {
 
 app.delete('/api/opportunities/:id', auth, async (req, res) => {
   const { subaccount_id } = req.user;
+  const dParams = [req.params.id, subaccount_id];
+  const dScope  = scopeClause('opportunities', 'opportunities', await userDataScope(req), dParams);
   try {
     const { rowCount } = await pool.query(
-      `DELETE FROM opportunities WHERE id = $1 AND subaccount_id = $2`,
-      [req.params.id, subaccount_id]
+      `DELETE FROM opportunities WHERE id = $1 AND subaccount_id = $2${dScope}`,
+      dParams
     );
     if (!rowCount) return res.status(404).json({ message: 'Oportunidade não encontrada.' });
     res.status(204).send();
@@ -2493,10 +2708,12 @@ app.delete('/api/opportunities/:id', auth, async (req, res) => {
 app.put('/api/opportunities/:id/stage', auth, async (req, res) => {
   const { subaccount_id } = req.user;
   const { stage_id } = req.body;
+  const stParams = [req.params.id, subaccount_id];
+  const stScope  = scopeClause('opportunities', 'opportunities', await userDataScope(req), stParams);
   try {
     const { rows: before } = await pool.query(
-      `SELECT stage_id FROM opportunities WHERE id = $1 AND subaccount_id = $2`,
-      [req.params.id, subaccount_id]
+      `SELECT stage_id FROM opportunities WHERE id = $1 AND subaccount_id = $2${stScope}`,
+      stParams
     );
     if (!before.length) return res.status(404).json({ message: 'Oportunidade não encontrada.' });
 
@@ -3473,7 +3690,7 @@ app.get('/api/users', auth, requireAdmin, async (req, res) => {
   const { subaccount_id } = req.user;
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, email, role, is_active, created_at
+      `SELECT id, name, email, role, is_active, data_scope, created_at
        FROM users WHERE subaccount_id = $1
        ORDER BY created_at ASC`,
       [subaccount_id]
@@ -3487,19 +3704,20 @@ app.get('/api/users', auth, requireAdmin, async (req, res) => {
 
 app.post('/api/users', auth, requireAdmin, async (req, res) => {
   const { subaccount_id, account_id } = req.user;
-  const { name, email, password, role } = req.body;
+  const { name, email, password, role, data_scope } = req.body;
   if (!name?.trim())  return res.status(400).json({ message: 'Nome é obrigatório.' });
   if (!email?.trim()) return res.status(400).json({ message: 'Email é obrigatório.' });
   if (!password)      return res.status(400).json({ message: 'Senha é obrigatória.' });
   if (password.length < 6) return res.status(400).json({ message: 'Senha deve ter pelo menos 6 caracteres.' });
-  const assignedRole = ['admin', 'user'].includes(role) ? role : 'user';
+  const assignedRole  = ['admin', 'user'].includes(role) ? role : 'user';
+  const assignedScope = data_scope === 'own' ? 'own' : 'all';
   try {
     const hash = await bcrypt.hash(password, 12);
     const { rows } = await pool.query(
-      `INSERT INTO users (account_id, subaccount_id, name, email, password_hash, role, email_verified)
-       VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-       RETURNING id, name, email, role, is_active, created_at`,
-      [account_id, subaccount_id, name.trim(), email.toLowerCase().trim(), hash, assignedRole]
+      `INSERT INTO users (account_id, subaccount_id, name, email, password_hash, role, email_verified, data_scope)
+       VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7)
+       RETURNING id, name, email, role, is_active, data_scope, created_at`,
+      [account_id, subaccount_id, name.trim(), email.toLowerCase().trim(), hash, assignedRole, assignedScope]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -3511,7 +3729,7 @@ app.post('/api/users', auth, requireAdmin, async (req, res) => {
 
 app.put('/api/users/:id', auth, requireAdmin, async (req, res) => {
   const { subaccount_id } = req.user;
-  const { name, email, password, is_active, role } = req.body;
+  const { name, email, password, is_active, role, data_scope } = req.body;
   try {
     const sets = [];
     const vals = [];
@@ -3524,15 +3742,20 @@ app.put('/api/users/:id', auth, requireAdmin, async (req, res) => {
     }
     if (is_active !== undefined) { sets.push(`is_active = $${n++}`); vals.push(is_active); }
     if (['admin', 'user'].includes(role)) { sets.push(`role = $${n++}`); vals.push(role); }
+    if (['all', 'own'].includes(data_scope)) { sets.push(`data_scope = $${n++}`); vals.push(data_scope); }
     if (!sets.length) return res.status(400).json({ message: 'Nenhum campo para atualizar.' });
     vals.push(req.params.id, subaccount_id);
     const { rows } = await pool.query(
       `UPDATE users SET ${sets.join(', ')}
        WHERE id = $${n} AND subaccount_id = $${n + 1}
-       RETURNING id, name, email, role, is_active, created_at`,
+       RETURNING id, name, email, role, is_active, data_scope, created_at`,
       vals
     );
     if (!rows.length) return res.status(404).json({ message: 'Usuário não encontrado.' });
+    // O escopo fica em cache por até 30s; sem isso a mudança feita pelo admin
+    // só valeria depois desse tempo, e o usuário continuaria vendo o que
+    // acabou de ser restringido.
+    invalidateScopeCache(req.params.id);
     res.json(rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ message: 'Este email já está em uso.' });
@@ -5416,6 +5639,41 @@ function docVisibleClause(startIdx) {
     .replace(/\$ROLE\$/g, `$${startIdx}`)
     .replace(/\$UID\$/g,  `$${startIdx + 1}`);
 }
+
+(async function initDataScope() {
+  try {
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS data_scope VARCHAR(10) NOT NULL DEFAULT 'all'`);
+
+    // Espelham conversation_followers, que já existia. Tabelas separadas em vez
+    // de uma polimórfica para manter a integridade referencial em cascata.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS contact_followers (
+        contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+        user_id    UUID NOT NULL REFERENCES users(id)    ON DELETE CASCADE,
+        added_at   TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (contact_id, user_id)
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_contact_followers_user ON contact_followers(user_id)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS opportunity_followers (
+        opportunity_id UUID NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,
+        user_id        UUID NOT NULL REFERENCES users(id)         ON DELETE CASCADE,
+        added_at       TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (opportunity_id, user_id)
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_opp_followers_user ON opportunity_followers(user_id)`);
+
+    // A consulta de escopo filtra por dono em toda listagem.
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_contacts_assigned      ON contacts(subaccount_id, assigned_to)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_opportunities_assigned ON opportunities(subaccount_id, assigned_to)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_assigned ON conversations(subaccount_id, assigned_to)`);
+  } catch (e) {
+    console.warn('[scope] migração:', e.message);
+  }
+})();
 
 (async function initDocuments() {
   try {

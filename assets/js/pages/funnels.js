@@ -247,7 +247,10 @@ async function openOppForm(contact, stageId, existingOpp) {
       <div style="padding:14px 22px;border-top:1px solid var(--color-border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
         ${!isEdit
           ? `<button id="btnBackToPicker" class="btn btn-ghost btn-sm"><i data-lucide="arrow-left" style="width:13px;height:13px"></i> Voltar</button>`
-          : `<button id="btnDeleteOpp" class="btn btn-ghost btn-sm" style="color:var(--color-red)"><i data-lucide="trash-2" style="width:13px;height:13px"></i> Excluir</button>`}
+          : `<div style="display:flex;gap:6px">
+               <button id="btnDeleteOpp" class="btn btn-ghost btn-sm" style="color:var(--color-red)"><i data-lucide="trash-2" style="width:13px;height:13px"></i> Excluir</button>
+               <button id="btnAssignOpp" class="btn btn-ghost btn-sm"><i data-lucide="user-check" style="width:13px;height:13px"></i> Responsável</button>
+             </div>`}
         <div style="display:flex;gap:8px;align-items:center">
           <span id="oppFormError" style="font-size:12px;color:var(--color-red)"></span>
           <button class="btn btn-secondary btn-sm" id="btnCancelOpp">Cancelar</button>
@@ -257,6 +260,13 @@ async function openOppForm(contact, stageId, existingOpp) {
         </div>
       </div>
     `);
+
+    document.getElementById('btnAssignOpp')?.addEventListener('click', () => {
+      window.favxOpenAssignment({
+        path: 'opportunities', id: existingOpp.id, title: existingOpp.title,
+        onChange: () => reloadFunnelsPage(),
+      });
+    });
 
     document.getElementById('btnDeleteOpp')?.addEventListener('click', () => {
       showConfirmModal({

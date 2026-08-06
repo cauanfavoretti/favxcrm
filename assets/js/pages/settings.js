@@ -644,6 +644,7 @@ function _renderUsersTable(users) {
             <th>Usuário</th>
             <th>Email</th>
             <th>Perfil</th>
+            <th>Visibilidade</th>
             <th>Status</th>
             <th style="width:80px"></th>
           </tr>
@@ -659,11 +660,14 @@ function _renderUsersTable(users) {
             </td>
             <td style="font-size:12px;color:var(--color-text-2)">${u.email}</td>
             <td><span class="badge ${_ROLE_BADGE[u.role] || 'badge-gray'}">${_ROLE_LABEL[u.role] || u.role}</span></td>
+            <td>${u.data_scope === 'own'
+              ? `<span class="badge badge-gray" title="Vê apenas o que está atribuído a ele, o que ele segue e o que não tem responsável."><i data-lucide="eye-off" style="width:11px;height:11px;vertical-align:-1px"></i> Só os dele</span>`
+              : `<span style="font-size:12px;color:var(--color-text-3)">Tudo da subconta</span>`}</td>
             <td><span class="badge ${u.is_active ? 'badge-green' : 'badge-gray'}">${u.is_active ? 'Ativo' : 'Inativo'}</span></td>
             <td>
               <div style="display:flex;gap:4px;justify-content:flex-end">
                 <button class="btn btn-ghost btn-sm btn-edit-user" title="Editar"
-                  data-id="${u.id}" data-name="${u.name}" data-email="${u.email}" data-active="${u.is_active}" data-role="${u.role}"
+                  data-id="${u.id}" data-name="${u.name}" data-email="${u.email}" data-active="${u.is_active}" data-role="${u.role}" data-scope="${u.data_scope || 'all'}"
                   style="padding:5px">
                   <i data-lucide="pencil" style="width:13px;height:13px"></i>
                 </button>
@@ -700,6 +704,7 @@ function _bindUserTableEvents() {
       email:  btn.dataset.email,
       active: btn.dataset.active === 'true',
       role:   btn.dataset.role || 'user',
+      scope:  btn.dataset.scope || 'all',
     }));
   });
 
@@ -773,6 +778,24 @@ function _openUserModal(existing = null) {
           </div>
         </div>
 
+        <div class="settings-field" style="margin:0;padding-top:12px;border-top:1px solid var(--color-border)">
+          <label class="settings-label">VISIBILIDADE DOS DADOS</label>
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-top:6px">
+            <div>
+              <div style="font-size:13px;font-weight:600;color:var(--color-text-1)">Ver somente os dados dele</div>
+              <div style="font-size:12px;color:var(--color-text-3);line-height:1.6;margin-top:2px">
+                Contatos, leads, oportunidades e conversas atribuídos a ele, os que ele segue,
+                e os que ainda não têm responsável. O que estiver com outra pessoa fica invisível
+                até que ele seja adicionado como seguidor. Vale também para os totais do dashboard.
+              </div>
+            </div>
+            <label class="toggle" style="flex:none;margin-top:2px">
+              <input type="checkbox" id="uScope" ${existing?.scope === 'own' ? 'checked' : ''}>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
         ${isEdit ? `
         <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0 4px;border-top:1px solid var(--color-border)">
           <div>
@@ -835,7 +858,7 @@ function _openUserModal(existing = null) {
     btn.textContent = 'Salvando...';
 
     try {
-      const body = { name, email, role };
+      const body = { name, email, role, data_scope: overlay.querySelector('#uScope')?.checked ? 'own' : 'all' };
       if (password)       body.password  = password;
       if (isEdit)         body.is_active = is_active;
 

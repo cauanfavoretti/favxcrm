@@ -145,6 +145,9 @@ window.pageContacts = function(data) {
               <button class="btn btn-ghost btn-sm btn-open-funnel" data-id="${c.id}" data-name="${c.name}" style="padding:4px 8px" title="Ver oportunidades">
                 <i data-lucide="filter" style="width:14px;height:14px;color:var(--color-text-2)"></i>
               </button>
+              <button class="btn btn-ghost btn-sm btn-assign-contact" data-id="${c.id}" data-name="${c.name}" style="padding:4px 8px" title="Responsável e seguidores">
+                <i data-lucide="user-check" style="width:14px;height:14px;color:var(--color-text-2)"></i>
+              </button>
               <button class="btn btn-ghost btn-sm btn-delete-contact" data-id="${c.id}" data-name="${c.name}" style="padding:4px 8px" title="Excluir contato">
                 <i data-lucide="trash-2" style="width:14px;height:14px;color:var(--color-red)"></i>
               </button>
@@ -291,6 +294,13 @@ window.initContacts = function() {
   // Deletar contato
   document.querySelectorAll('.btn-delete-contact').forEach(btn => {
     btn.addEventListener('click', () => openDeleteContactModal(btn.dataset.id, btn.dataset.name));
+  });
+
+  document.querySelectorAll('.btn-assign-contact').forEach(btn => {
+    btn.addEventListener('click', () => window.favxOpenAssignment({
+      path: 'contacts', id: btn.dataset.id, title: btn.dataset.name,
+      onChange: () => navigateTo('contacts'),
+    }));
   });
 };
 
@@ -620,9 +630,14 @@ async function openOppEditModal(opp, contact) {
         </div>
 
         <div style="padding:14px 22px;border-top:1px solid var(--color-border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-shrink:0">
-          <button class="btn btn-ghost btn-sm" id="btnDeleteEditOpp" style="color:var(--color-red)">
-            <i data-lucide="trash-2" style="width:13px;height:13px"></i> Excluir
-          </button>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-ghost btn-sm" id="btnDeleteEditOpp" style="color:var(--color-red)">
+              <i data-lucide="trash-2" style="width:13px;height:13px"></i> Excluir
+            </button>
+            <button class="btn btn-ghost btn-sm" id="btnAssignEditOpp">
+              <i data-lucide="user-check" style="width:13px;height:13px"></i> Responsável
+            </button>
+          </div>
           <div style="display:flex;align-items:center;gap:8px">
             <span id="eopp_error" style="font-size:12px;color:var(--color-red)"></span>
             <button class="btn btn-secondary btn-sm" id="btnCancelEditOpp">Cancelar</button>
@@ -636,6 +651,10 @@ async function openOppEditModal(opp, contact) {
 
     document.getElementById('btnCloseEditOpp')?.addEventListener('click', () => overlay.remove());
     document.getElementById('btnCancelEditOpp')?.addEventListener('click', () => overlay.remove());
+
+    document.getElementById('btnAssignEditOpp')?.addEventListener('click', () => {
+      window.favxOpenAssignment({ path: 'opportunities', id: opp.id, title: opp.title });
+    });
 
     document.getElementById('btnDeleteEditOpp')?.addEventListener('click', () => {
       showConfirmModal({
