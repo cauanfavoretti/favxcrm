@@ -1367,6 +1367,27 @@ tbody tr:hover { background: var(--color-surface-2); }
   background: var(--color-surface);
 }
 
+/* A altura acima era uma conta fixa que ignorava o cabeçalho da página: o
+   bloco terminava abaixo da janela e o campo de escrever ficava fora da
+   dobra. Aqui a página inteira vira uma coluna e o bloco recebe o que
+   sobrou — rolam as colunas de dentro, nunca a página. */
+.page-content:has(.conversations-layout) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px 28px 12px;
+}
+.page-content:has(.conversations-layout) > .page-header {
+  flex-shrink: 0;
+  margin-bottom: 10px !important; /* vence o style inline do cabeçalho */
+}
+.page-content:has(.conversations-layout) > .conversations-layout,
+.page-content:has(.conversations-layout) > #templatesView {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
 .conv-sidebar {
   border-right: 1px solid var(--color-border);
   display: flex;
@@ -1617,6 +1638,157 @@ tbody tr:hover { background: var(--color-surface-2); }
   background: #1d4ed8;
   color: #fff;
   border-bottom-right-radius: 4px;
+}
+
+/* ---- Áudio dentro do balão ---- */
+/* As cores vêm do balão que o contém, para o player pertencer à mensagem em
+   vez de parecer um controle do navegador colado por cima dela. */
+.msg-bubble.audio { padding: 9px 11px; }
+.msg-row.incoming .msg-bubble.audio {
+  --aud-fg: #1d4ed8;
+  --aud-on: #dbeafe;
+  --aud-line: rgba(29, 78, 216, .22);
+  --aud-dim: rgba(30, 58, 95, .68);
+}
+.msg-row.outgoing .msg-bubble.audio {
+  --aud-fg: #fff;
+  --aud-on: #1d4ed8;
+  --aud-line: rgba(255, 255, 255, .32);
+  --aud-dim: rgba(255, 255, 255, .75);
+}
+.msg-row .msg-bubble.internal.audio {
+  --aud-fg: #6d28d9;
+  --aud-on: #ede9fe;
+  --aud-line: rgba(109, 40, 217, .25);
+  --aud-dim: rgba(76, 29, 149, .7);
+}
+/* No escuro o balão recebido é translúcido sobre fundo escuro: o azul do tema
+   claro sumiria dentro dele. A enviada continua sobre o degradê da marca, onde
+   o branco é o que se lê. */
+/* O balão enviado é mais claro no escuro: a trilha branca precisa recuar para
+   a parte já ouvida continuar sendo a que salta. */
+[data-theme="dark"] .msg-row.outgoing .msg-bubble.audio { --aud-line: rgba(255, 255, 255, .24); }
+[data-theme="dark"] .msg-row.incoming .msg-bubble.audio {
+  --aud-fg: var(--color-accent);
+  --aud-on: #06101f;
+  --aud-line: rgba(255, 255, 255, .16);
+  --aud-dim: var(--color-text-2);
+}
+/* No escuro a nota interna acaba desenhada com o mesmo degradê da enviada (a
+   regra do tema tem especificidade maior que a do roxo, o que também acontece
+   com as notas de texto). O player segue a cor que está de fato na tela. */
+[data-theme="dark"] .msg-row .msg-bubble.internal.audio {
+  --aud-fg: #fff;
+  --aud-on: #1d4ed8;
+  --aud-line: rgba(255, 255, 255, .32);
+  --aud-dim: rgba(255, 255, 255, .75);
+}
+
+.aud {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 232px;
+  max-width: 100%;
+}
+.aud-el { display: none; }
+
+.aud-play {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--aud-fg);
+  color: var(--aud-on);
+  cursor: pointer;
+  transition: transform var(--transition);
+}
+.aud-play:hover { transform: scale(1.07); }
+.aud-play:active { transform: scale(.96); }
+.aud-play svg { width: 15px; height: 15px; }
+/* O triângulo de play tem o peso à esquerda: sem o empurrão ele parece
+   descentralizado dentro do círculo. O de pausa é simétrico e não precisa. */
+.aud:not(.playing) .aud-play svg { margin-left: 2px; }
+
+.aud-mid { flex: 1; min-width: 0; }
+
+/* `.aud .aud-seek` e não só `.aud-seek`: o tema escuro pinta o fundo de todo
+   input, e essa regra passava por cima da trilha, deixando uma faixa escura
+   no lugar da barra. */
+.aud .aud-seek {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 12px;              /* área de clique confortável; a trilha é fina */
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+.aud-seek::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right,
+    var(--aud-fg) var(--p, 0%), var(--aud-line) var(--p, 0%));
+}
+.aud-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -3.5px;
+  border: none;
+  border-radius: 50%;
+  background: var(--aud-fg);
+}
+.aud-seek::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right,
+    var(--aud-fg) var(--p, 0%), var(--aud-line) var(--p, 0%));
+}
+.aud-seek::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: none;
+  border-radius: 50%;
+  background: var(--aud-fg);
+}
+.aud-seek:focus-visible { outline: 2px solid var(--aud-fg); outline-offset: 3px; }
+
+.aud-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;   /* o tempo não dança ao correr */
+  color: var(--aud-dim);
+}
+.aud-rate {
+  height: 16px;
+  padding: 0 6px;
+  border: 1px solid var(--aud-line);
+  border-radius: 999px;
+  background: none;
+  color: var(--aud-dim);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--transition), border-color var(--transition);
+}
+.aud-rate:hover { color: var(--aud-fg); border-color: var(--aud-fg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .aud-play, .aud-play:hover, .aud-play:active { transition: none; transform: none; }
 }
 
 .msg-time { font-size: 10px; color: var(--color-text-3); flex-shrink: 0; margin-bottom: 2px; }
@@ -2469,6 +2641,7 @@ tbody tr:hover { background: var(--color-surface-2); }
   .topbar { padding: 0 16px; }
   .search-wrapper { display: none; }
   .conversations-layout { grid-template-columns: 1fr; }
+  .page-content:has(.conversations-layout) { padding: 12px 16px; }
   .conv-sidebar { display: none; }
   .conv-info-panel { display: none; }
   .settings-layout { grid-template-columns: 1fr; }

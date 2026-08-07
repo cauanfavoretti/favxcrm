@@ -769,10 +769,13 @@ function renderMessageHtml(m, contactName) {
   const isImage      = m.message_type === 'image' || m.message_type === 'imagem';
   const bubbleClass = isInternal ? ' internal' : (isBot || isAutomation) ? ' ai' : '';
 
-  let bubbleContent, bubbleStyle;
+  let bubbleContent, bubbleStyle, bubbleExtra = '';
   if (isAudio) {
-    bubbleContent = `<audio controls src="${m.file_data || ''}" style="width:240px;max-width:100%;outline:none;display:block"></audio>`;
-    bubbleStyle   = isInbound ? 'background:#dbeafe;padding:8px 12px' : 'background:#1d4ed8;padding:8px 12px';
+    // A cor do balão já vem das regras de incoming/outgoing — repeti-la aqui
+    // era o que fazia a nota interna em áudio sair azul.
+    bubbleContent = window.favxAudioHtml(m.file_data || '');
+    bubbleStyle   = '';
+    bubbleExtra   = ' audio';
   } else if (isImage && m.file_data) {
     bubbleContent = `<img src="${m.file_data}" alt="imagem" style="max-width:240px;max-height:320px;border-radius:8px;display:block;cursor:pointer" onclick="openImageLightbox(this.src)">
       ${m.content ? `<div style="font-size:13px;margin-top:4px">${m.content}</div>` : ''}`;
@@ -792,7 +795,7 @@ function renderMessageHtml(m, contactName) {
         ${isInternal ? `<div class="internal-note-label">${_shieldSvg} Nota interna${m.sender_name ? ` · ${m.sender_name}` : ''}</div>` : ''}
         ${isBot ? `<div class="ai-label">${_sparkSvg} Clara AI</div>` : ''}
         ${isAutomation ? `<div class="ai-label">${_zapSvg} Automação</div>` : ''}
-        <div class="msg-bubble${bubbleClass}" ${bubbleStyle ? `style="${bubbleStyle}"` : ''}>${bubbleContent}</div>
+        <div class="msg-bubble${bubbleClass}${bubbleExtra}" ${bubbleStyle ? `style="${bubbleStyle}"` : ''}>${bubbleContent}</div>
         <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
         ${m.status === 'failed' ? _msgFailedLabel(m.error_message) : ''}
       </div>
@@ -1452,16 +1455,13 @@ async function loadAndRenderChat(convId, conv) {
         const container = document.getElementById('chatMessages');
 
         if (container) {
-          // Cria o elemento de áudio via DOM API para evitar problemas com innerHTML + base64 longa
-          const audioEl = document.createElement('audio');
-          audioEl.controls = true;
-          audioEl.src = fileData;
-          audioEl.style.cssText = 'width:240px;outline:none;display:block';
-
+          // O mesmo player das mensagens já salvas: a prévia do que se acabou
+          // de gravar não pode ter outra cara. A base64 entra pela propriedade
+          // src, e não pelo HTML, para não passar um texto enorme pelo parser.
           const bubble = document.createElement('div');
-          bubble.className = 'msg-bubble';
-          bubble.style.cssText = 'background:#1d4ed8;padding:8px 12px';
-          bubble.appendChild(audioEl);
+          bubble.className = `msg-bubble audio${_isInternalMode ? ' internal' : ''}`;
+          bubble.innerHTML = window.favxAudioHtml('');
+          bubble.querySelector('.aud-el').src = fileData;
 
           const timeEl = document.createElement('div');
           timeEl.className = 'msg-time';
