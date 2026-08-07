@@ -2102,7 +2102,12 @@ app.get('/api/conversations', auth, async (req, res) => {
     const { rows } = await pool.query(
       `SELECT cv.id, cv.status, cv.unread_count, cv.last_message_at, cv.channel, cv.contact_id,
               cv.assigned_to, c.name AS contact_name, c.phone AS contact_phone,
-              u.name AS owner_name${matchSql}
+              u.name AS owner_name,
+              COALESCE((
+                SELECT json_agg(json_build_object('id', t.id, 'name', t.name, 'color', t.color) ORDER BY t.name)
+                  FROM contact_tag_map m JOIN contact_tags t ON t.id = m.tag_id
+                 WHERE m.contact_id = cv.contact_id
+              ), '[]') AS tags${matchSql}
        FROM conversations cv
        JOIN contacts c ON c.id = cv.contact_id
        LEFT JOIN users u ON u.id = cv.assigned_to

@@ -77,6 +77,7 @@ function _convItemHtml(c) {
           ? `<i data-lucide="${c.match_message.direction === 'inbound' ? 'corner-down-left' : 'corner-up-right'}" class="conv-preview-icon"></i>` +
             _convHighlight(_convSnippet(c.match_message.content, _convSearch), _convSearch)
           : _convEsc(c.contact_phone || c.channel || '—')}</div>
+        ${c.tags?.length ? `<div class="conv-tags">${window.favxTagChips(c.tags, 4, { fit: true })}</div>` : ''}
       </div>
       <div class="conv-meta">
         <div class="conv-time">${c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—'}</div>
@@ -106,6 +107,7 @@ function _renderConvList() {
     : filtered.map(_convItemHtml).join('');
   list.scrollTop = scroll;
   lucide.createIcons();
+  window.favxTagsFit?.(list);
   _bindConvItems();
 }
 
@@ -1537,6 +1539,9 @@ window.unloadConversations = function() {
 window.initConversations = function(data) {
   const convs = Array.isArray(data) ? data : [];
   _convData = convs;
+
+  // A primeira lista vem no HTML da página, sem passar por _renderConvList.
+  window.favxTagsFit?.(document.getElementById('convList'));
 
   // Fecha dropdowns do painel ao clicar fora
   document.addEventListener('click', () => {

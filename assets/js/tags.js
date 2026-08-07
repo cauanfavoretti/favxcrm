@@ -24,15 +24,153 @@ window.favxTagChip = function(tag) {
   return `<span class="tag-chip" style="--tag:${color}">${_tagEsc(tag.name)}</span>`;
 };
 
-window.favxTagChips = function(tags, max = 3) {
+function _tagData(list) {
+  return _tagEsc(JSON.stringify(list.map(t => ({ name: t.name, color: _tagColor(t.color) }))));
+}
+
+// Um chip "+N" com as tags escondidas dentro dele. Elas viajam no atributo
+// porque as listas são re-renderizadas a cada filtro e busca — guardá-las num
+// mapa em memória obrigaria a sincronizar dois lugares. O aria-label cobre
+// quem navega por leitor de tela, que não tem "passar o mouse".
+function _tagMoreChip(rest) {
+  return `<span class="tag-chip tag-chip-more" data-tag-more="${_tagData(rest)}"
+    aria-label="${_tagEsc(rest.map(t => t.name).join(', '))}">+${rest.length}</span>`;
+}
+
+// `fit`: além do limite de quantidade, corta pelo espaço real da coluna
+// (ver favxTagsFit). Só faz sentido onde os chips ficam numa linha só.
+window.favxTagChips = function(tags, max = 4, { fit = false } = {}) {
   const list = Array.isArray(tags) ? tags : [];
   if (!list.length) return '';
   const shown = list.slice(0, max).map(window.favxTagChip).join('');
-  const rest  = list.length - max;
-  return `<span class="tag-chips">${shown}${rest > 0
-    ? `<span class="tag-chip tag-chip-more" title="${_tagEsc(list.slice(max).map(t => t.name).join(', '))}">+${rest}</span>`
-    : ''}</span>`;
+  const rest  = list.slice(max);
+  return `<span class="tag-chips${fit ? ' tag-chips-fit' : ''}"${fit ? ` data-tag-all="${_tagData(list)}"` : ''}
+    >${shown}${rest.length ? _tagMoreChip(rest) : ''}</span>`;
 };
+
+// ============================================================
+// CORTE PELO ESPAÇO DISPONÍVEL
+// ============================================================
+// Numa coluna estreita, deixar o flexbox encolher os chips transforma "Quente"
+// em "Q…" — some justamente a informação. Aqui o que cabe fica inteiro e o
+// resto vai para o "+N", que nunca é cortado.
+
+const TAG_FIT_GAP = 4;
+
+window.favxTagsFit = function(root) {
+  (root || document).querySelectorAll('.tag-chips-fit').forEach(box => {
+    let all = [];
+    try { all = JSON.parse(box.dataset.tagAll || '[]'); } catch { return; }
+    const chips = [...box.querySelectorAll('.tag-chip:not(.tag-chip-more)')];
+    // Sem largura o elemento ainda não está na tela: medir agora daria zero.
+    if (!chips.length || !box.clientWidth) return;
+
+    // Mede sempre do zero: a mesma caixa pode ser remedida depois de um resize.
+    chips.forEach(c => {
+      c.style.display = '';
+      c.style.maxWidth = '';
+      c.classList.remove('tag-chip-cut');
+    });
+    const more = box.querySelector('.tag-chip-more');
+    if (more) more.style.display = '';
+
+    const avail = box.clientWidth;
+    const moreW = (more ? more.offsetWidth : 26) + TAG_FIT_GAP;
+    let used = 0, cabem = 0;
+    for (const c of chips) {
+      const w = c.offsetWidth + (cabem ? TAG_FIT_GAP : 0);
+      // O "+N" só ocupa espaço se ainda sobrar tag depois desta.
+      const reserva = cabem + 1 < all.length ? moreW : 0;
+      // cabem > 0: uma tag de nome enorme sozinha aparece cortada, e não some.
+      if (cabem > 0 && used + w + reserva > avail) break;
+      used += w; cabem++;
+    }
+
+    chips.slice(cabem).forEach(c => { c.style.display = 'none'; });
+    const rest = all.slice(cabem);
+
+    // Uma única tag de nome enorme ocuparia a linha toda e empurraria o "+N"
+    // para fora: corta o nome com reticências para o contador continuar visível.
+    if (rest.length && used + moreW > avail) {
+      const c = chips[cabem - 1];
+      c.classList.add('tag-chip-cut');
+      c.style.maxWidth = `${Math.max(30, avail - moreW)}px`;
+    }
+
+    if (!more) return;
+    if (!rest.length) { more.style.display = 'none'; return; }
+    more.textContent = `+${rest.length}`;
+    more.dataset.tagMore = JSON.stringify(rest);
+    more.setAttribute('aria-label', rest.map(t => t.name).join(', '));
+  });
+};
+
+// A largura da coluna muda com a janela — remede, sem correr a cada pixel.
+let _tagFitTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_tagFitTimer);
+  _tagFitTimer = setTimeout(() => window.favxTagsFit(), 120);
+});
+
+// ============================================================
+// BALÃO COM AS TAGS RESTANTES
+// ============================================================
+// Vai para o <body> com position:fixed porque as listas onde os chips aparecem
+// — a tabela de contatos e a lista de conversas — rolam por dentro e cortariam
+// um balão posicionado dentro delas.
+
+let _tagPop = null;
+
+function _tagPopClose() {
+  _tagPop?.remove();
+  _tagPop = null;
+}
+
+function _tagPopOpen(anchor) {
+  if (_tagPop?._anchor === anchor) return;
+  _tagPopClose();
+
+  let rest = [];
+  try { rest = JSON.parse(anchor.dataset.tagMore || '[]'); } catch { return; }
+  if (!rest.length) return;
+
+  const pop = document.createElement('div');
+  pop.className = 'tag-pop';
+  pop._anchor = anchor;
+  pop.innerHTML = rest.map(window.favxTagChip).join('');
+  document.body.appendChild(pop);
+
+  // Mede depois de inserir: antes disso o balão não tem tamanho.
+  const r = anchor.getBoundingClientRect();
+  const left = Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8));
+  // Abre para cima quando não cabe embaixo — o caso das últimas linhas da lista.
+  const below = r.bottom + 6;
+  const top = below + pop.offsetHeight > window.innerHeight - 8
+    ? Math.max(8, r.top - pop.offsetHeight - 6)
+    : below;
+  pop.style.left = `${left}px`;
+  pop.style.top  = `${top}px`;
+  _tagPop = pop;
+}
+
+document.addEventListener('mouseover', e => {
+  const chip = e.target.closest?.('.tag-chip-more');
+  if (chip) _tagPopOpen(chip);
+  else if (_tagPop && !e.target.closest?.('.tag-pop')) _tagPopClose();
+});
+
+// Em tela de toque não há hover: o toque abre o balão. O stopPropagation
+// impede que o mesmo toque abra a conversa ou a linha por baixo do chip.
+document.addEventListener('click', e => {
+  const chip = e.target.closest?.('.tag-chip-more');
+  if (!chip) { _tagPopClose(); return; }
+  e.stopPropagation();
+  _tagPopOpen(chip);
+});
+
+// O balão é fixo e o chip não: rolar deixaria os dois separados. `true` para
+// capturar também a rolagem das listas internas, que não sobe até a janela.
+window.addEventListener('scroll', _tagPopClose, true);
 
 function _tagModal({ title, bodyHtml, footHtml = '' }) {
   document.getElementById('tagOverlay')?.remove();

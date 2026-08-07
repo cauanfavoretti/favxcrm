@@ -4208,7 +4208,38 @@ tbody tr:hover { background: var(--color-surface-2); }
   background: color-mix(in srgb, var(--tag, #6B7280) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--tag, #6B7280) 35%, transparent);
 }
-.tag-chip-more { cursor: default; }
+.tag-chip-more { cursor: pointer; flex-shrink: 0; }
+
+/* Balão com as tags que não couberam. Fica no <body>, acima de tudo, porque
+   as listas onde os chips aparecem rolam por dentro e o cortariam. */
+.tag-pop {
+  position: fixed;
+  z-index: 4600;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 260px;
+  padding: 7px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .16);
+}
+
+/* Na lista de conversas o espaço é estreito: uma linha só, sem encolher os
+   chips — quem decide quantos aparecem é favxTagsFit, medindo a coluna. O
+   overflow esconde os chips a mais no instante entre desenhar e medir. */
+.conv-tags { margin-top: 4px; min-width: 0; }
+.conv-tags .tag-chips {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  margin-top: 0;
+  max-width: 100%;
+}
+.conv-tags .tag-chip { flex-shrink: 0; }
+/* Aplicada por favxTagsFit no chip que precisou ser cortado. */
+.tag-chip-cut { display: block; overflow: hidden; text-overflow: ellipsis; }
 
 .tag-overlay {
   position: fixed;
