@@ -40,6 +40,9 @@ const AUTO_NODE_DEFS = {
   contact_update:        { label: 'Atualizar contato',     icon: 'user-cog',       ...AUTO_COLORS.blue },
   contact_tag_add:       { label: 'Aplicar tag',           icon: 'tag',            ...AUTO_COLORS.blue },
   contact_tag_remove:    { label: 'Remover tag',           icon: 'tag',            ...AUTO_COLORS.orange },
+  ai_conversation:        { label: 'IA de conversa',         icon: 'bot',            ...AUTO_COLORS.purple },
+  ai_context:             { label: 'Informar a IA',          icon: 'book-open',      ...AUTO_COLORS.purple },
+  ai_stop:                { label: 'Parar IA',               icon: 'octagon-x',      ...AUTO_COLORS.red },
   if_else:                { label: 'If / Else',              icon: 'git-branch',     ...AUTO_COLORS.red },
   contact_has_tag:        { label: 'Tem a tag?',             icon: 'tags',           ...AUTO_COLORS.red },
   split:                  { label: 'Split',                  icon: 'split',          ...AUTO_COLORS.purple },
@@ -49,6 +52,21 @@ const AUTO_NODE_DEFS = {
 // losango e de duas portas, e não só o If/Else.
 function _autoIsBranch(node) {
   return !node.isTrigger && (node.type === 'if_else' || node.type === 'contact_has_tag');
+}
+
+// Portas de saída de um node. A IA de conversa também tem duas, mas não é uma
+// pergunta de sim/não: são dois desfechos, e o rótulo precisa dizer qual.
+function _autoOutputs(node) {
+  if (node.isTrigger) return [{ handle: 'default' }];
+  if (_autoIsBranch(node)) {
+    return [{ handle: 'true',  cls: 'auto-port-true',  title: 'SIM' },
+            { handle: 'false', cls: 'auto-port-false', title: 'NÃO' }];
+  }
+  if (node.type === 'ai_conversation') {
+    return [{ handle: 'concluido', cls: 'auto-port-true',  title: 'OBJETIVO ALCANÇADO' },
+            { handle: 'encerrado', cls: 'auto-port-false', title: 'CONVERSA ENCERRADA' }];
+  }
+  return [{ handle: 'default' }];
 }
 
 const AUTO_STAGE_COLORS = ['#3b82f6','#f97316','#a855f7','#ef4444','#3b82f6','#f97316','#a855f7'];
@@ -805,6 +823,14 @@ function _autoNodeSummary(node) {
       if (f.custom_fields && Object.keys(f.custom_fields).length) bits.push('personalizados');
       return bits.length ? `Atualiza: ${bits.join(', ')}` : 'Configure os campos…';
     }
+    case 'ai_conversation': {
+      if (!c.personality && !c.objective) return 'Configure a personalidade e o objetivo…';
+      const alvo = (c.objective || '').trim().slice(0, 60);
+      return `${alvo ? `Objetivo: ${alvo}${(c.objective || '').length > 60 ? '…' : ''}\n` : ''}`
+           + `Até ${c.max_turns || 10} respostas · ${c.model || 'padrão'}`;
+    }
+    case 'ai_context': return c.info ? `"${c.info.slice(0, 70)}${c.info.length > 70 ? '…' : ''}"` : 'Escreva o que a IA precisa saber…';
+    case 'ai_stop': return 'Encerra a IA de conversa deste contato';
     case 'split': return 'Executa todos os caminhos conectados em paralelo';
     default: return '';
   }
@@ -840,10 +866,8 @@ function _autoRenderNodes() {
       <div class="auto-node-badge" style="background:${color};box-shadow:0 0 12px ${glow}"><i data-lucide="${def?.icon || 'circle'}" style="width:18px;height:18px"></i></div>
       <div class="auto-node-name">${_autoEsc(title)}</div>
       ${!node.isTrigger ? `<div class="auto-port auto-port-in" data-port-in="${node.id}"></div>` : ''}
-      ${_autoIsBranch(node) ? `
-        <div class="auto-port auto-port-out auto-port-true" data-port-out="${node.id}" data-handle="true" title="SIM"></div>
-        <div class="auto-port auto-port-out auto-port-false" data-port-out="${node.id}" data-handle="false" title="NÃO"></div>
-      ` : `<div class="auto-port auto-port-out" data-port-out="${node.id}" data-handle="default"></div>`}
+      ${_autoOutputs(node).map(o => `<div class="auto-port auto-port-out ${o.cls || ''}"
+        data-port-out="${node.id}" data-handle="${o.handle}"${o.title ? ` title="${o.title}"` : ''}></div>`).join('')}
     `;
     canvas.appendChild(el);
     _autoNodeEls[node.id] = el;
@@ -957,8 +981,11 @@ function _autoPortWorldPos(nodeId, kind, handle) {
   const w = el.offsetWidth || 220;
   const h = el.offsetHeight || 60;
   if (kind === 'in') return { x: node.position.x, y: node.position.y + h / 2 };
-  if (handle === 'true')  return { x: node.position.x + w, y: node.position.y + h * 0.38 };
-  if (handle === 'false') return { x: node.position.x + w, y: node.position.y + h * 0.78 };
+  // As duas saídas de cima/baixo têm posições fixas no CSS (.auto-port-true e
+  // .auto-port-false); a conta aqui precisa acompanhá-las, seja num If/Else,
+  // seja na IA de conversa.
+  if (handle === 'true'  || handle === 'concluido') return { x: node.position.x + w, y: node.position.y + h * 0.38 };
+  if (handle === 'false' || handle === 'encerrado') return { x: node.position.x + w, y: node.position.y + h * 0.78 };
   return { x: node.position.x + w, y: node.position.y + h / 2 };
 }
 
@@ -1372,6 +1399,65 @@ function _autoNodeConfigHtml(node) {
         <label class="settings-label">VALOR</label>
         <input type="text" id="cfgValue" class="settings-input" value="${_autoEsc(c.value ?? '')}" />
       </div>`;
+  } else if (node.type === 'ai_conversation') {
+    fields = `
+      <p style="font-size:12px;color:var(--ab-text-3);line-height:1.5;margin-bottom:12px">
+        Uma IA sua, com personalidade e objetivo próprios, assume a conversa neste ponto do
+        fluxo. Enquanto ela conversa, o Nexus Chat AI fica calado; quando o fluxo sai daqui,
+        ele volta a responder.
+      </p>
+      <div class="settings-field">
+        <label class="settings-label">PERSONALIDADE *</label>
+        <textarea id="cfgAiPersona" class="settings-input" rows="6" style="resize:vertical"
+          placeholder="Quem ela é e como fala. Ex: Você é a Bia, do time de pós-venda. Fala em primeira pessoa, direto, sem formalidade.">${_autoEsc(c.personality || '')}</textarea>
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">OBJETIVO *</label>
+        <textarea id="cfgAiObjective" class="settings-input" rows="5" style="resize:vertical"
+          placeholder="O que ela precisa conseguir. Ex: descobrir se o cliente quer remarcar a entrega e confirmar a nova data.">${_autoEsc(c.objective || '')}</textarea>
+        <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">
+          Quando ela decidir que o objetivo foi alcançado, o fluxo sai pela porta de cima.
+          Aceita {{variáveis}} do fluxo nos dois campos.
+        </p>
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">MODELO</label>
+        ${_sel2('cfgAiModel', [['gpt-4.1-mini','GPT-4.1 mini (equilíbrio)'],['gpt-4.1-nano','GPT-4.1 nano (mais barato)'],['gpt-4.1','GPT-4.1 (mais capaz)']], c.model || 'gpt-4.1-mini')}
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">LIMITE DE RESPOSTAS</label>
+        <input type="number" id="cfgAiTurns" class="settings-input" value="${c.max_turns || 10}" min="1" max="40" />
+        <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">Atingido o limite, a conversa sai pela porta de baixo.</p>
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">ESPERAR RESPOSTA POR (HORAS)</label>
+        <input type="number" id="cfgAiWait" class="settings-input" value="${c.wait_hours || 24}" min="1" max="168" />
+        <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">Sem resposta do contato nesse prazo, a conversa se encerra sozinha.</p>
+      </div>
+      <div class="settings-field">
+        <label class="settings-label">CRIATIVIDADE</label>
+        <input type="number" id="cfgAiTemp" class="settings-input" value="${c.temperature ?? 0.7}" min="0" max="2" step="0.1" />
+        <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">0 = sempre igual e previsível. 1 = mais solta.</p>
+      </div>`;
+  } else if (node.type === 'ai_context') {
+    fields = `
+      <p style="font-size:12px;color:var(--ab-text-3);line-height:1.5;margin-bottom:12px">
+        Entrega um dado à IA de conversa antes dela falar. Vale para todos os nodes de IA
+        que vierem depois deste no fluxo.
+      </p>
+      <div class="settings-field">
+        <label class="settings-label">INFORMAÇÃO *</label>
+        <textarea id="cfgAiInfo" class="settings-input" rows="5" style="resize:vertical"
+          placeholder="Ex: A proposta enviada foi de R$ {{trigger.opportunity.value}} e vence em 3 dias.">${_autoEsc(c.info || '')}</textarea>
+        <p style="font-size:11px;color:var(--ab-text-3);margin-top:6px">Aceita {{variáveis}} do fluxo.</p>
+      </div>`;
+  } else if (node.type === 'ai_stop') {
+    fields = `
+      <p style="font-size:12px;color:var(--ab-text-3);line-height:1.5">
+        Tira a IA de conversa do ar para este contato — inclusive uma que esteja rodando em
+        outro fluxo. Aquele fluxo continua pela saída "conversa encerrada", então dá para
+        avisar um humano em seguida. Depois disso o Nexus Chat AI volta a responder.
+      </p>`;
   } else if (node.type === 'split') {
     fields = `<p style="font-size:12px;color:var(--ab-text-3);line-height:1.5">Conecte a saída deste node a vários outros — todos serão executados em paralelo.</p>`;
   }
@@ -1493,6 +1579,15 @@ function _autoBindConfigInputs(node, panel) {
       set('tag_ids', [...boxes].filter(x => x.checked).map(x => x.value));
     }));
     panel.querySelector('#cfgMatch')?.addEventListener('change', e => set('match', e.target.value));
+  } else if (node.type === 'ai_conversation') {
+    panel.querySelector('#cfgAiPersona')   ?.addEventListener('input',  e => set('personality', e.target.value));
+    panel.querySelector('#cfgAiObjective') ?.addEventListener('input',  e => set('objective', e.target.value));
+    panel.querySelector('#cfgAiModel')     ?.addEventListener('change', e => set('model', e.target.value));
+    panel.querySelector('#cfgAiTurns')     ?.addEventListener('input',  e => set('max_turns', parseInt(e.target.value) || 10));
+    panel.querySelector('#cfgAiWait')      ?.addEventListener('input',  e => set('wait_hours', parseInt(e.target.value) || 24));
+    panel.querySelector('#cfgAiTemp')      ?.addEventListener('input',  e => set('temperature', parseFloat(e.target.value)));
+  } else if (node.type === 'ai_context') {
+    panel.querySelector('#cfgAiInfo')?.addEventListener('input', e => set('info', e.target.value));
   } else if (node.type === 'if_else') {
     panel.querySelector('#cfgField')?.addEventListener('input', e => set('field', e.target.value));
     panel.querySelector('#cfgOperator')?.addEventListener('change', e => set('operator', e.target.value));

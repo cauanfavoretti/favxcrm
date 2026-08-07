@@ -528,6 +528,20 @@ const AI_TIMEOUT_MS      = 20000; // < maxDuration (30s) da Vercel, com folga
                                   // para o envio pelo WhatsApp depois da resposta
 const AI_NO_REPLY        = '[SEM RESPOSTA]';
 
+// ── IA de conversa dos fluxos ──────────────────────────────────
+// Não substitui o Nexus Chat AI: é uma IA montada dentro de um fluxo, com
+// personalidade e objetivo próprios, que assume a conversa enquanto o fluxo
+// está naquele node. Usa o mesmo banco (histórico em `messages`) e a mesma
+// chave da OpenAI. Enquanto ela está no comando, o Nexus fica calado — duas
+// IAs respondendo a mesma pessoa é pior que nenhuma.
+const AI_FLOW_SENDER     = 'ai_flow';      // sender_type das mensagens dela
+const AI_FLOW_MODELS     = ['gpt-4.1-mini', 'gpt-4.1-nano', 'gpt-4.1'];
+const AI_FLOW_TURNS_DEF  = 10;             // respostas antes de encerrar sozinha
+const AI_FLOW_TURNS_MAX  = 40;
+const AI_FLOW_WAIT_DEF   = 24;             // horas esperando o contato responder
+const AI_FLOW_WAIT_MAX   = 168;
+const AI_FLOW_DONE       = '[OBJETIVO CONCLUÍDO]';
+
 // Prompt inicial de um agente novo. Segue o template da seção 5 do
 // skill-favx.md (CONTEXTO → IDENTIDADE → ABERTURA → COMUNICAÇÃO → MÉTODO →
 // LIMITES → QUANDO NÃO RESPONDER → OBJETIVO FINAL) com o método DEFA da
@@ -650,6 +664,26 @@ próximo passo agendado, ou atendimento passado a um humano com o contexto
 resumido.`;
 }
 
+// Runs paradas num node "IA de conversa" para um contato. Aceita o contato
+// direto ou a conversa (de onde ele é deduzido) — o webhook do WhatsApp tem o
+// contato em mãos, o Nexus tem a conversa.
+async function aiFlowWaitingRuns({ subaccount_id, contact_id = null, conversation_id = null }) {
+  const { rows } = await pool.query(
+    `SELECT r.id FROM automation_runs r
+       JOIN automations a ON a.id = r.automation_id
+      WHERE r.status = 'waiting'
+        AND a.subaccount_id = $1
+        AND r.contact_id = COALESCE($2::uuid,
+              (SELECT contact_id FROM conversations WHERE id = $3::uuid))
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(COALESCE(a.graph->'nodes', '[]'::jsonb)) n
+           WHERE n->>'id' = r.current_node_id AND n->>'type' = 'ai_conversation')
+      ORDER BY r.started_at`,
+    [subaccount_id, contact_id, conversation_id]
+  );
+  return rows;
+}
+
 // ── Resposta automática da IA ──────────────────────────────────
 // Decide se a IA deve responder a uma mensagem recebida e, se sim, gera a
 // resposta. Retorna o texto a enviar, ou null quando a IA deve ficar calada.
@@ -679,6 +713,11 @@ async function generateAiReply({ subaccount_id, conversation_id, contact_name })
     [conversation_id, AI_HUMAN_PAUSE_MIN]
   );
   if (human.length) return null;
+
+  // Uma IA de conversa de fluxo assumiu este contato: o Nexus fica calado
+  // enquanto isso. Não é substituição — quando o fluxo sai do node de IA, ele
+  // volta a responder normalmente.
+  if ((await aiFlowWaitingRuns({ subaccount_id, conversation_id })).length) return null;
 
   // O histórico da conversa já mora na tabela messages — não há memória
   // separada para manter. Busca as últimas em ordem decrescente e inverte,
@@ -894,6 +933,10 @@ async function ensureSubaccountAgent(subaccount_id, subaccountName, created_by =
     await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS current_node_id VARCHAR(80)`);
     await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS context JSONB NOT NULL DEFAULT '{}'`);
     await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ`);
+    // Pedido de parada para o node "IA de conversa": quem para a IA é outra
+    // run (ou outro fluxo), então o recado precisa ficar na tabela, e não na
+    // memória do processo — em serverless não há memória compartilhada.
+    await pool.query(`ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS ai_stop BOOLEAN NOT NULL DEFAULT FALSE`);
     // Runs disparadas por webhook/gatilhos sem contato associado precisam de contact_id nulo.
     try { await pool.query(`ALTER TABLE automation_runs ALTER COLUMN contact_id DROP NOT NULL`); } catch {}
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_automation_runs_waiting ON automation_runs (status, next_run_at) WHERE status = 'waiting'`);
@@ -3063,6 +3106,7 @@ const AUTOMATION_NODE_TYPES = [
   'contact_tag_add', 'contact_tag_remove', 'contact_has_tag',
   'opportunity_create', 'webhook_out', 'internal_notification',
   'contact_assign', 'contact_update',
+  'ai_conversation', 'ai_context', 'ai_stop',
 ];
 
 function _autoGetPath(obj, path) {
@@ -3119,6 +3163,49 @@ async function resolveEvoConfig(subaccount_id, instance_id) {
   return (cfg && cfg.evolution_api_url && cfg.evolution_instance_name) ? cfg : null;
 }
 
+// Envia uma mensagem de WhatsApp em nome de um fluxo e a registra na conversa
+// do CRM. Usado pelo node "Enviar WhatsApp" e pela IA de conversa — as duas
+// precisam achar/criar a conversa, gravar a mensagem e falar com a Evolution,
+// e um envio que se comporta de dois jeitos seria um bug esperando acontecer.
+async function sendFlowWhatsapp({ subaccount_id, contact, text, instance_id, senderType = 'automation' }) {
+  if (!contact?.phone) throw new Error('O contato não tem telefone cadastrado.');
+
+  const { rows: convRows } = await pool.query(
+    `SELECT id FROM conversations WHERE subaccount_id = $1 AND contact_id = $2 AND channel = 'whatsapp' AND status = 'open' LIMIT 1`,
+    [subaccount_id, contact.id]
+  );
+  let convId = convRows[0]?.id;
+  if (!convId) {
+    const ins = await pool.query(
+      `INSERT INTO conversations (subaccount_id, contact_id, channel, status) VALUES ($1,$2,'whatsapp','open') RETURNING id`,
+      [subaccount_id, contact.id]
+    );
+    convId = ins.rows[0].id;
+  }
+
+  const { rows: msgRows } = await pool.query(
+    `INSERT INTO messages (conversation_id, direction, sender_type, content, message_type)
+     VALUES ($1,'outbound',$2,$3,'text') RETURNING id`,
+    [convId, senderType, text]
+  );
+
+  const cfg = await resolveEvoConfig(subaccount_id, instance_id);
+  if (cfg) {
+    try {
+      const number = contact.phone.replace(/\D/g, '');
+      const evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
+        `/message/sendText/${cfg.evolution_instance_name}`, { number, text });
+      const externalId = evoResp?.key?.id;
+      if (externalId) await pool.query(`UPDATE messages SET external_id = $1 WHERE id = $2`, [externalId, msgRows[0].id]);
+    } catch (e) {
+      console.warn('[automation whatsapp send]', e.message);
+    }
+  }
+  await pool.query(`UPDATE conversations SET last_message_at = NOW(), unread_count = 0 WHERE id = $1`, [convId]);
+
+  return { conversation_id: convId, message_id: msgRows[0].id };
+}
+
 const AUTOMATION_NODE_EXECUTORS = {
   // Envia uma mensagem de WhatsApp (Evolution API/não-oficial) para o contato
   // da run, registrando a mensagem na conversa do CRM (sender_type='automation').
@@ -3132,42 +3219,12 @@ const AUTOMATION_NODE_EXECUTORS = {
       `SELECT id, name, phone FROM contacts WHERE id = $1 AND subaccount_id = $2`, [contactId, subaccount_id]
     );
     const contact = contactRows[0];
-    if (!contact?.phone) throw new Error('O contato não tem telefone cadastrado.');
+    if (!contact) throw new Error('O contato da run não existe mais.');
 
-    const { rows: convRows } = await pool.query(
-      `SELECT id FROM conversations WHERE subaccount_id = $1 AND contact_id = $2 AND channel = 'whatsapp' AND status = 'open' LIMIT 1`,
-      [subaccount_id, contactId]
-    );
-    let convId = convRows[0]?.id;
-    if (!convId) {
-      const ins = await pool.query(
-        `INSERT INTO conversations (subaccount_id, contact_id, channel, status) VALUES ($1,$2,'whatsapp','open') RETURNING id`,
-        [subaccount_id, contactId]
-      );
-      convId = ins.rows[0].id;
-    }
-
-    const { rows: msgRows } = await pool.query(
-      `INSERT INTO messages (conversation_id, direction, sender_type, content, message_type)
-       VALUES ($1,'outbound','automation',$2,'text') RETURNING id`,
-      [convId, text]
-    );
-
-    const cfg = await resolveEvoConfig(subaccount_id, node.config?.instance_id);
-    if (cfg) {
-      try {
-        const number = contact.phone.replace(/\D/g, '');
-        const evoResp = await evoRequest('POST', cfg.evolution_api_url, cfg.evolution_api_key,
-          `/message/sendText/${cfg.evolution_instance_name}`, { number, text });
-        const externalId = evoResp?.key?.id;
-        if (externalId) await pool.query(`UPDATE messages SET external_id = $1 WHERE id = $2`, [externalId, msgRows[0].id]);
-      } catch (e) {
-        console.warn('[automation whatsapp send]', e.message);
-      }
-    }
-    await pool.query(`UPDATE conversations SET last_message_at = NOW(), unread_count = 0 WHERE id = $1`, [convId]);
-
-    return { output: 'default', patch: { conversation_id: convId, message: text } };
+    const sent = await sendFlowWhatsapp({
+      subaccount_id, contact, text, instance_id: node.config?.instance_id,
+    });
+    return { output: 'default', patch: { conversation_id: sent.conversation_id, message: text } };
   },
 
   // Cria um novo pipeline (funil) com as etapas configuradas no node.
@@ -3573,6 +3630,209 @@ const AUTOMATION_NODE_EXECUTORS = {
       ).catch(e => console.error('[fire contact_status_changed]', e.message));
     }
     return { output: 'default', patch: { contact: rows[0] } };
+  },
+
+  // Acrescenta uma informação ao que a IA de conversa sabe. Fica no contexto
+  // da run e todo node "IA de conversa" adiante no fluxo a lê — é assim que se
+  // dá à IA um dado que só existe em tempo de execução (o valor da proposta,
+  // o nome do vendedor, o que veio de um webhook).
+  ai_context: async (node, { context }) => {
+    const info = autoInterpolate(node.config?.info, context).trim();
+    if (!info) throw new Error('O node "Informar a IA" está sem texto.');
+    return { output: 'default', patch: { ai_info: info } };
+  },
+
+  // Encerra a IA de conversa deste contato. A run parada no node de IA é
+  // retomada na hora e sai pela porta "encerrada", então o resto daquele fluxo
+  // continua (avisar um humano, aplicar tag) em vez de morrer no meio.
+  ai_stop: async (node, { subaccount_id, run }) => {
+    const contactId = run.contact_id;
+    if (!contactId) throw new Error('Este fluxo não tem contato associado para parar a IA.');
+
+    const { rows } = await pool.query(
+      `UPDATE automation_runs r
+          SET ai_stop = TRUE, next_run_at = NOW()
+         FROM automations a
+        WHERE a.id = r.automation_id
+          AND a.subaccount_id = $1
+          AND r.contact_id = $2
+          AND r.status = 'waiting'
+          AND r.id <> $3
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(COALESCE(a.graph->'nodes', '[]'::jsonb)) n
+             WHERE n->>'id' = r.current_node_id AND n->>'type' = 'ai_conversation')
+        RETURNING r.id`,
+      [subaccount_id, contactId, run.id]
+    );
+
+    // Retomar aqui é seguro: a run acordada sai do node de IA na hora, deixa
+    // de estar 'waiting' e por isso não pode ser escolhida de novo por um
+    // segundo "Parar IA" no caminho — o vaivém não se sustenta.
+    for (const r of rows) {
+      try { await processAutomationStep(r.id); }
+      catch (e) { console.error('[ai_stop resume]', r.id, e.message); }
+    }
+    return { output: 'default', patch: { paradas: rows.length } };
+  },
+
+  // IA de conversa: assume o diálogo com o contato dentro do fluxo.
+  //
+  // Cada passagem por aqui gera no máximo uma resposta e volta a esperar. A
+  // run fica 'waiting' e é acordada pela mensagem seguinte do contato (o
+  // webhook do WhatsApp), pelo node "Parar IA", ou pelo prazo de espera.
+  //
+  // Saídas: "concluido" quando a IA sinaliza que o objetivo foi alcançado,
+  // "encerrado" quando acaba por limite de respostas, silêncio do contato ou
+  // parada explícita.
+  ai_conversation: async (node, { context, subaccount_id, run }) => {
+    if (!openai) throw new Error('OPENAI_API_KEY não configurada no servidor.');
+    const contactId = run.contact_id;
+    if (!contactId) throw new Error('Este fluxo não tem contato associado para a IA conversar.');
+
+    // Parada pedida por um node "Parar IA". A marca é consumida aqui: deixá-la
+    // ligada faria uma segunda IA no mesmo fluxo nascer parada.
+    if (run.ai_stop) {
+      await pool.query(`UPDATE automation_runs SET ai_stop = FALSE WHERE id = $1`, [run.id]);
+      return { output: 'encerrado', patch: { motivo: 'parada' } };
+    }
+
+    const personality = autoInterpolate(node.config?.personality, context).trim();
+    const objective   = autoInterpolate(node.config?.objective, context).trim();
+    if (!personality && !objective)
+      throw new Error('O node "IA de conversa" precisa de personalidade ou objetivo.');
+
+    const maxTurns = Math.min(AI_FLOW_TURNS_MAX,
+      Math.max(1, parseInt(node.config?.max_turns) || AI_FLOW_TURNS_DEF));
+    const waitHours = Math.min(AI_FLOW_WAIT_MAX,
+      Math.max(1, parseInt(node.config?.wait_hours) || AI_FLOW_WAIT_DEF));
+    const model = AI_FLOW_MODELS.includes(node.config?.model) ? node.config.model : AI_DEFAULT_MODEL;
+    const temp  = Number(node.config?.temperature);
+    const temperature = Number.isFinite(temp) && temp >= 0 && temp <= 2 ? temp : 0.7;
+
+    const { rows: contactRows } = await pool.query(
+      `SELECT id, name, phone FROM contacts WHERE id = $1 AND subaccount_id = $2`, [contactId, subaccount_id]
+    );
+    const contact = contactRows[0];
+    if (!contact) throw new Error('O contato da run não existe mais.');
+
+    const { rows: convRows } = await pool.query(
+      `SELECT id FROM conversations
+        WHERE subaccount_id = $1 AND contact_id = $2 AND channel = 'whatsapp' AND status = 'open'
+        ORDER BY last_message_at DESC NULLS LAST LIMIT 1`,
+      [subaccount_id, contactId]
+    );
+    const convId = convRows[0]?.id || null;
+
+    // Retomada: só responde se o contato falou depois da última fala da IA.
+    // Sem isso, qualquer acordada (a do próprio disparo que criou a run, por
+    // exemplo) seria lida como silêncio e encerraria a conversa na hora.
+    const retomando = run.status === 'waiting';
+    if (retomando && convId) {
+      const { rows: last } = await pool.query(
+        `SELECT
+           (SELECT MAX(sent_at) FROM messages WHERE conversation_id = $1 AND direction = 'inbound') AS ultima_do_contato,
+           (SELECT MAX(sent_at) FROM messages WHERE conversation_id = $1 AND sender_type = $2) AS ultima_da_ia`,
+        [convId, AI_FLOW_SENDER]
+      );
+      const doContato = last[0]?.ultima_do_contato;
+      const daIa      = last[0]?.ultima_da_ia;
+      const respondeu = doContato && (!daIa || new Date(doContato) > new Date(daIa));
+      if (!respondeu) {
+        const prazo = run.next_run_at ? new Date(run.next_run_at) : null;
+        if (prazo && prazo <= new Date()) return { output: 'encerrado', patch: { motivo: 'sem_resposta' } };
+        return { waiting: true, nextRunAt: prazo || new Date(Date.now() + waitHours * 3600000) };
+      }
+    }
+
+    // Teto de respostas da run. Conta pelo banco em vez de guardar um contador
+    // na run: o contexto não é salvo quando o node pede para esperar, então um
+    // contador em memória se perderia a cada volta.
+    if (convId) {
+      const { rows: turns } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM messages
+          WHERE conversation_id = $1 AND sender_type = $2 AND sent_at >= $3`,
+        [convId, AI_FLOW_SENDER, run.started_at]
+      );
+      if ((turns[0]?.n || 0) >= maxTurns) return { output: 'encerrado', patch: { motivo: 'limite' } };
+    }
+
+    const historico = convId ? (await pool.query(
+      `SELECT direction, content FROM messages
+        WHERE conversation_id = $1 AND COALESCE(is_internal, FALSE) = FALSE
+          AND content IS NOT NULL AND content <> ''
+        ORDER BY sent_at DESC LIMIT $2`,
+      [convId, AI_HISTORY_LIMIT]
+    )).rows.reverse().map(m => ({
+      role: m.direction === 'inbound' ? 'user' : 'assistant',
+      content: m.content,
+    })) : [];
+
+    // Tudo que os nodes "Informar a IA" deixaram no caminho, na ordem em que
+    // rodaram (as chaves do contexto seguem a ordem de inserção).
+    const informacoes = Object.values(context || {})
+      .filter(v => v && typeof v === 'object' && typeof v.ai_info === 'string')
+      .map(v => v.ai_info);
+
+    const system = [
+      personality ? `# PERSONALIDADE\n${personality}` : '',
+      objective   ? `# OBJETIVO\n${objective}` : '',
+      informacoes.length ? `# INFORMAÇÕES DESTA CONVERSA\n${informacoes.map(i => `- ${i}`).join('\n')}` : '',
+      `# COMO CONVERSAR
+Você fala por WhatsApp: mensagens curtas, uma ideia por vez, sem parecer um
+formulário. Nunca invente preço, prazo ou dado que não esteja acima.
+Quando a mensagem não pedir resposta (um "ok", um emoji), responda exatamente:
+${AI_NO_REPLY}
+Quando o objetivo estiver alcançado, escreva a última resposta e termine com:
+${AI_FLOW_DONE}`,
+      contact.name ? `(Nome do contato: ${contact.name}.)` : '',
+    ].filter(Boolean).join('\n\n');
+
+    // Sem histórico é a IA que abre a conversa — o modelo precisa de ao menos
+    // uma mensagem de usuário para responder.
+    const messages = historico.length
+      ? historico
+      : [{ role: 'user', content: '(Inicie a conversa você mesma, seguindo o objetivo.)' }];
+
+    let completion;
+    try {
+      completion = await openai.chat.completions.create(
+        {
+          model,
+          temperature,
+          max_tokens: Math.min(1000, Math.max(60, parseInt(node.config?.max_tokens) || 400)),
+          messages: [{ role: 'system', content: system }, ...messages],
+        },
+        { timeout: AI_TIMEOUT_MS }
+      );
+    } catch (err) {
+      throw new Error(`A IA não respondeu: ${err.message}`);
+    }
+
+    const u = completion.usage;
+    if (u) {
+      pool.query(
+        `INSERT INTO ai_usage_logs
+           (subaccount_id, agent_id, conversation_id, model, prompt_tokens, completion_tokens, total_tokens, cost_usd)
+         VALUES ($1, NULL, $2, $3, $4, $5, $6, $7)`,
+        [subaccount_id, convId, model, u.prompt_tokens, u.completion_tokens, u.total_tokens, aiCostUsd(model, u)]
+      ).catch(e => console.warn('[ai flow usage]', e.message));
+    }
+
+    const bruto = completion.choices?.[0]?.message?.content?.trim() || '';
+    const concluiu = bruto.includes(AI_FLOW_DONE);
+    const texto = bruto.replace(AI_FLOW_DONE, '').replace(AI_NO_REPLY, '').trim();
+
+    if (texto) {
+      await sendFlowWhatsapp({
+        subaccount_id, contact, text: texto,
+        instance_id: node.config?.instance_id,
+        senderType: AI_FLOW_SENDER,
+      });
+    }
+
+    if (concluiu) return { output: 'concluido', patch: { motivo: 'objetivo', resposta: texto } };
+    // Nada a dizer ou resposta enviada: volta a esperar o contato.
+    return { waiting: true, nextRunAt: new Date(Date.now() + waitHours * 3600000) };
   },
 
   // Passa adiante sem efeito — existe para deixar explícito, no canvas, o
@@ -4606,6 +4866,17 @@ async function processWaMsg(subaccount_id, instanceName, apiUrl, apiKey, data) {
       message: content, conversation_id: conv_id,
       contact: { id: contact_id, name: pushName || ('+' + phone), phone: '+' + phone },
     }, { contact_id }).catch(e => console.error('[fireAutomations contact_replied]', e.message));
+  }
+
+  // Acorda a IA de conversa que estiver esperando esta pessoa responder. Vem
+  // depois do gatilho "Cliente respondeu" de propósito: se aquele fluxo acabou
+  // de pôr uma IA em espera, ela já leu esta mensagem e a acordada não faz
+  // nada — o node compara a hora da última fala de cada lado antes de agir.
+  if (!fromMe) {
+    for (const r of await aiFlowWaitingRuns({ subaccount_id, contact_id })) {
+      try { await processAutomationStep(r.id); }
+      catch (e) { console.error('[ai flow resume]', r.id, e.message); }
+    }
   }
 
   // Resposta automática da IA da subconta. Só para mensagens recebidas de
@@ -6672,5 +6943,7 @@ app.generateAiReply = generateAiReply;
 app.aiCostUsd       = aiCostUsd;
 app.defaultAgentPrompt = defaultAgentPrompt;
 app.ensureSubaccountAgent = ensureSubaccountAgent;
+app.aiFlowWaitingRuns = aiFlowWaitingRuns;
+app.processAutomationStep = processAutomationStep;
 
 module.exports = app;

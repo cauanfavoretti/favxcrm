@@ -764,10 +764,13 @@ function renderMessageHtml(m, contactName) {
   const isInternal   = !!m.is_internal;
   const isBot        = m.sender_type === 'bot' && !isInternal;
   const isAutomation = m.sender_type === 'automation' && !isInternal;
+  // A IA de conversa de um fluxo não é a Clara nem uma automação comum: quem
+  // lê precisa saber que tem uma IA falando, e que não é a da subconta.
+  const isFlowAi     = m.sender_type === 'ai_flow' && !isInternal;
   const isInbound    = m.direction === 'inbound';
   const isAudio      = m.message_type === 'audio';
   const isImage      = m.message_type === 'image' || m.message_type === 'imagem';
-  const bubbleClass = isInternal ? ' internal' : (isBot || isAutomation) ? ' ai' : '';
+  const bubbleClass = isInternal ? ' internal' : (isBot || isAutomation || isFlowAi) ? ' ai' : '';
 
   let bubbleContent, bubbleStyle, bubbleExtra = '';
   if (isAudio) {
@@ -795,6 +798,7 @@ function renderMessageHtml(m, contactName) {
         ${isInternal ? `<div class="internal-note-label">${_shieldSvg} Nota interna${m.sender_name ? ` · ${m.sender_name}` : ''}</div>` : ''}
         ${isBot ? `<div class="ai-label">${_sparkSvg} Clara AI</div>` : ''}
         ${isAutomation ? `<div class="ai-label">${_zapSvg} Automação</div>` : ''}
+        ${isFlowAi ? `<div class="ai-label">${_sparkSvg} IA do fluxo</div>` : ''}
         <div class="msg-bubble${bubbleClass}${bubbleExtra}" ${bubbleStyle ? `style="${bubbleStyle}"` : ''}>${bubbleContent}</div>
         <div class="msg-time">${new Date(m.sent_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</div>
         ${m.status === 'failed' ? _msgFailedLabel(m.error_message) : ''}
