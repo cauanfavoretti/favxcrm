@@ -3082,6 +3082,88 @@ app.put('/api/agents/:id/toggle', auth, async (req, res) => {
   }
 });
 
+// Liga/desliga a IA da subconta com estado explícito. Existe separado do
+// /toggle porque desligar o Nexus tira do ar a resposta automática ao cliente
+// — inverter às cegas é justamente o que não se quer aqui. A palavra de
+// confirmação também é exigida no servidor: assim uma chamada acidental não
+// derruba o atendimento, mesmo vindo de fora da tela.
+const AI_POWER_WORD = 'CONFIRMAR';
+
+app.put('/api/agents/:id/power', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { active, confirm } = req.body || {};
+  if (typeof active !== 'boolean')
+    return res.status(400).json({ message: 'active precisa ser true ou false.' });
+  if (!active && String(confirm || '').trim().toUpperCase() !== AI_POWER_WORD)
+    return res.status(400).json({ message: `Para desligar, envie confirm: "${AI_POWER_WORD}".` });
+
+  try {
+    const { rows } = await pool.query(
+      `UPDATE ai_agents SET is_active = $3, updated_at = NOW()
+        WHERE id = $1 AND subaccount_id = $2 RETURNING *`,
+      [req.params.id, subaccount_id, active]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Agente não encontrado.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[agents power]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// Lista única das IAs da subconta: a nativa (Nexus Chat AI) e cada node "IA de
+// conversa" existente nos fluxos. As do fluxo não têm registro próprio — são
+// lidas do grafo, então uma IA criada no construtor aparece aqui sem precisar
+// de nenhum cadastro paralelo que pudesse ficar desencontrado.
+app.get('/api/ai-agents-list', auth, async (req, res) => {
+  const { subaccount_id } = req.user;
+  try {
+    const { rows: sub } = await pool.query(`SELECT name FROM subaccounts WHERE id = $1`, [subaccount_id]);
+    const nexus = await ensureSubaccountAgent(subaccount_id, sub[0]?.name);
+
+    const { rows: autos } = await pool.query(
+      `SELECT id, name, is_active, graph, run_count, last_run_at
+         FROM automations WHERE subaccount_id = $1 ORDER BY created_at`,
+      [subaccount_id]
+    );
+
+    const doFluxo = [];
+    for (const a of autos) {
+      for (const n of (a.graph?.nodes || [])) {
+        if (n.type !== 'ai_conversation') continue;
+        doFluxo.push({
+          kind: 'flow',
+          id: `${a.id}:${n.id}`,
+          automation_id: a.id,
+          node_id: n.id,
+          name: (n.label || '').trim() || 'IA de conversa',
+          automation_name: a.name,
+          is_active: a.is_active,
+          model: n.config?.model || AI_DEFAULT_MODEL,
+          objective: (n.config?.objective || '').trim(),
+          max_turns: n.config?.max_turns || AI_FLOW_TURNS_DEF,
+          run_count: a.run_count || 0,
+          last_run_at: a.last_run_at,
+        });
+      }
+    }
+
+    res.json({
+      nexus: nexus ? {
+        kind: 'nexus',
+        id: nexus.id,
+        name: nexus.name,
+        is_active: nexus.is_active,
+        model: nexus.model,
+      } : null,
+      flow: doFluxo,
+    });
+  } catch (err) {
+    console.error('[ai-agents-list]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 // ============================================================
 // AUTOMATIONS — motor de execução (estilo n8n)
 // ============================================================
@@ -4166,18 +4248,59 @@ app.delete('/api/automations/:id', auth, requireAdmin, async (req, res) => {
   }
 });
 
+// Sem corpo, inverte (é o que a lista de automações sempre fez). Com
+// { active: true|false }, define o estado — a aba de Agentes de IA precisa
+// disso: lá o botão pede um estado, e inverter arriscaria ligar o que se
+// queria desligar caso a tela estivesse desatualizada.
 app.put('/api/automations/:id/toggle', auth, async (req, res) => {
   const { subaccount_id } = req.user;
+  const active = req.body?.active;
+  if (active !== undefined && typeof active !== 'boolean')
+    return res.status(400).json({ message: 'active precisa ser true ou false.' });
   try {
     const { rows } = await pool.query(
-      `UPDATE automations SET is_active = NOT is_active
+      `UPDATE automations SET is_active = COALESCE($3, NOT is_active)
        WHERE id = $1 AND subaccount_id = $2 RETURNING *`,
-      [req.params.id, subaccount_id]
+      [req.params.id, subaccount_id, active ?? null]
     );
     if (!rows.length) return res.status(404).json({ message: 'Automação não encontrada.' });
     res.json(rows[0]);
   } catch (err) {
     console.error('[automations toggle]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+// Renomeia uma IA de conversa dentro do fluxo. O nome mora no próprio node
+// (`label`), o mesmo campo que o construtor mostra no canvas — renomear aqui
+// e renomear lá são a mesma coisa, e não dois nomes para a mesma IA.
+app.put('/api/automations/:id/ai-label', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const { node_id, label } = req.body || {};
+  const nome = String(label ?? '').trim();
+  if (!node_id) return res.status(400).json({ message: 'node_id é obrigatório.' });
+  if (!nome)    return res.status(400).json({ message: 'O nome não pode ficar vazio.' });
+  if (nome.length > 60) return res.status(400).json({ message: 'O nome deve ter até 60 caracteres.' });
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT graph FROM automations WHERE id = $1 AND subaccount_id = $2`,
+      [req.params.id, subaccount_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Automação não encontrada.' });
+
+    const graph = rows[0].graph || { nodes: [], edges: [] };
+    const node = (graph.nodes || []).find(n => n.id === node_id && n.type === 'ai_conversation');
+    if (!node) return res.status(404).json({ message: 'IA não encontrada neste fluxo.' });
+    node.label = nome;
+
+    await pool.query(
+      `UPDATE automations SET graph = $3, updated_at = NOW() WHERE id = $1 AND subaccount_id = $2`,
+      [req.params.id, subaccount_id, JSON.stringify(graph)]
+    );
+    res.json({ node_id, label: nome });
+  } catch (err) {
+    console.error('[automations ai-label]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
   }
 });

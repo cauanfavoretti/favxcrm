@@ -72,6 +72,9 @@ function _autoOutputs(node) {
 const AUTO_STAGE_COLORS = ['#3b82f6','#f97316','#a855f7','#ef4444','#3b82f6','#f97316','#a855f7'];
 
 let automationsState = { list: [] };
+let _autoTab          = 'fluxos';           // fluxos | agentes
+let _autoAgents       = { nexus: null, flow: [] };
+let _autoAgentsLoading = false;
 let _autoCurrent      = null;  // { id, name, description, graph:{nodes,edges} }
 let _autoSelectedNode = null;
 let _autoNodeEls      = {};
@@ -121,6 +124,9 @@ window.pageAutomations = function(data) {
 
 window.initAutomations = function() {
   _autoInitList();
+  // A aba fica escolhida entre idas e vindas; ao voltar para ela, a lista de
+  // IAs é buscada de novo — pode ter nascido uma no construtor nesse meio.
+  if (_autoTab === 'agentes') _autoLoadAgents();
 };
 
 // ── LIST VIEW ─────────────────────────────────────────────────
@@ -132,11 +138,15 @@ function _autoFmtWhen(iso) {
 }
 
 function _autoListHtml(automations) {
+  if (_autoTab === 'agentes') return _autoAgentsHtml();
   return `
   <div class="page-header">
-    <div>
-      <h1 class="page-title">Automações</h1>
-      <p class="page-subtitle">${automations.length} automação${automations.length !== 1 ? 'ões' : ''} cadastrada${automations.length !== 1 ? 's' : ''}</p>
+    <div style="display:flex;align-items:center;gap:16px">
+      <div>
+        <h1 class="page-title">Automações</h1>
+        <p class="page-subtitle">${automations.length} ${automations.length === 1 ? 'automação cadastrada' : 'automações cadastradas'}</p>
+      </div>
+      ${_autoTabsHtml()}
     </div>
     <button class="btn btn-primary btn-sm" id="btnNewAutomation"><i data-lucide="plus" style="width:14px;height:14px"></i> Nova Automação</button>
   </div>
@@ -178,7 +188,309 @@ function _autoListHtml(automations) {
   `;
 }
 
+// ── ABA: AGENTES DE IA ────────────────────────────────────────
+// Junta a IA nativa do CRM com as que nascem dentro dos fluxos. As do fluxo
+// não têm cadastro próprio: são lidas do grafo, então criar um node de IA no
+// construtor já as faz aparecer aqui.
+
+function _autoTabsHtml() {
+  return `
+    <div class="conv-mode-switch" id="autoTabs">
+      <button class="conv-mode-btn ${_autoTab === 'fluxos' ? 'active' : ''}" data-tab="fluxos">
+        <i data-lucide="workflow" style="width:14px;height:14px"></i> Fluxos
+      </button>
+      <button class="conv-mode-btn ${_autoTab === 'agentes' ? 'active' : ''}" data-tab="agentes">
+        <i data-lucide="bot" style="width:14px;height:14px"></i> Agentes de IA
+      </button>
+    </div>`;
+}
+
+function _autoAgentsHtml() {
+  const nexus = _autoAgents.nexus;
+  const doFluxo = _autoAgents.flow || [];
+  const total = (nexus ? 1 : 0) + doFluxo.length;
+
+  return `
+  <div class="page-header">
+    <div style="display:flex;align-items:center;gap:16px">
+      <div>
+        <h1 class="page-title">Automações</h1>
+        <p class="page-subtitle">${total} IA${total !== 1 ? 's' : ''} nesta subconta</p>
+      </div>
+      ${_autoTabsHtml()}
+    </div>
+  </div>
+
+  ${_autoAgentsLoading ? `
+    <div style="padding:60px;text-align:center;color:var(--color-text-3);font-size:13px">Carregando...</div>
+  ` : `
+  <div class="ai-agent-list">
+    ${nexus ? _autoAgentCardHtml({
+      ...nexus,
+      badge: 'Nativa do CRM',
+      desc: 'Responde os clientes no WhatsApp, alimenta o painel da IA e sustenta as atualizações automáticas de funil.',
+    }) : ''}
+
+    ${doFluxo.length ? doFluxo.map(a => _autoAgentCardHtml({
+      ...a,
+      badge: 'Do fluxo',
+      desc: a.objective || 'Sem objetivo definido ainda.',
+    })).join('') : `
+      <div class="ai-agent-empty">
+        <i data-lucide="bot" style="width:26px;height:26px;opacity:.35"></i>
+        <div>
+          <strong>Nenhuma IA criada em fluxos ainda.</strong>
+          <p>Adicione um node "IA de conversa" em qualquer fluxo e ela aparece aqui.</p>
+        </div>
+      </div>`}
+  </div>`}
+  `;
+}
+
+function _autoAgentCardHtml(a) {
+  const doFluxo = a.kind === 'flow';
+  return `
+  <div class="ai-agent-card ${a.is_active ? '' : 'off'}" data-agent="${_autoEsc(a.id)}">
+    <div class="ai-agent-mark ${doFluxo ? 'flow' : 'nexus'}">
+      <i data-lucide="${doFluxo ? 'bot' : 'sparkles'}" style="width:20px;height:20px"></i>
+    </div>
+
+    <div class="ai-agent-body">
+      <div class="ai-agent-top">
+        <span class="ai-agent-name" data-name="${_autoEsc(a.id)}">${_autoEsc(a.name)}</span>
+        ${doFluxo ? `<button class="ai-agent-rename" data-rename="${_autoEsc(a.id)}" title="Renomear">
+          <i data-lucide="pencil" style="width:12px;height:12px"></i></button>` : ''}
+        <span class="ai-agent-badge ${doFluxo ? 'flow' : 'nexus'}">${a.badge}</span>
+        <span class="ai-agent-state ${a.is_active ? 'on' : 'off'}">${a.is_active ? 'Ligada' : 'Desligada'}</span>
+      </div>
+      <p class="ai-agent-desc">${_autoEsc(a.desc)}</p>
+      <div class="ai-agent-meta">
+        <span><i data-lucide="cpu" style="width:12px;height:12px"></i> ${_autoEsc(a.model || '—')}</span>
+        ${doFluxo ? `<span><i data-lucide="workflow" style="width:12px;height:12px"></i> ${_autoEsc(a.automation_name)}</span>` : ''}
+        ${doFluxo ? `<span><i data-lucide="repeat" style="width:12px;height:12px"></i> até ${a.max_turns} respostas</span>` : ''}
+      </div>
+    </div>
+
+    <div class="ai-agent-actions">
+      <label class="toggle" title="${a.is_active ? 'Desligar' : 'Ligar'}">
+        <input type="checkbox" class="ai-agent-toggle" data-id="${_autoEsc(a.id)}" ${a.is_active ? 'checked' : ''}>
+        <span class="toggle-slider"></span>
+      </label>
+      ${doFluxo ? `<button class="btn btn-ghost btn-sm ai-agent-open" data-open="${_autoEsc(a.automation_id)}" title="Abrir o fluxo">
+        <i data-lucide="external-link" style="width:13px;height:13px"></i></button>` : ''}
+    </div>
+  </div>`;
+}
+
+async function _autoLoadAgents() {
+  _autoAgentsLoading = true;
+  _autoRepaintList();
+  try {
+    _autoAgents = await apiFetch('/api/ai-agents-list');
+  } catch (err) {
+    _autoAgents = { nexus: null, flow: [] };
+    alert(err.message);
+  }
+  _autoAgentsLoading = false;
+  _autoRepaintList();
+}
+
+// Redesenha só a página da lista (o construtor vive em outra camada).
+function _autoRepaintList() {
+  const content = document.getElementById('pageContent');
+  if (!content) return;
+  content.innerHTML = _autoListHtml(automationsState.list);
+  lucide.createIcons();
+  _autoInitList();
+}
+
+function _autoFindAgent(id) {
+  if (_autoAgents.nexus?.id === id) return _autoAgents.nexus;
+  return (_autoAgents.flow || []).find(a => a.id === id);
+}
+
+function _autoInitAgents() {
+  document.querySelectorAll('.ai-agent-open').forEach(btn =>
+    btn.addEventListener('click', () => _autoOpenEdit(btn.dataset.open)));
+
+  document.querySelectorAll('.ai-agent-rename').forEach(btn =>
+    btn.addEventListener('click', () => _autoRenameAgent(btn.dataset.rename)));
+
+  document.querySelectorAll('.ai-agent-toggle').forEach(input =>
+    input.addEventListener('change', function() {
+      const agente = _autoFindAgent(this.dataset.id);
+      // Devolve o botão ao lugar até a decisão ser tomada e confirmada: quem
+      // desiste no meio não pode ficar com a tela mostrando o contrário do
+      // que está valendo.
+      this.checked = !this.checked;
+      if (!agente) return;
+      if (agente.kind === 'nexus') _autoPowerNexus(agente, !agente.is_active);
+      else _autoPowerFlowAi(agente, !agente.is_active);
+    }));
+}
+
+async function _autoPowerFlowAi(agente, ligar) {
+  const outras = (_autoAgents.flow || [])
+    .filter(a => a.automation_id === agente.automation_id && a.node_id !== agente.node_id);
+
+  const seguir = async () => {
+    try {
+      await apiFetch(`/api/automations/${agente.automation_id}/toggle`, {
+        method: 'PUT', body: JSON.stringify({ active: ligar }),
+      });
+      await _autoLoadAgents();
+      automationsState.list = await window.loadAutomations();
+    } catch (err) { alert(err.message); }
+  };
+
+  if (ligar) return seguir();
+
+  // Desligar a IA é desligar o fluxo: ela não roda sozinha, e deixar o fluxo
+  // no ar sem ela levaria os contatos a um caminho que não responde.
+  showConfirmModal({
+    title: 'Desligar esta IA',
+    message: `A IA <strong>${_autoEsc(agente.name)}</strong> só funciona dentro do fluxo
+      <strong>${_autoEsc(agente.automation_name)}</strong>, então desligá-la desliga o fluxo inteiro.
+      ${outras.length ? `<br><br>Esse fluxo tem mais ${outras.length} IA${outras.length > 1 ? 's' : ''}
+        (${outras.map(o => _autoEsc(o.name)).join(', ')}) que também para${outras.length > 1 ? 'm' : ''}.` : ''}
+      <br><br>As conversas em andamento com ela são encerradas.`,
+    confirmLabel: 'Desligar',
+    cancelLabel: 'Manter ligada',
+    onConfirm: seguir,
+  });
+}
+
+// Desligar o Nexus tira do ar a resposta automática ao cliente — por isso o
+// aviso é explícito e exige digitar a palavra, em vez de um "ok" no automático.
+function _autoPowerNexus(agente, ligar) {
+  if (ligar) {
+    (async () => {
+      try {
+        await apiFetch(`/api/agents/${agente.id}/power`, {
+          method: 'PUT', body: JSON.stringify({ active: true }),
+        });
+        await _autoLoadAgents();
+      } catch (err) { alert(err.message); }
+    })();
+    return;
+  }
+
+  document.getElementById('aiPowerOverlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'aiPowerOverlay';
+  overlay.className = 'tag-overlay';
+  overlay.innerHTML = `
+    <div class="tag-box ai-power-box">
+      <div class="tag-head">
+        <span class="tag-title">Desligar o ${_autoEsc(agente.name)}</span>
+        <button class="tag-close" title="Fechar"><i data-lucide="x"></i></button>
+      </div>
+      <div class="tag-body">
+        <div class="ai-power-warn">
+          <i data-lucide="triangle-alert" style="width:18px;height:18px;flex-shrink:0"></i>
+          <div>
+            <strong>Esta é a IA nativa do CRM.</strong>
+            <p>Com ela desligada, esta subconta pode deixar de ter:</p>
+            <ul>
+              <li>respostas automáticas aos clientes no WhatsApp;</li>
+              <li>atualizações automáticas de funil;</li>
+              <li>dados novos nos painéis e dashboards da IA.</li>
+            </ul>
+          </div>
+        </div>
+        <label class="settings-label" style="margin-top:14px;display:block">
+          PARA CONTINUAR, DIGITE <code>CONFIRMAR</code>
+        </label>
+        <input type="text" id="aiPowerWord" class="tag-input" style="width:100%"
+               autocomplete="off" spellcheck="false" placeholder="CONFIRMAR" />
+      </div>
+      <div class="tag-foot">
+        <span class="tag-err" id="aiPowerErr"></span>
+        <button class="btn btn-secondary btn-sm" id="aiPowerCancel">Cancelar</button>
+        <button class="btn btn-primary btn-sm ai-power-go" id="aiPowerGo" disabled>Desligar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  lucide.createIcons();
+
+  const campo = overlay.querySelector('#aiPowerWord');
+  const botao = overlay.querySelector('#aiPowerGo');
+  const fechar = () => overlay.remove();
+
+  overlay.addEventListener('click', e => { if (e.target === overlay) fechar(); });
+  overlay.querySelector('.tag-close').addEventListener('click', fechar);
+  overlay.querySelector('#aiPowerCancel').addEventListener('click', fechar);
+
+  // A palavra vale sem depender de maiúsculas ou de um espaço que escapou.
+  const confere = () => { botao.disabled = campo.value.trim().toUpperCase() !== 'CONFIRMAR'; };
+  campo.addEventListener('input', confere);
+  campo.addEventListener('keydown', e => { if (e.key === 'Enter' && !botao.disabled) botao.click(); });
+  campo.focus();
+
+  botao.addEventListener('click', async () => {
+    botao.disabled = true;
+    try {
+      await apiFetch(`/api/agents/${agente.id}/power`, {
+        method: 'PUT', body: JSON.stringify({ active: false, confirm: campo.value.trim().toUpperCase() }),
+      });
+      fechar();
+      await _autoLoadAgents();
+    } catch (err) {
+      overlay.querySelector('#aiPowerErr').textContent = err.message;
+      botao.disabled = false;
+    }
+  });
+}
+
+function _autoRenameAgent(id) {
+  const agente = _autoFindAgent(id);
+  if (!agente) return;
+  const el = document.querySelector(`.ai-agent-name[data-name="${CSS.escape(id)}"]`);
+  if (!el || el.isContentEditable) return;
+
+  const antes = agente.name;
+  el.contentEditable = 'true';
+  el.classList.add('editing');
+  el.focus();
+  document.getSelection().selectAllChildren(el);
+
+  const salvar = async () => {
+    el.contentEditable = 'false';
+    el.classList.remove('editing');
+    const nome = el.textContent.trim().slice(0, 60);
+    if (!nome || nome === antes) { el.textContent = antes; return; }
+    try {
+      await apiFetch(`/api/automations/${agente.automation_id}/ai-label`, {
+        method: 'PUT', body: JSON.stringify({ node_id: agente.node_id, label: nome }),
+      });
+      agente.name = nome;
+      el.textContent = nome;
+    } catch (err) {
+      el.textContent = antes;
+      alert(err.message);
+    }
+  };
+
+  el.addEventListener('blur', salvar, { once: true });
+  el.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); el.blur(); }
+    if (e.key === 'Escape') { el.textContent = antes; el.blur(); }
+  });
+}
+
 function _autoInitList() {
+  document.querySelectorAll('#autoTabs [data-tab]').forEach(btn =>
+    btn.addEventListener('click', () => {
+      if (_autoTab === btn.dataset.tab) return;
+      _autoTab = btn.dataset.tab;
+      _autoRepaintList();
+      // Recarrega a cada entrada: uma IA criada no construtor precisa
+      // aparecer aqui sem depender de recarregar a página inteira.
+      if (_autoTab === 'agentes') _autoLoadAgents();
+    }));
+
+  if (_autoTab === 'agentes') { _autoInitAgents(); return; }
+
   document.getElementById('btnNewAutomation')?.addEventListener('click', _autoOpenNew);
   document.getElementById('btnNewAutomationEmpty')?.addEventListener('click', _autoOpenNew);
 
