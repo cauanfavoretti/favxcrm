@@ -889,6 +889,256 @@ async function ensureSubaccountAgent(subaccount_id, subaccountName, created_by =
   }
 })();
 
+// ============================================================
+// CONVERSAS — distribuição automática e fila de atendimento
+// ============================================================
+//
+// Distribuição: cada contato novo cai no colo de alguém, na proporção
+// configurada. Fila: depois de atribuído, corre um relógio até a resposta.
+// Se estourar, o lead passa para o próximo — a ideia é que ninguém fique
+// sem resposta porque a pessoa da vez está ocupada.
+//
+// O relógio não tem um processo tiquetaqueando: cada conversa guarda a hora
+// em que vence, e o vencimento é conferido quando alguém olha as conversas,
+// quando chega mensagem, e no cron. Assim o atraso é sempre medido pelo
+// relógio real, e não pela sorte de um agendador ter rodado na hora certa.
+
+const CONV_QUEUE_DEFAULTS = {
+  auto_assign: false, auto_targets: [], auto_counts: {},
+  queue_enabled: false, queue_first_minutes: 10, queue_next_minutes: 30, queue_alert_minutes: 3,
+};
+
+// Leitura primeiro: isto roda a cada mensagem recebida, e um INSERT ... ON
+// CONFLICT gravaria à toa no caminho mais quente do sistema.
+async function convSettings(subaccount_id) {
+  const { rows } = await pool.query(
+    `SELECT * FROM conversation_settings WHERE subaccount_id = $1`, [subaccount_id]);
+  if (rows[0]) return rows[0];
+  const ins = await pool.query(
+    `INSERT INTO conversation_settings (subaccount_id) VALUES ($1)
+     ON CONFLICT (subaccount_id) DO NOTHING RETURNING *`, [subaccount_id]);
+  if (ins.rows[0]) return ins.rows[0];
+  // Perdeu a corrida com outra requisição: a linha já existe, basta ler.
+  const de_novo = await pool.query(
+    `SELECT * FROM conversation_settings WHERE subaccount_id = $1`, [subaccount_id]);
+  return de_novo.rows[0] || { subaccount_id, ...CONV_QUEUE_DEFAULTS };
+}
+
+// Escolhe quem recebe o próximo contato. Vence quem está mais atrás da
+// própria cota — com 70/30, o de 70 recebe até ficar em 70, e não "70% de
+// chance a cada vez", que numa amostra pequena não entrega proporção nenhuma.
+function pickAutoAssignee(targets, counts, ativos) {
+  const validos = (targets || [])
+    .filter(t => t?.user_id && Number(t.percent) > 0 && ativos.includes(t.user_id));
+  if (!validos.length) return null;
+  let escolhido = null, melhor = Infinity;
+  for (const t of validos) {
+    const razao = (Number(counts?.[t.user_id]) || 0) / Number(t.percent);
+    // Empate vai para a maior cota: é ela que precisa acumular mais rápido.
+    if (razao < melhor - 1e-9 || (Math.abs(razao - melhor) < 1e-9 && Number(t.percent) > Number(escolhido?.percent || 0))) {
+      melhor = razao; escolhido = t;
+    }
+  }
+  return escolhido?.user_id || null;
+}
+
+// Atribui um contato recém-criado. Devolve o id do usuário, ou null quando a
+// distribuição está desligada ou não há ninguém elegível.
+async function autoAssignContact(subaccount_id, contact_id) {
+  try {
+    const cfg = await convSettings(subaccount_id);
+    if (!cfg.auto_assign) return null;
+
+    const { rows: users } = await pool.query(
+      `SELECT id FROM users WHERE subaccount_id = $1 AND is_active`, [subaccount_id]);
+    const ativos = users.map(u => u.id);
+    const escolhido = pickAutoAssignee(cfg.auto_targets, cfg.auto_counts, ativos);
+    if (!escolhido) return null;
+
+    await pool.query(
+      `UPDATE contacts SET assigned_to = $1, updated_at = NOW() WHERE id = $2 AND subaccount_id = $3`,
+      [escolhido, contact_id, subaccount_id]);
+    // O contador sobe com jsonb_set para não perder uma atribuição simultânea
+    // reescrevendo o objeto inteiro a partir de uma leitura velha.
+    await pool.query(
+      `UPDATE conversation_settings
+          SET auto_counts = jsonb_set(auto_counts, ARRAY[$2::text],
+                to_jsonb(COALESCE((auto_counts->>$2)::int, 0) + 1), TRUE),
+              updated_at = NOW()
+        WHERE subaccount_id = $1`,
+      [subaccount_id, escolhido]);
+    return escolhido;
+  } catch (err) {
+    // Distribuir é um plus: falhar aqui não pode impedir o contato de existir.
+    console.error('[auto-assign]', err.message);
+    return null;
+  }
+}
+
+// Arma o relógio depois de uma mensagem do cliente. O prazo inicial vale
+// enquanto ninguém do CRM respondeu nesta conversa; a partir daí vale o de
+// longo prazo, que é o de quem já está em conversa e some no meio dela.
+async function queueArm(subaccount_id, conversation_id) {
+  const cfg = await convSettings(subaccount_id);
+  if (!cfg.auto_assign || !cfg.queue_enabled) return;
+
+  const { rows } = await pool.query(
+    `SELECT cv.assigned_to,
+            EXISTS (SELECT 1 FROM messages m
+                     WHERE m.conversation_id = cv.id AND m.direction = 'outbound'
+                       AND COALESCE(m.is_internal, FALSE) = FALSE
+                       AND (m.sender_id IS NOT NULL OR m.sender_type = 'user')) AS ja_respondeu
+       FROM conversations cv WHERE cv.id = $1 AND cv.subaccount_id = $2`,
+    [conversation_id, subaccount_id]);
+  const conv = rows[0];
+  if (!conv?.assigned_to) return;   // sem responsável não há de quem cobrar
+
+  const minutos = conv.ja_respondeu ? cfg.queue_next_minutes : cfg.queue_first_minutes;
+  await pool.query(
+    `UPDATE conversations
+        SET queue_due_at = NOW() + ($2 || ' minutes')::interval, queue_alerted = FALSE
+      WHERE id = $1 AND queue_due_at IS NULL`,
+    [conversation_id, String(minutos)]);
+}
+
+// O usuário respondeu: o relógio zera e a rodada recomeça do zero.
+async function queueClear(conversation_id) {
+  await pool.query(
+    `UPDATE conversations SET queue_due_at = NULL, queue_alerted = FALSE, queue_tried = '[]'
+      WHERE id = $1 AND (queue_due_at IS NOT NULL OR queue_alerted OR queue_tried <> '[]')`,
+    [conversation_id]).catch(e => console.error('[queue clear]', e.message));
+}
+
+async function queueNotify(subaccount_id, user_id, title, body, conversation_id) {
+  if (!user_id) return;
+  await pool.query(
+    `INSERT INTO notifications (subaccount_id, user_id, type, title, body, entity_type, entity_id)
+     SELECT $1, u.id, 'queue', $3, $4, 'conversation', $5
+       FROM users u WHERE u.id = $2 AND u.subaccount_id = $1`,
+    [subaccount_id, user_id, title.slice(0, 200), body.slice(0, 2000), conversation_id]
+  ).catch(e => console.error('[queue notify]', e.message));
+}
+
+// Confere alertas e passagens vencidas. Chamada de vários lugares (lista de
+// conversas, badge, webhook, cron), por isso é barata e idempotente.
+const _queueRan = new Map();
+const QUEUE_THROTTLE_MS = 15000;
+
+async function processQueueDue(subaccount_id, { force = false } = {}) {
+  const agora = Date.now();
+  if (!force && agora - (_queueRan.get(subaccount_id) || 0) < QUEUE_THROTTLE_MS) return;
+  _queueRan.set(subaccount_id, agora);
+
+  try {
+    const cfg = await convSettings(subaccount_id);
+    if (!cfg.auto_assign || !cfg.queue_enabled) return;
+
+    // 1. Aviso antecipado — o vermelho na tela quem desenha é o navegador, a
+    //    partir do horário de vencimento; aqui entra só o sino.
+    const { rows: aAvisar } = await pool.query(
+      `UPDATE conversations SET queue_alerted = TRUE
+        WHERE subaccount_id = $1 AND queue_due_at IS NOT NULL AND NOT queue_alerted
+          AND assigned_to IS NOT NULL
+          AND queue_due_at <= NOW() + ($2 || ' minutes')::interval
+        RETURNING id, assigned_to, contact_id`,
+      [subaccount_id, String(cfg.queue_alert_minutes)]);
+    for (const c of aAvisar) {
+      const nome = await contactName(c.contact_id);
+      await queueNotify(subaccount_id, c.assigned_to, 'Responda antes que o lead passe',
+        `${nome} está esperando. Em até ${cfg.queue_alert_minutes} min esta conversa passa para o próximo da fila.`, c.id);
+    }
+
+    // 2. Passagem
+    const { rows: vencidas } = await pool.query(
+      `SELECT id, assigned_to, contact_id, queue_tried FROM conversations
+        WHERE subaccount_id = $1 AND queue_due_at IS NOT NULL AND queue_due_at <= NOW()
+        ORDER BY queue_due_at LIMIT 50`,
+      [subaccount_id]);
+    if (!vencidas.length) return;
+
+    const { rows: users } = await pool.query(
+      `SELECT id, name FROM users WHERE subaccount_id = $1 AND is_active`, [subaccount_id]);
+    const ativos = users.map(u => u.id);
+    const nomeDe = Object.fromEntries(users.map(u => [u.id, u.name]));
+
+    for (const c of vencidas) {
+      const tentados = new Set([...(Array.isArray(c.queue_tried) ? c.queue_tried : []), c.assigned_to].filter(Boolean));
+      const candidatos = (cfg.auto_targets || [])
+        .filter(t => t?.user_id && Number(t.percent) > 0 && ativos.includes(t.user_id) && !tentados.has(t.user_id));
+      const proximo = pickAutoAssignee(candidatos, cfg.auto_counts, ativos);
+
+      if (!proximo) {
+        // Ninguém mais para tentar: parar o relógio é mais honesto que
+        // devolver a conversa para quem já não respondeu.
+        await pool.query(`UPDATE conversations SET queue_due_at = NULL WHERE id = $1`, [c.id]);
+        await queueNotify(subaccount_id, c.assigned_to, 'A conversa continua com você',
+          'O tempo de resposta estourou, mas não há outro atendente disponível na fila.', c.id);
+        continue;
+      }
+
+      const nome = await contactName(c.contact_id);
+      const minutos = cfg.queue_next_minutes;
+      await pool.query(
+        `UPDATE conversations
+            SET assigned_to = $2,
+                queue_tried = $3::jsonb,
+                queue_alerted = FALSE,
+                queue_due_at = NOW() + ($4 || ' minutes')::interval,
+                updated_at = NOW()
+          WHERE id = $1`,
+        [c.id, proximo, JSON.stringify([...tentados]), String(minutos)]);
+      await pool.query(
+        `UPDATE contacts SET assigned_to = $1, updated_at = NOW() WHERE id = $2`, [proximo, c.contact_id]);
+
+      await queueNotify(subaccount_id, proximo, 'Lead passou para você',
+        `${nome} está esperando resposta e passou para você. Responda em até ${minutos} min.`, c.id);
+      await queueNotify(subaccount_id, c.assigned_to, 'O lead passou para o próximo',
+        `${nome} foi para ${nomeDe[proximo] || 'outro atendente'} por falta de resposta.`, c.id);
+    }
+  } catch (err) {
+    console.error('[queue due]', err.message);
+  }
+}
+
+async function contactName(contact_id) {
+  if (!contact_id) return 'Um contato';
+  const { rows } = await pool.query(`SELECT name, phone FROM contacts WHERE id = $1`, [contact_id]);
+  return rows[0]?.name || rows[0]?.phone || 'Um contato';
+}
+
+// ── Configurações de conversa: distribuição automática e fila ──
+;(async function initConversationSettings() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS conversation_settings (
+        subaccount_id       UUID PRIMARY KEY REFERENCES subaccounts(id) ON DELETE CASCADE,
+        auto_assign         BOOLEAN NOT NULL DEFAULT FALSE,
+        -- [{ user_id, percent }] — a fatia de cada um dos contatos novos
+        auto_targets        JSONB   NOT NULL DEFAULT '[]',
+        -- { user_id: n } — quantos já recebeu. É o que faz a porcentagem valer
+        -- na prática: sem contador, "70/30" viraria sorteio e desandaria no
+        -- curto prazo, justamente onde se percebe.
+        auto_counts         JSONB   NOT NULL DEFAULT '{}',
+        queue_enabled       BOOLEAN NOT NULL DEFAULT FALSE,
+        queue_first_minutes INT NOT NULL DEFAULT 10,
+        queue_next_minutes  INT NOT NULL DEFAULT 30,
+        queue_alert_minutes INT NOT NULL DEFAULT 3,
+        updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+
+    // Relógio da fila, por conversa.
+    await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS queue_due_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS queue_alerted BOOLEAN NOT NULL DEFAULT FALSE`);
+    // Quem já teve a vez nesta rodada — sem isso o lead voltaria para quem
+    // acabou de deixar passar.
+    await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS queue_tried JSONB NOT NULL DEFAULT '[]'`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_queue
+                      ON conversations (queue_due_at) WHERE queue_due_at IS NOT NULL`);
+  } catch (err) {
+    console.error('[init] conversation settings:', err.message);
+  }
+})();
+
 ;(async function initAutomationTables() {
   try {
     // Fluxo (nodes + edges) armazenado como grafo — permite ramificação
@@ -2013,6 +2263,10 @@ app.post('/api/contacts', auth, async (req, res) => {
       [subaccount_id, name, email || null, phone || null, company || null, source || 'manual', status || 'lead',
        JSON.stringify(custom_fields || {})]
     );
+    // Antes de responder: o contato tem de sair daqui já com dono, senão a
+    // tela mostraria "sem responsável" e só depois mudaria sozinha.
+    const dono = await autoAssignContact(subaccount_id, rows[0].id);
+    if (dono) rows[0].assigned_to = dono;
     res.status(201).json(rows[0]);
 
     await fireAutomations(subaccount_id, 'contact_created', { contact: rows[0], origin: 'manual' },
@@ -2116,6 +2370,11 @@ app.get('/api/conversations', auth, async (req, res) => {
   const { contact_id } = req.query;
   const search = (req.query.search || '').trim();
   const scope = await userDataScope(req);
+  // A fila é conferida aqui porque é aqui que alguém está olhando: enquanto
+  // houver uma tela aberta, a passagem acontece na hora. O relógio é medido
+  // pelo horário de vencimento, então nada se perde entre uma conferida e
+  // outra — só a hora em que a passagem é efetivada.
+  await processQueueDue(subaccount_id);
   try {
     const params = [subaccount_id];
     let where = 'WHERE cv.subaccount_id = $1';
@@ -2146,6 +2405,7 @@ app.get('/api/conversations', auth, async (req, res) => {
       `SELECT cv.id, cv.status, cv.unread_count, cv.last_message_at, cv.channel, cv.contact_id,
               cv.assigned_to, c.name AS contact_name, c.phone AS contact_phone,
               u.name AS owner_name,
+              cv.queue_due_at,
               COALESCE((
                 SELECT json_agg(json_build_object('id', t.id, 'name', t.name, 'color', t.color) ORDER BY t.name)
                   FROM contact_tag_map m JOIN contact_tags t ON t.id = m.tag_id
@@ -2166,9 +2426,89 @@ app.get('/api/conversations', auth, async (req, res) => {
   }
 });
 
+app.get('/api/conversation-settings', auth, async (req, res) => {
+  try {
+    const cfg = await convSettings(req.user.subaccount_id);
+    delete cfg.auto_counts;   // contador interno da distribuição; a tela não usa
+    res.json(cfg);
+  } catch (err) {
+    console.error('[conversation-settings GET]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
+app.put('/api/conversation-settings', auth, requireAdmin, async (req, res) => {
+  const { subaccount_id } = req.user;
+  const b = req.body || {};
+
+  const inteiro = (v, min, max, padrao) => {
+    if (v === undefined || v === null || v === '') return padrao;
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) && n >= min && n <= max ? n : NaN;
+  };
+  const primeiro = inteiro(b.queue_first_minutes, 1, 1440, 10);
+  const proximo  = inteiro(b.queue_next_minutes,  1, 1440, 30);
+  const alerta   = inteiro(b.queue_alert_minutes, 1, 1440, 3);
+  if ([primeiro, proximo, alerta].some(Number.isNaN))
+    return res.status(400).json({ message: 'Os tempos devem ser números de 1 a 1440 minutos.' });
+  // Avisar depois do prazo não avisa nada: o alerta tem de caber dentro dele.
+  if (alerta > Math.min(primeiro, proximo))
+    return res.status(400).json({ message: 'O aviso precisa vir antes do fim do menor temporizador.' });
+
+  let alvos = Array.isArray(b.auto_targets) ? b.auto_targets : [];
+  alvos = alvos
+    .map(t => ({ user_id: String(t?.user_id || ''), percent: Math.round(Number(t?.percent)) }))
+    .filter(t => t.user_id && Number.isFinite(t.percent) && t.percent > 0);
+  if (new Set(alvos.map(t => t.user_id)).size !== alvos.length)
+    return res.status(400).json({ message: 'Cada usuário só pode aparecer uma vez na distribuição.' });
+
+  const ligado = !!b.auto_assign;
+  if (ligado && !alvos.length)
+    return res.status(400).json({ message: 'Escolha ao menos um usuário para receber os contatos.' });
+  const soma = alvos.reduce((s, t) => s + t.percent, 0);
+  if (alvos.length && soma !== 100)
+    return res.status(400).json({ message: `As porcentagens somam ${soma}% — precisam somar 100%.` });
+
+  try {
+    if (alvos.length) {
+      const { rows } = await pool.query(
+        `SELECT id FROM users WHERE subaccount_id = $1 AND is_active AND id = ANY($2::uuid[])`,
+        [subaccount_id, alvos.map(t => t.user_id)]);
+      if (rows.length !== alvos.length)
+        return res.status(400).json({ message: 'Há usuários inválidos ou inativos na distribuição.' });
+    }
+
+    const atual = await convSettings(subaccount_id);
+    // Mudou quem recebe ou quanto? O contador recomeça — senão a cota nova
+    // nasceria "devendo" para quem já vinha recebendo.
+    const mesmoAlvo = JSON.stringify((atual.auto_targets || []).map(t => [t.user_id, Number(t.percent)]).sort())
+                   === JSON.stringify(alvos.map(t => [t.user_id, t.percent]).sort());
+
+    const { rows } = await pool.query(
+      `UPDATE conversation_settings SET
+         auto_assign = $2, auto_targets = $3::jsonb,
+         auto_counts = CASE WHEN $4 THEN auto_counts ELSE '{}'::jsonb END,
+         queue_enabled = $5, queue_first_minutes = $6, queue_next_minutes = $7, queue_alert_minutes = $8,
+         updated_at = NOW()
+       WHERE subaccount_id = $1 RETURNING *`,
+      [subaccount_id, ligado, JSON.stringify(alvos), mesmoAlvo,
+       !!b.queue_enabled && ligado, primeiro, proximo, alerta]);
+
+    const cfg = rows[0];
+    delete cfg.auto_counts;
+    res.json(cfg);
+  } catch (err) {
+    console.error('[conversation-settings PUT]', err.message);
+    res.status(500).json({ message: 'Erro interno.' });
+  }
+});
+
 // Quantidade de conversas não lidas (para o badge do menu lateral)
 app.get('/api/conversations/unread-count', auth, async (req, res) => {
   const { subaccount_id } = req.user;
+  // O badge é consultado de qualquer página do CRM — é a chance de conferir a
+  // fila mesmo com ninguém parado na tela de conversas.
+  await processQueueDue(subaccount_id);
   const scope  = await userDataScope(req);
   const params = [subaccount_id];
   const scoped = scopeClause('conversations', 'conversations', scope, params);
@@ -2294,6 +2634,9 @@ app.post('/api/conversations/:id/messages', auth, async (req, res) => {
       `UPDATE conversations SET last_message_at = NOW()${is_internal ? '' : ', unread_count = 0'} WHERE id = $1`,
       [req.params.id]
     );
+    // ...e zera o relógio da fila. Uma nota interna não é resposta ao cliente,
+    // então não conta: o lead continua esperando.
+    if (!is_internal) await queueClear(req.params.id);
 
     // Mensagens internas não são enviadas ao contato
     if (is_internal) {
@@ -4407,7 +4750,14 @@ app.all('/api/automations/process-due', async (req, res) => {
     for (const r of rows) {
       try { await processAutomationStep(r.id); } catch (e) { console.error('[process-due]', r.id, e.message); }
     }
-    res.json({ processed: rows.length });
+
+    // Rede de segurança da fila de atendimento, para o caso de ninguém ter
+    // aberto o CRM desde que o prazo venceu.
+    const { rows: subs } = await pool.query(
+      `SELECT subaccount_id FROM conversation_settings WHERE auto_assign AND queue_enabled`);
+    for (const s of subs) await processQueueDue(s.subaccount_id, { force: true });
+
+    res.json({ processed: rows.length, filas: subs.length });
   } catch (err) {
     console.error('[automations process-due]', err.message);
     res.status(500).json({ message: 'Erro interno.' });
@@ -4855,6 +5205,10 @@ async function processWaMsg(subaccount_id, instanceName, apiUrl, apiKey, data) {
       [subaccount_id, contactName, displayPhone]
     );
     contact_id = newContact[0].id;
+    // Distribui antes do gatilho: assim uma automação de "contato criado" já
+    // enxerga o responsável, em vez de um contato órfão que muda logo depois.
+    const dono = await autoAssignContact(subaccount_id, contact_id);
+    if (dono) newContact[0].assigned_to = dono;
     // A maior parte dos contatos nasce aqui, não pelo formulário — sem este
     // disparo o gatilho perderia justamente o caso principal.
     await fireAutomations(subaccount_id, 'contact_created',
@@ -4877,8 +5231,11 @@ async function processWaMsg(subaccount_id, instanceName, apiUrl, apiKey, data) {
   if (convs.length) {
     conv_id = convs[0].id;
   } else {
+    // A conversa nasce com o responsável do contato: é dele a fila, e sem
+    // isso o relógio não teria de quem cobrar resposta.
     const { rows: newConv } = await pool.query(
-      `INSERT INTO conversations (subaccount_id, contact_id, channel, status) VALUES ($1, $2, 'whatsapp', 'open') RETURNING id`,
+      `INSERT INTO conversations (subaccount_id, contact_id, channel, status, assigned_to)
+       VALUES ($1, $2, 'whatsapp', 'open', (SELECT assigned_to FROM contacts WHERE id = $2)) RETURNING id`,
       [subaccount_id, contact_id]
     );
     conv_id = newConv[0].id;
@@ -4989,6 +5346,14 @@ async function processWaMsg(subaccount_id, instanceName, apiUrl, apiKey, data) {
       message: content, conversation_id: conv_id,
       contact: { id: contact_id, name: pushName || ('+' + phone), phone: '+' + phone },
     }, { contact_id }).catch(e => console.error('[fireAutomations contact_replied]', e.message));
+  }
+
+  // Fila de atendimento: mensagem do cliente arma o relógio; resposta do
+  // atendente (inclusive pelo celular dele, que volta como eco fromMe) zera.
+  if (fromMe) await queueClear(conv_id);
+  else {
+    await queueArm(subaccount_id, conv_id).catch(e => console.error('[queue arm]', e.message));
+    await processQueueDue(subaccount_id);
   }
 
   // Acorda a IA de conversa que estiver esperando esta pessoa responder. Vem
@@ -7067,6 +7432,11 @@ app.aiCostUsd       = aiCostUsd;
 app.defaultAgentPrompt = defaultAgentPrompt;
 app.ensureSubaccountAgent = ensureSubaccountAgent;
 app.aiFlowWaitingRuns = aiFlowWaitingRuns;
+app.pickAutoAssignee  = pickAutoAssignee;
+app.autoAssignContact = autoAssignContact;
+app.processQueueDue   = processQueueDue;
+app.queueArm          = queueArm;
+app.queueClear        = queueClear;
 app.processAutomationStep = processAutomationStep;
 
 module.exports = app;

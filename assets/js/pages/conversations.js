@@ -7,7 +7,8 @@ let _isInternalMode  = false;
 let _pendingMentions = new Set();
 let _convData        = [];        // lista atual de conversas (fonte para os filtros)
 let _convFilter      = 'todas';   // todas | abertas | nao_lidas
-let _convMode        = 'conversas'; // conversas | modelos
+let _convMode        = 'conversas'; // conversas | modelos | config
+let _convCfg         = null;        // configurações de conversa (distribuição/fila)
 let _slashTplList    = null;        // cache de modelos p/ o comando "/m"
 let _slashTplPromise = null;
 let _slashItems      = [];          // itens visíveis no menu de comandos (p/ navegação)
@@ -19,6 +20,277 @@ const CHAT_SLASH_COMMANDS = [
 ];
 
 let _convSearch = '';
+
+// ============================================================
+// CONFIGURAÇÕES DE CONVERSA — distribuição automática e fila
+// ============================================================
+
+async function renderConvConfigView(box) {
+  box.innerHTML = `<div style="padding:40px;text-align:center;color:var(--color-text-3);font-size:13px">Carregando...</div>`;
+  let cfg, users;
+  try {
+    [cfg, users] = await Promise.all([
+      apiFetch('/api/conversation-settings'),
+      apiFetch('/api/conversations/members').catch(() => []),
+    ]);
+  } catch (err) {
+    box.innerHTML = `<div class="card" style="padding:20px;color:var(--color-red);font-size:13px">${_convEsc(err.message)}</div>`;
+    return;
+  }
+  _convCfg  = cfg;
+  _convUsers = Array.isArray(users) ? users : _convUsers;
+  _convCfgPaint(box);
+}
+
+function _convCfgPaint(box) {
+  const c = _convCfg;
+  const alvos = Array.isArray(c.auto_targets) ? c.auto_targets : [];
+  const escolhidos = new Map(alvos.map(t => [t.user_id, Number(t.percent) || 0]));
+  const soma = [...escolhidos.values()].reduce((s, n) => s + n, 0);
+
+  box.innerHTML = `
+  <div class="cvcfg">
+    <section class="card cvcfg-card">
+      <div class="cvcfg-head">
+        <div>
+          <h2 class="cvcfg-title">Distribuição automática</h2>
+          <p class="cvcfg-sub">Todo contato novo — cadastrado à mão ou pela primeira mensagem no WhatsApp — já entra com um responsável.</p>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cvcfgAuto" ${c.auto_assign ? 'checked' : ''}>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="cvcfg-body" ${c.auto_assign ? '' : 'hidden'} id="cvcfgAutoBody">
+        <p class="cvcfg-label">QUEM RECEBE, E QUANTO DE CADA 100 CONTATOS</p>
+        ${_convUsers.length ? `
+          <div class="cvcfg-users">
+            ${_convUsers.map(u => {
+              const on = escolhidos.has(u.id);
+              return `
+              <label class="cvcfg-user ${on ? 'on' : ''}">
+                <input type="checkbox" class="cvcfg-user-box" value="${_convEsc(u.id)}" ${on ? 'checked' : ''}>
+                <span class="cvcfg-avatar">${_convEsc((u.name || '?')[0].toUpperCase())}</span>
+                <span class="cvcfg-user-name">${_convEsc(u.name)}</span>
+                <span class="cvcfg-pct">
+                  <input type="number" class="cvcfg-pct-input" data-user="${_convEsc(u.id)}"
+                         min="1" max="100" value="${on ? escolhidos.get(u.id) : ''}" ${on ? '' : 'disabled'}>%
+                </span>
+              </label>`;
+            }).join('')}
+          </div>
+          <div class="cvcfg-sum ${soma === 100 ? 'ok' : ''}" id="cvcfgSum">
+            ${escolhidos.size ? `Somando ${soma}% de 100%` : 'Escolha quem entra na distribuição'}
+          </div>
+          <button class="btn btn-ghost btn-sm" id="cvcfgSplit" style="margin-top:6px">
+            <i data-lucide="scale" style="width:13px;height:13px"></i> Dividir por igual
+          </button>
+        ` : `<p class="cvcfg-sub">Nenhum usuário ativo nesta subconta.</p>`}
+      </div>
+    </section>
+
+    <section class="card cvcfg-card" ${c.auto_assign ? '' : 'hidden'} id="cvcfgQueueCard">
+      <div class="cvcfg-head">
+        <div>
+          <h2 class="cvcfg-title">Fila de atendimento</h2>
+          <p class="cvcfg-sub">Se quem recebeu o lead demorar para responder, ele passa para o próximo da lista — para o cliente não ficar sem resposta.</p>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cvcfgQueue" ${c.queue_enabled ? 'checked' : ''}>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="cvcfg-body" ${c.queue_enabled ? '' : 'hidden'} id="cvcfgQueueBody">
+        <div class="cvcfg-times">
+          <div class="cvcfg-time">
+            <label class="cvcfg-label">TEMPO PARA A PRIMEIRA RESPOSTA</label>
+            <div class="cvcfg-time-in">
+              <input type="number" id="cvcfgFirst" min="1" max="1440" value="${c.queue_first_minutes}"> min
+            </div>
+            <p class="cvcfg-hint">Vale enquanto ninguém do CRM tiver respondido essa pessoa.</p>
+          </div>
+          <div class="cvcfg-time">
+            <label class="cvcfg-label">TEMPO PARA AS DEMAIS RESPOSTAS</label>
+            <div class="cvcfg-time-in">
+              <input type="number" id="cvcfgNext" min="1" max="1440" value="${c.queue_next_minutes}"> min
+            </div>
+            <p class="cvcfg-hint">Vale depois que a conversa já começou.</p>
+          </div>
+          <div class="cvcfg-time">
+            <label class="cvcfg-label">AVISO VERMELHO ANTES DO FIM</label>
+            <div class="cvcfg-time-in">
+              <input type="number" id="cvcfgAlert" min="1" max="1440" value="${c.queue_alert_minutes}"> min
+            </div>
+            <p class="cvcfg-hint">Aparece no sino e na conversa, com a contagem regressiva.</p>
+          </div>
+        </div>
+        <p class="cvcfg-note">
+          <i data-lucide="info" style="width:13px;height:13px"></i>
+          O relógio zera assim que o atendente responde ao cliente. Nota interna não conta como resposta.
+        </p>
+      </div>
+    </section>
+
+    <div class="cvcfg-foot">
+      <span class="cvcfg-msg" id="cvcfgMsg"></span>
+      <button class="btn btn-primary btn-sm" id="cvcfgSave">
+        <i data-lucide="check" style="width:13px;height:13px"></i> Salvar
+      </button>
+    </div>
+  </div>`;
+
+  lucide.createIcons();
+  _convCfgBind(box);
+}
+
+function _convCfgBind(box) {
+  const q = sel => box.querySelector(sel);
+  const marcados = () => [...box.querySelectorAll('.cvcfg-user-box')].filter(b => b.checked);
+
+  const somar = () => {
+    const total = marcados().reduce((s, b) => {
+      const inp = box.querySelector(`.cvcfg-pct-input[data-user="${CSS.escape(b.value)}"]`);
+      return s + (parseInt(inp?.value, 10) || 0);
+    }, 0);
+    const el = q('#cvcfgSum');
+    if (!el) return;
+    el.textContent = marcados().length ? `Somando ${total}% de 100%` : 'Escolha quem entra na distribuição';
+    el.classList.toggle('ok', total === 100 && marcados().length > 0);
+  };
+
+  q('#cvcfgAuto')?.addEventListener('change', e => {
+    q('#cvcfgAutoBody').hidden  = !e.target.checked;
+    // A fila só existe em cima da distribuição: sem ela não há próximo da vez.
+    q('#cvcfgQueueCard').hidden = !e.target.checked;
+  });
+  q('#cvcfgQueue')?.addEventListener('change', e => { q('#cvcfgQueueBody').hidden = !e.target.checked; });
+
+  box.querySelectorAll('.cvcfg-user-box').forEach(cb => cb.addEventListener('change', () => {
+    const inp = box.querySelector(`.cvcfg-pct-input[data-user="${CSS.escape(cb.value)}"]`);
+    inp.disabled = !cb.checked;
+    cb.closest('.cvcfg-user').classList.toggle('on', cb.checked);
+    if (cb.checked && !inp.value) inp.value = Math.max(1, Math.round(100 / marcados().length));
+    if (!cb.checked) inp.value = '';
+    somar();
+  }));
+  box.querySelectorAll('.cvcfg-pct-input').forEach(inp => inp.addEventListener('input', somar));
+
+  q('#cvcfgSplit')?.addEventListener('click', () => {
+    const sel = marcados();
+    if (!sel.length) return;
+    // A sobra vai para os primeiros: 3 pessoas viram 34/33/33, e não 33/33/33.
+    const base = Math.floor(100 / sel.length);
+    let resto = 100 - base * sel.length;
+    sel.forEach(cb => {
+      const inp = box.querySelector(`.cvcfg-pct-input[data-user="${CSS.escape(cb.value)}"]`);
+      inp.value = base + (resto-- > 0 ? 1 : 0);
+    });
+    somar();
+  });
+
+  q('#cvcfgSave')?.addEventListener('click', async () => {
+    const btn = q('#cvcfgSave'), msg = q('#cvcfgMsg');
+    const alvos = marcados().map(cb => ({
+      user_id: cb.value,
+      percent: parseInt(box.querySelector(`.cvcfg-pct-input[data-user="${CSS.escape(cb.value)}"]`)?.value, 10) || 0,
+    }));
+    const corpo = {
+      auto_assign: q('#cvcfgAuto').checked,
+      auto_targets: alvos,
+      queue_enabled: !!q('#cvcfgQueue')?.checked,
+      queue_first_minutes: parseInt(q('#cvcfgFirst')?.value, 10),
+      queue_next_minutes:  parseInt(q('#cvcfgNext')?.value, 10),
+      queue_alert_minutes: parseInt(q('#cvcfgAlert')?.value, 10),
+    };
+    btn.disabled = true;
+    msg.textContent = ''; msg.className = 'cvcfg-msg';
+    try {
+      _convCfg = await apiFetch('/api/conversation-settings', { method: 'PUT', body: JSON.stringify(corpo) });
+      msg.textContent = 'Configurações salvas.';
+      msg.className = 'cvcfg-msg ok';
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.className = 'cvcfg-msg erro';
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+// ── Contagem regressiva da fila ───────────────────────────────
+// O servidor guarda a hora em que a conversa passa adiante; a contagem é
+// desenhada aqui, então ela anda de segundo em segundo sem custar requisição.
+
+function _convQueueMs(conv) {
+  return conv?.queue_due_at ? new Date(conv.queue_due_at).getTime() - Date.now() : null;
+}
+
+function _convQueueLabel(ms) {
+  if (ms == null) return '';
+  if (ms <= 0) return 'passando para o próximo…';
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// Só vira alerta quando entra na janela configurada — antes disso o relógio
+// corre em silêncio, senão a tela viveria vermelha.
+function _convQueueAlerta(conv) {
+  const ms = _convQueueMs(conv);
+  if (ms == null) return false;
+  const janela = (_convCfg?.queue_alert_minutes ?? 3) * 60000;
+  return ms <= janela;
+}
+
+function _convQueueBannerHtml(conv) {
+  if (!_convQueueAlerta(conv)) return '';
+  return `<div class="conv-queue-alert" id="convQueueAlert" data-due="${_convEsc(conv.queue_due_at)}">
+    <i data-lucide="alarm-clock" style="width:15px;height:15px;flex-shrink:0"></i>
+    <span>Responda agora — este lead passa para o próximo em
+      <strong class="conv-queue-clock">${_convQueueLabel(_convQueueMs(conv))}</strong></span>
+  </div>`;
+}
+
+let _convQueueTick = null;
+function _convQueueStartTick() {
+  clearInterval(_convQueueTick);
+  _convQueueTick = setInterval(() => {
+    document.querySelectorAll('[data-due]').forEach(el => {
+      const ms = new Date(el.dataset.due).getTime() - Date.now();
+      (el.querySelector('.conv-queue-clock') || el).textContent = _convQueueLabel(ms);
+    });
+    _convQueueSync();
+  }, 1000);
+}
+
+// O aviso pode entrar em cena entre uma atualização e outra da lista: o
+// relógio anda mesmo sem chegar mensagem nenhuma, então quem decide mostrar
+// ou esconder o aviso é o próprio tique.
+function _convQueueSync() {
+  const chat = document.getElementById('chatArea');
+  const msgs = document.getElementById('chatMessages');
+  if (!chat || !msgs) return;
+  const conv = _convData.find(c => c.id === activeConvId);
+  const atual = document.getElementById('convQueueAlert');
+  const deve = conv && _convQueueAlerta(conv);
+
+  if (deve && !atual) {
+    msgs.insertAdjacentHTML('beforebegin', _convQueueBannerHtml(conv));
+    lucide.createIcons();
+  } else if (!deve && atual) {
+    atual.remove();
+  }
+
+  // O mesmo vale para os chips da lista, que só existem dentro da janela.
+  // Só conta o que está desenhado: uma conversa escondida pelo filtro não
+  // pode ser lida como "faltando" e redesenhar a lista a cada segundo.
+  const faltando = _convData.some(c => {
+    const item = document.querySelector(`.conv-item[data-conv-id="${CSS.escape(c.id)}"]`);
+    return item && _convQueueAlerta(c) !== !!item.querySelector('.conv-queue-chip');
+  });
+  if (faltando) _renderConvList();
+}
 
 // Destaca o termo dentro do trecho já escapado. A marcação entra depois do
 // escape para o realce não virar uma porta de HTML injetado.
@@ -81,6 +353,8 @@ function _convItemHtml(c) {
       </div>
       <div class="conv-meta">
         <div class="conv-time">${c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—'}</div>
+        ${_convQueueAlerta(c) ? `<div class="conv-queue-chip" data-due="${_convEsc(c.queue_due_at)}"
+          title="Tempo até este lead passar para o próximo da fila">${_convQueueLabel(_convQueueMs(c))}</div>` : ''}
         ${c.unread_count > 0 ? `<div class="conv-unread-count">${c.unread_count}</div>` : ''}
       </div>
       ${window.favxCan('delete_conversation') ? `<button class="conv-delete-btn" data-conv-id="${c.id}" title="Apagar conversa">
@@ -206,7 +480,8 @@ window.pageConversations = function(data) {
   return `
   <div class="page-header" style="margin-bottom:16px">
     <div style="display:flex;align-items:center;gap:16px">
-      <h1 class="page-title" id="convPageTitle">${_convMode === 'modelos' ? 'Modelos' : 'Conversas'}</h1>
+      <h1 class="page-title" id="convPageTitle">${
+        _convMode === 'modelos' ? 'Modelos' : _convMode === 'config' ? 'Configurações de conversa' : 'Conversas'}</h1>
       <div class="conv-mode-switch">
         <button class="conv-mode-btn ${_convMode === 'conversas' ? 'active' : ''}" data-mode="conversas">
           <i data-lucide="message-circle" style="width:14px;height:14px"></i> Conversas
@@ -214,16 +489,20 @@ window.pageConversations = function(data) {
         <button class="conv-mode-btn ${_convMode === 'modelos' ? 'active' : ''}" data-mode="modelos">
           <i data-lucide="file-text" style="width:14px;height:14px"></i> Modelos
         </button>
+        <button class="conv-mode-btn ${_convMode === 'config' ? 'active' : ''}" data-mode="config">
+          <i data-lucide="sliders-horizontal" style="width:14px;height:14px"></i> Configurações de conversa
+        </button>
       </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
-      <button class="btn btn-primary btn-sm" id="btnNovaConversa" ${_convMode === 'modelos' ? 'style="display:none"' : ''}><i data-lucide="edit" style="width:14px;height:14px"></i> Nova Conversa</button>
+      <button class="btn btn-primary btn-sm" id="btnNovaConversa" ${_convMode !== 'conversas' ? 'style="display:none"' : ''}><i data-lucide="edit" style="width:14px;height:14px"></i> Nova Conversa</button>
     </div>
   </div>
 
   <div id="templatesView" ${_convMode === 'modelos' ? '' : 'hidden'}></div>
+  <div id="convConfigView" ${_convMode === 'config' ? '' : 'hidden'}></div>
 
-  <div class="conversations-layout" ${_convMode === 'modelos' ? 'hidden' : ''}>
+  <div class="conversations-layout" ${_convMode !== 'conversas' ? 'hidden' : ''}>
     <!-- SIDEBAR -->
     <div class="conv-sidebar">
       <div class="conv-sidebar-header">
@@ -885,6 +1164,7 @@ async function loadAndRenderChat(convId, conv) {
         ${instanceSwitcherHtml}
       </div>
     </div>
+    ${_convQueueBannerHtml(conv)}
     <div class="chat-messages" id="chatMessages">
       ${msgs.length === 0 ? `
         <div style="text-align:center;color:var(--color-text-3);font-size:13px;padding:24px">Nenhuma mensagem ainda.</div>
@@ -1547,6 +1827,15 @@ window.initConversations = function(data) {
   // A primeira lista vem no HTML da página, sem passar por _renderConvList.
   window.favxTagsFit?.(document.getElementById('convList'));
 
+  // A janela do aviso vermelho vem das configurações; sem elas o padrão de 3
+  // minutos serve, e a tela não fica esperando uma requisição para desenhar.
+  if (!_convCfg) {
+    apiFetch('/api/conversation-settings')
+      .then(cfg => { _convCfg = cfg; })
+      .catch(() => {});
+  }
+  _convQueueStartTick();
+
   // Fecha dropdowns do painel ao clicar fora
   document.addEventListener('click', () => {
     const d1 = document.getElementById('ownerDropdown');
@@ -1555,27 +1844,27 @@ window.initConversations = function(data) {
     if (d2) d2.style.display = 'none';
   });
 
-  // Seletor de modo (Conversas | Modelos)
+  // Seletor de modo (Conversas | Modelos | Configurações de conversa)
+  const TITULOS = { conversas: 'Conversas', modelos: 'Modelos', config: 'Configurações de conversa' };
+  const aplicarModo = () => {
+    document.querySelectorAll('.conv-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === _convMode));
+    const tplView  = document.getElementById('templatesView');
+    const cfgView  = document.getElementById('convConfigView');
+    const layout   = document.querySelector('.conversations-layout');
+    const btnNova  = document.getElementById('btnNovaConversa');
+    const title    = document.getElementById('convPageTitle');
+    if (tplView) tplView.hidden = _convMode !== 'modelos';
+    if (cfgView) cfgView.hidden = _convMode !== 'config';
+    if (layout)  layout.hidden  = _convMode !== 'conversas';
+    if (btnNova) btnNova.style.display = _convMode === 'conversas' ? '' : 'none';
+    if (title)   title.textContent = TITULOS[_convMode] || 'Conversas';
+    if (_convMode === 'modelos' && tplView) renderTemplatesView(tplView);
+    if (_convMode === 'config'  && cfgView) renderConvConfigView(cfgView);
+  };
   document.querySelectorAll('.conv-mode-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      _convMode = btn.dataset.mode;
-      document.querySelectorAll('.conv-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === _convMode));
-      const tplView = document.getElementById('templatesView');
-      const chatLayout = document.querySelector('.conversations-layout');
-      const btnNova = document.getElementById('btnNovaConversa');
-      const title = document.getElementById('convPageTitle');
-      const isModelos = _convMode === 'modelos';
-      if (tplView)    tplView.hidden = !isModelos;
-      if (chatLayout) chatLayout.hidden = isModelos;
-      if (btnNova)    btnNova.style.display = isModelos ? 'none' : '';
-      if (title)      title.textContent = isModelos ? 'Modelos' : 'Conversas';
-      if (isModelos && tplView) renderTemplatesView(tplView);
-    });
+    btn.addEventListener('click', () => { _convMode = btn.dataset.mode; aplicarModo(); });
   });
-  if (_convMode === 'modelos') {
-    const tplView = document.getElementById('templatesView');
-    if (tplView) renderTemplatesView(tplView);
-  }
+  if (_convMode !== 'conversas') aplicarModo();
 
   // Busca por nome, telefone ou palavra dita dentro da conversa
   const searchInput = document.getElementById('convSearchInput');
