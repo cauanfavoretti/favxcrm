@@ -20,8 +20,47 @@ window.loadIntegrations = async function() {
   return _waInstances;
 };
 
+// O bloco do WhatsApp mora em Configurações de conversa — é lá que ele é
+// usado, ao lado da distribuição e da fila. Estas três funções são a porta
+// para desenhá-lo de fora daqui, sem duplicar a tela (e os modais de QR,
+// diagnóstico e exclusão continuam sendo os mesmos).
+window.favxWaLoad = async function() {
+  try { _waInstances = await apiFetch('/api/whatsapp-instances'); } catch { _waInstances = []; }
+  return _waInstances;
+};
+
+window.favxWaSectionHtml = function() {
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:10px">
+      ${_WA_ICON}
+      <div>
+        <div style="font-size:15px;font-weight:700;color:var(--color-text-1)">WhatsApp</div>
+        <div style="font-size:12px;color:var(--color-text-3)">Múltiplos números via Evolution API</div>
+      </div>
+    </div>
+    <button id="btnAddWa" class="btn btn-primary btn-sm" style="display:flex;align-items:center;gap:6px">
+      <i data-lucide="plus" style="width:14px;height:14px"></i> Adicionar número
+    </button>
+  </div>
+
+  <div id="waInstancesList" style="display:flex;flex-direction:column;gap:10px">
+    ${_waInstances.length === 0
+      ? `<div style="padding:24px;text-align:center;color:var(--color-text-3);font-size:13px;background:var(--color-surface);border:1px dashed var(--color-border);border-radius:12px">
+           Nenhum número conectado ainda. Clique em <b>Adicionar número</b> para começar.
+         </div>`
+      : _waInstances.map((inst, i) => _waInstanceCard(inst, i)).join('')
+    }
+  </div>`;
+};
+
+window.favxWaSectionInit = function() {
+  document.getElementById('btnAddWa')?.addEventListener('click', _openAddWaModal);
+};
+
 window.pageIntegrations = function(instances) {
   _waInstances = Array.isArray(instances) ? instances : [];
+  const conectados = _waInstances.filter(i => i.status === 'connected').length;
   return `
   <div class="page-header">
     <div>
@@ -30,34 +69,25 @@ window.pageIntegrations = function(instances) {
     </div>
   </div>
 
-  <!-- WhatsApp section -->
-  <div style="margin-bottom:32px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-      <div style="display:flex;align-items:center;gap:10px">
-        ${_WA_ICON}
-        <div>
-          <div style="font-size:15px;font-weight:700;color:var(--color-text-1)">WhatsApp</div>
-          <div style="font-size:12px;color:var(--color-text-3)">Múltiplos números via Evolution API</div>
-        </div>
-      </div>
-      <button id="btnAddWa" class="btn btn-primary btn-sm" style="display:flex;align-items:center;gap:6px">
-        <i data-lucide="plus" style="width:14px;height:14px"></i> Adicionar número
-      </button>
-    </div>
-
-    <div id="waInstancesList" style="display:flex;flex-direction:column;gap:10px">
-      ${_waInstances.length === 0
-        ? `<div style="padding:24px;text-align:center;color:var(--color-text-3);font-size:13px;background:var(--color-surface);border:1px dashed var(--color-border);border-radius:12px">
-             Nenhum número conectado ainda. Clique em <b>Adicionar número</b> para começar.
-           </div>`
-        : _waInstances.map((inst, i) => _waInstanceCard(inst, i)).join('')
-      }
-    </div>
-  </div>
-
-  <!-- Other integrations -->
-  <div style="margin-bottom:12px;font-size:11px;font-weight:700;color:var(--color-text-3);letter-spacing:.08em">OUTRAS INTEGRAÇÕES</div>
   <div class="integration-grid">
+    <div class="integration-card integration-live" id="waIntegrationCard" role="button" tabindex="0">
+      <div class="integration-icon">${_WA_ICON}</div>
+      <div>
+        <div class="integration-name">WhatsApp</div>
+        <div class="integration-desc">Múltiplos números via Evolution API. A conexão fica em Conversas → Configurações de conversa.</div>
+      </div>
+      <div class="integration-footer">
+        ${_waInstances.length
+          ? `<span class="badge ${conectados ? 'badge-green' : 'badge-yellow'}">${
+              conectados ? `${conectados} conectado${conectados > 1 ? 's' : ''}` : 'Desconectado'}</span>`
+          : `<span class="badge badge-gray">Não configurado</span>`}
+        <button class="btn btn-secondary btn-sm">
+          ${_waInstances.length ? 'Gerenciar' : 'Conectar'}
+          <i data-lucide="arrow-right" style="width:13px;height:13px"></i>
+        </button>
+      </div>
+    </div>
+
     ${_OTHER_INTEGRATIONS.map(i => `
     <div class="integration-card integration-soon">
       <div class="integration-icon">${i.icon}</div>
@@ -108,7 +138,14 @@ function _waInstanceCard(inst, i) {
 }
 
 window.initIntegrations = function() {
-  document.getElementById('btnAddWa')?.addEventListener('click', _openAddWaModal);
+  const card = document.getElementById('waIntegrationCard');
+  const abrir = () => window.favxOpenConvSettings?.('wa');
+  card?.addEventListener('click', abrir);
+  // O card é um <div> por causa do layout da grade; sem isto ele ficaria
+  // fora do alcance de quem navega pelo teclado.
+  card?.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); abrir(); }
+  });
 };
 
 // ── Add new instance modal ────────────────────────────────────

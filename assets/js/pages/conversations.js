@@ -32,6 +32,9 @@ async function renderConvConfigView(box) {
     [cfg, users] = await Promise.all([
       apiFetch('/api/conversation-settings'),
       apiFetch('/api/conversations/members').catch(() => []),
+      // O bloco do WhatsApp é desenhado por integrations.js; aqui só se
+      // carrega a lista de números antes de pedir o HTML dele.
+      window.favxWaLoad?.().catch(() => []),
     ]);
   } catch (err) {
     box.innerHTML = `<div class="card" style="padding:20px;color:var(--color-red);font-size:13px">${_convEsc(err.message)}</div>`;
@@ -42,6 +45,28 @@ async function renderConvConfigView(box) {
   _convCfgPaint(box);
 }
 
+// Leva para as configurações de conversa a partir de outra página (é o que o
+// card do WhatsApp em Integrações faz). `foco` diz em que bloco parar.
+window.favxOpenConvSettings = function(foco) {
+  _convMode = 'config';
+  window.navigateTo?.('conversations');
+  if (!foco) return;
+  // A página é montada de forma assíncrona; espera o bloco existir para rolar
+  // até ele, em vez de rolar para um lugar que ainda não está lá.
+  let tentativas = 0;
+  const ir = () => {
+    const alvo = document.getElementById(foco === 'wa' ? 'convCfgWa' : foco);
+    if (alvo) {
+      alvo.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      alvo.classList.add('cvcfg-destaque');
+      setTimeout(() => alvo.classList.remove('cvcfg-destaque'), 1600);
+      return;
+    }
+    if (++tentativas < 40) setTimeout(ir, 100);
+  };
+  setTimeout(ir, 100);
+};
+
 function _convCfgPaint(box) {
   const c = _convCfg;
   const alvos = Array.isArray(c.auto_targets) ? c.auto_targets : [];
@@ -50,6 +75,13 @@ function _convCfgPaint(box) {
 
   box.innerHTML = `
   <div class="cvcfg">
+    <section class="card cvcfg-card" id="convCfgWa">
+      <div class="cvcfg-body" style="border-top:none;padding-top:18px">
+        ${window.favxWaSectionHtml ? window.favxWaSectionHtml() : `
+          <p class="cvcfg-sub">Não foi possível carregar a integração do WhatsApp.</p>`}
+      </div>
+    </section>
+
     <section class="card cvcfg-card">
       <div class="cvcfg-head">
         <div>
@@ -142,6 +174,7 @@ function _convCfgPaint(box) {
   </div>`;
 
   lucide.createIcons();
+  window.favxWaSectionInit?.();
   _convCfgBind(box);
 }
 

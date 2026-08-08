@@ -2493,6 +2493,14 @@ tbody tr:hover { background: var(--color-surface-2); }
 .integration-card.connected { border-color: var(--color-green); }
 .integration-card.integration-soon { opacity: 0.55; }
 .integration-card.integration-soon:hover { box-shadow: none; opacity: 0.7; }
+/* Integração que já funciona: o card inteiro leva para onde ela é
+   configurada, então precisa parecer clicável. */
+.integration-card.integration-live { cursor: pointer; }
+.integration-card.integration-live:hover { border-color: var(--color-accent); }
+.integration-card.integration-live:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
 
 .integration-icon {
   width: 44px;
@@ -3504,6 +3512,19 @@ tbody tr:hover { background: var(--color-surface-2); }
   font-size: 12px;
   color: var(--color-text-3);
   line-height: 1.45;
+}
+
+/* Piscada de chegada: quem veio de Integrações precisa achar o bloco do
+   WhatsApp no meio da página sem procurar. */
+.cvcfg-destaque {
+  animation: cvcfgDestaque 1.6s ease-out;
+}
+@keyframes cvcfgDestaque {
+  0%, 60% { box-shadow: 0 0 0 2px var(--color-accent), var(--shadow-md); }
+  100%    { box-shadow: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cvcfg-destaque { animation: none; box-shadow: 0 0 0 2px var(--color-accent); }
 }
 
 .cvcfg-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
