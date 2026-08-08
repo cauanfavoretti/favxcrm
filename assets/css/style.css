@@ -3403,10 +3403,11 @@ tbody tr:hover { background: var(--color-surface-2); }
 }
 
 /* ── Builder shell — "workflow studio", inspirado em diagramas de
-   arquitetura: fundo quase-preto fixo (independe do tema claro/escuro
-   do resto do CRM), nós e conexões com glow em azul/laranja/vermelho/
-   roxo. ──────────────────────────────────────────────────────────── */
-.auto-builder {
+   arquitetura: nós e conexões com glow em azul/laranja/vermelho/roxo.
+   Os tokens ficam no :root, e não em .auto-builder, porque o menu
+   "+ Adicionar" é montado no <body> (para não ser cortado pelo canvas) e
+   precisa das mesmas cores. ─────────────────────────────────────────── */
+:root {
   --ab-bg:        #060810;
   --ab-bg-2:      #0a0d18;
   --ab-surface:   #0e1220;
@@ -3426,6 +3427,62 @@ tbody tr:hover { background: var(--color-surface-2); }
   --ab-purple:     #a855f7;
   --ab-purple-glow:rgba(168,85,247,.5);
 
+  /* Cores que antes estavam soltas nas regras. Viraram tokens porque são
+     justamente as que precisam mudar entre o tema claro e o escuro. */
+  --ab-dot:         rgba(255,255,255,.10);   /* grade de pontos do canvas */
+  --ab-edge:        #4f5680;                 /* linha das conexões */
+  --ab-edge-glow:   rgba(120,140,255,.35);
+  --ab-hover:       #3a4166;                 /* borda do nó sob o mouse */
+  --ab-hover-soft:  rgba(255,255,255,.06);   /* fundo de item de lista */
+  --ab-port-hover:  #fff;                    /* ponta do If/Else sob o mouse */
+  --ab-shadow:      0 6px 20px rgba(0,0,0,.35);
+  --ab-shadow-lg:   0 16px 40px rgba(0,0,0,.5);
+  --ab-halos:
+    radial-gradient(38vw 32vw at 12% 8%,  rgba(168,85,247,.10) 0%, transparent 65%),
+    radial-gradient(34vw 30vw at 88% 20%, rgba(59,130,246,.12) 0%, transparent 65%),
+    radial-gradient(32vw 30vw at 20% 95%, rgba(249,115,22,.07) 0%, transparent 65%),
+    radial-gradient(30vw 28vw at 95% 90%, rgba(239,68,68,.07)  0%, transparent 65%);
+}
+
+/* No tema claro o estúdio acompanha o resto do CRM: papel claro, tinta
+   escura. As cores dos nós continuam as mesmas — são elas que identificam
+   cada tipo de node — só perdem o brilho, que só existe sobre fundo escuro. */
+:root[data-theme="light"] {
+  --ab-bg:        #eef3fa;
+  --ab-bg-2:      #ffffff;
+  --ab-surface:   #ffffff;
+  --ab-surface-2: #f3f7fc;
+  --ab-border:    #dbe4f0;
+  --ab-border-2:  #c3d3e6;
+  --ab-text-1:    #0d1b2a;
+  --ab-text-2:    #3c5a7d;
+  --ab-text-3:    #6b8aaa;
+
+  --ab-blue:       #2563eb;
+  --ab-blue-glow:  rgba(37,99,235,.25);
+  --ab-orange:     #ea6a0c;
+  --ab-orange-glow:rgba(234,106,12,.25);
+  --ab-red:        #dc2626;
+  --ab-red-glow:   rgba(220,38,38,.22);
+  --ab-purple:     #7c3aed;
+  --ab-purple-glow:rgba(124,58,237,.24);
+
+  --ab-dot:        rgba(13,27,42,.10);
+  --ab-edge:       #94a9c4;
+  --ab-edge-glow:  rgba(37,99,235,.18);
+  --ab-hover:      #9db6d4;
+  --ab-hover-soft: rgba(13,27,42,.05);
+  --ab-port-hover: #0d1b2a;
+  --ab-shadow:     0 4px 14px rgba(13,27,42,.10);
+  --ab-shadow-lg:  0 16px 40px rgba(13,27,42,.16);
+  --ab-halos:
+    radial-gradient(38vw 32vw at 12% 8%,  rgba(124,58,237,.07) 0%, transparent 65%),
+    radial-gradient(34vw 30vw at 88% 20%, rgba(37,99,235,.09)  0%, transparent 65%),
+    radial-gradient(32vw 30vw at 20% 95%, rgba(249,115,22,.06) 0%, transparent 65%),
+    radial-gradient(30vw 28vw at 95% 90%, rgba(239,68,68,.05)  0%, transparent 65%);
+}
+
+.auto-builder {
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -3477,10 +3534,10 @@ tbody tr:hover { background: var(--color-surface-2); }
   width: 260px;
   max-height: 70vh;
   overflow-y: auto;
-  background: #0e1220;
-  border: 1px solid #2a3150;
+  background: var(--ab-bg-2);
+  border: 1px solid var(--ab-border-2);
   border-radius: 12px;
-  box-shadow: 0 16px 40px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.03);
+  box-shadow: var(--ab-shadow-lg);
   padding: 6px;
   z-index: 4100;
 }
@@ -3498,13 +3555,13 @@ tbody tr:hover { background: var(--color-surface-2); }
   text-align: left;
   transition: background .12s;
 }
-.auto-add-menu-item:hover { background: #171d33; }
+.auto-add-menu-item:hover { background: var(--ab-hover-soft); }
 .auto-add-menu-item + .auto-add-menu-item { margin-top: 2px; }
-.auto-add-menu-back { border-bottom: 1px solid #1e2438; border-radius: 0; padding-bottom: 10px; margin-bottom: 4px; }
+.auto-add-menu-back { border-bottom: 1px solid var(--ab-border); border-radius: 0; padding-bottom: 10px; margin-bottom: 4px; }
 
 .auto-add-menu-text { min-width: 0; flex: 1; }
-.auto-add-menu-title { font-size: 12px; font-weight: 600; color: #f1f3fa; }
-.auto-add-menu-desc { font-size: 11px; color: #6b7292; margin-top: 1px; }
+.auto-add-menu-title { font-size: 12px; font-weight: 600; color: var(--ab-text-1); }
+.auto-add-menu-desc { font-size: 11px; color: var(--ab-text-3); margin-top: 1px; }
 
 .auto-node-icon {
   width: 26px;
@@ -3535,7 +3592,7 @@ tbody tr:hover { background: var(--color-surface-2); }
   position: relative;
   background-color: var(--ab-bg);
   background-image:
-    radial-gradient(1px 1px at center, rgba(255,255,255,.10) 1px, transparent 1px);
+    radial-gradient(1px 1px at center, var(--ab-dot) 1px, transparent 1px);
   background-size: 24px 24px;
 }
 .auto-canvas-wrap::before {
@@ -3544,11 +3601,7 @@ tbody tr:hover { background: var(--color-surface-2); }
   inset: 0;
   pointer-events: none;
   z-index: 0;
-  background:
-    radial-gradient(38vw 32vw at 12% 8%,  rgba(168,85,247,.10) 0%, transparent 65%),
-    radial-gradient(34vw 30vw at 88% 20%, rgba(59,130,246,.12)  0%, transparent 65%),
-    radial-gradient(32vw 30vw at 20% 95%, rgba(249,115,22,.07)  0%, transparent 65%),
-    radial-gradient(30vw 28vw at 95% 90%, rgba(239,68,68,.07)   0%, transparent 65%);
+  background: var(--ab-halos);
 }
 
 .auto-canvas {
@@ -3587,9 +3640,9 @@ tbody tr:hover { background: var(--color-surface-2); }
 }
 .auto-edges path.auto-edge-line {
   fill: none;
-  stroke: #4f5680;
+  stroke: var(--ab-edge);
   stroke-width: 2;
-  filter: drop-shadow(0 0 4px rgba(120,140,255,.35));
+  filter: drop-shadow(0 0 4px var(--ab-edge-glow));
 }
 .auto-edges path.auto-edge-preview {
   fill: none;
@@ -3612,7 +3665,7 @@ tbody tr:hover { background: var(--color-surface-2); }
 .auto-edges .auto-edge-del circle { fill: var(--ab-surface-2); stroke: var(--ab-border-2); stroke-width: 1.5; }
 .auto-edges .auto-edge-del:hover circle { fill: var(--ab-red); stroke: var(--ab-red); filter: drop-shadow(0 0 6px var(--ab-red-glow)); }
 .auto-edges .auto-edge-del text { fill: var(--ab-text-3); font-size: 11px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
-.auto-edges .auto-edge-del:hover text { fill: #fff; }
+.auto-edges .auto-edge-del:hover text { fill: #fff; }  /* o círculo vira vermelho nos dois temas */
 
 /* ── Nós do canvas ─────────────────────────────────────────────
    Três formas: padrão (quadrado, ícone + nome), If/Else (losango —
@@ -3628,16 +3681,16 @@ tbody tr:hover { background: var(--color-surface-2); }
   border-radius: 16px;
   border: 1.5px solid var(--ab-border-2);
   background: linear-gradient(180deg, var(--ab-surface-2) 0%, var(--ab-surface) 100%);
-  box-shadow: 0 6px 20px rgba(0,0,0,.35);
+  box-shadow: var(--ab-shadow);
   cursor: grab;
   user-select: none;
   z-index: 2;
 }
-.auto-node:hover { border-color: #3a4166; }
+.auto-node:hover { border-color: var(--ab-hover); }
 .auto-node:active { cursor: grabbing; }
-.auto-node.auto-node-selected { border-color: var(--ab-blue); box-shadow: 0 0 0 3px var(--ab-blue-glow), 0 8px 28px rgba(0,0,0,.4); z-index: 3; }
-.auto-node.auto-node-trigger { border-color: rgba(168,85,247,.55); box-shadow: 0 0 22px rgba(168,85,247,.14), 0 6px 20px rgba(0,0,0,.35); }
-.auto-node.auto-node-trigger.auto-node-selected { border-color: var(--ab-purple); box-shadow: 0 0 0 3px var(--ab-purple-glow), 0 8px 28px rgba(0,0,0,.4); }
+.auto-node.auto-node-selected { border-color: var(--ab-blue); box-shadow: 0 0 0 3px var(--ab-blue-glow), var(--ab-shadow); z-index: 3; }
+.auto-node.auto-node-trigger { border-color: var(--ab-purple-glow); box-shadow: 0 0 22px var(--ab-purple-glow), var(--ab-shadow); }
+.auto-node.auto-node-trigger.auto-node-selected { border-color: var(--ab-purple); box-shadow: 0 0 0 3px var(--ab-purple-glow), var(--ab-shadow); }
 
 /* Badge com o ícone — quadrado por padrão */
 .auto-node-badge {
@@ -3738,7 +3791,7 @@ tbody tr:hover { background: var(--color-surface-2); }
   clip-path: polygon(0% 15%, 70% 50%, 0% 85%);
 }
 .auto-node-if .auto-port-out.auto-port-false { background: var(--ab-red); }
-.auto-node-if .auto-port-out:hover { background: #fff; transform: translateY(-50%) scale(1.3); box-shadow: 0 0 10px var(--ab-blue-glow); }
+.auto-node-if .auto-port-out:hover { background: var(--ab-port-hover); transform: translateY(-50%) scale(1.3); box-shadow: 0 0 10px var(--ab-blue-glow); }
 
 
 .auto-config-panel {
@@ -3749,7 +3802,7 @@ tbody tr:hover { background: var(--color-surface-2); }
   width: 320px;
   background: var(--ab-bg-2);
   border-left: 1px solid var(--ab-border);
-  box-shadow: -12px 0 32px rgba(0,0,0,.4);
+  box-shadow: -12px 0 32px rgba(0,0,0,.14);
   overflow-y: auto;
   padding: 16px;
   z-index: 20;
@@ -4543,7 +4596,7 @@ tbody tr:hover { background: var(--color-surface-2); }
   gap: 2px;
   max-height: 200px;
   overflow-y: auto;
-  border: 1px solid var(--ab-border, var(--color-border));
+  border: 1px solid var(--ab-border);
   border-radius: var(--radius-sm);
   padding: 6px;
 }
@@ -4555,7 +4608,7 @@ tbody tr:hover { background: var(--color-surface-2); }
   border-radius: 5px;
   cursor: pointer;
 }
-.auto-tag-opt:hover { background: rgba(255, 255, 255, 0.06); }
+.auto-tag-opt:hover { background: var(--ab-hover-soft); }
 
 /* ── Canvas das automações: pan e zoom ── */
 
@@ -4585,7 +4638,7 @@ tbody tr:hover { background: var(--color-surface-2); }
   border-radius: 10px;
   background: var(--ab-surface);
   border: 1px solid var(--ab-border-2);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--ab-shadow);
 }
 .auto-zoom-btn {
   display: flex;

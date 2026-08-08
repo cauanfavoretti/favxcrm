@@ -371,6 +371,9 @@ function _autoBuilderHtml() {
       <button class="btn btn-secondary btn-sm" id="btnAutoAddMenu"><i data-lucide="plus" style="width:13px;height:13px"></i> Adicionar</button>
       <span id="autoSaveError" style="font-size:12px;color:var(--color-red)"></span>
       <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+        <button class="btn btn-ghost btn-sm" id="btnAutoTheme" title="Alternar entre claro e escuro" style="padding:5px 8px">
+          <i data-lucide="${(document.documentElement.getAttribute('data-theme') || 'dark') === 'dark' ? 'sun' : 'moon'}" style="width:14px;height:14px"></i>
+        </button>
         ${_autoCurrent.id ? `<button class="btn btn-ghost btn-sm" id="btnAutoTest"><i data-lucide="play" style="width:13px;height:13px"></i> Testar</button>` : ''}
         <button class="btn btn-primary btn-sm" id="btnAutoSave"><i data-lucide="check" style="width:13px;height:13px"></i> Salvar</button>
       </div>
@@ -412,6 +415,16 @@ function _autoInitBuilder() {
   document.getElementById('autoNameInput')?.addEventListener('input', e => { _autoCurrent.name = e.target.value; });
   document.getElementById('btnAutoSave')?.addEventListener('click', _autoSave);
   document.getElementById('btnAutoTest')?.addEventListener('click', () => _autoOpenTestModal(_autoCurrent.id, _autoCurrent.name));
+
+  // O construtor ocupa a tela inteira e cobre o botão de tema da barra de
+  // cima — sem este aqui, trocar de tema exigiria sair do fluxo.
+  document.getElementById('btnAutoTheme')?.addEventListener('click', e => {
+    const atual = document.documentElement.getAttribute('data-theme') || 'dark';
+    const novo  = atual === 'dark' ? 'light' : 'dark';
+    applyTheme(novo, false);
+    e.currentTarget.innerHTML = `<i data-lucide="${novo === 'dark' ? 'sun' : 'moon'}" style="width:14px;height:14px"></i>`;
+    lucide.createIcons();
+  });
   document.getElementById('btnAutoAddMenu')?.addEventListener('click', e => { e.stopPropagation(); _autoOpenAddMenu(e.currentTarget); });
 
   Promise.all([
